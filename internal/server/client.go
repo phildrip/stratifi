@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"bloxwm/internal/protocol/capture"
 	"bloxwm/internal/protocol/wayland"
 	"bloxwm/internal/protocol/xdgshell"
 	"bloxwm/internal/wire"
@@ -13,13 +14,17 @@ import (
 
 // Global numeric IDs advertised to clients via wl_registry.
 const (
-	GlobalCompositor uint32 = 1
-	GlobalShm        uint32 = 2
-	GlobalXdgWmBase  uint32 = 3
-	GlobalOutput     uint32 = 4
-	GlobalSeat       uint32 = 5
-	GlobalSubcompositor uint32 = 6
+	GlobalCompositor        uint32 = 1
+	GlobalShm               uint32 = 2
+	GlobalXdgWmBase         uint32 = 3
+	GlobalOutput            uint32 = 4
+	GlobalSeat              uint32 = 5
+	GlobalSubcompositor     uint32 = 6
 	GlobalDataDeviceManager uint32 = 7
+
+	// Screen capture protocol globals (Firefox/WebRTC portal path).
+	GlobalOutputImageCaptureSourceManager uint32 = 8
+	GlobalImageCopyCaptureManager         uint32 = 9
 )
 
 // Client represents a connected Wayland client and its object hierarchy.
@@ -41,6 +46,8 @@ type Client struct {
 
 	pointerID  uint32
 	keyboardID uint32
+
+	capture *CaptureState
 }
 
 func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
@@ -57,6 +64,7 @@ func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
 	}
 	// Object ID 1 is always the wl_display singleton
 	c.registerObject(1, ObjDisplay)
+	c.capture = newCaptureState()
 	return c
 }
 
@@ -94,6 +102,24 @@ func (c *Client) unregisterObject(id uint32) {
 			return
 		}
 	}
+}
+
+func (c *Client) findBuffer(id uint32) (ShmBuffer, bool) {
+	for i := range c.buffers {
+		if c.buffers[i].ID == id {
+			return c.buffers[i], true
+		}
+	}
+	return ShmBuffer{}, false
+}
+
+func (c *Client) findPool(id uint32) (*ShmPool, bool) {
+	for i := range c.pools {
+		if c.pools[i].ID == id {
+			return &c.pools[i], true
+		}
+	}
+	return nil, false
 }
 
 func (c *Client) findObject(id uint32) (ObjectType, bool) {
@@ -188,6 +214,18 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 		return wayland.DispatchWlDataSource(r, hdr, c)
 	case ObjRegion:
 		return wayland.DispatchWlRegion(r, hdr, c)
+	case ObjCaptureSourceManagerOutput:
+		return capture.DispatchExtOutputImageCaptureSourceManagerV1(r, hdr, c)
+	case ObjImageCopyCaptureManager:
+		return capture.DispatchExtImageCopyCaptureManagerV1(r, hdr, c)
+	case ObjCaptureSourceManagerToplevel:
+		return capture.DispatchExtForeignToplevelImageCaptureSourceManagerV1(r, hdr, c)
+	case ObjCaptureSource:
+		return capture.DispatchExtImageCaptureSourceV1(r, hdr, c)
+	case ObjCaptureSession:
+		return capture.DispatchExtImageCopyCaptureSessionV1(r, hdr, c)
+	case ObjCaptureFrame:
+		return capture.DispatchExtImageCopyCaptureFrameV1(r, hdr, c)
 	default:
 		return fmt.Errorf("no dispatcher for object type %d (id %d)", objType, hdr.ObjectID)
 	}
@@ -266,6 +304,10 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		c.registerObject(id, ObjSubcompositor)
 	case GlobalDataDeviceManager:
 		c.registerObject(id, ObjDataDeviceManager)
+	case GlobalOutputImageCaptureSourceManager:
+		c.registerObject(id, ObjCaptureSourceManagerOutput)
+	case GlobalImageCopyCaptureManager:
+		c.registerObject(id, ObjImageCopyCaptureManager)
 	default:
 		return fmt.Errorf("unknown global name %d (iface %s)", name, ifaceName)
 	}
@@ -326,7 +368,9 @@ func (c *Client) HandleWlShmCreatePool(senderID uint32, id uint32, fd int, size 
 		return fmt.Errorf("invalid pool size: %d", size)
 	}
 
-	data, err := unix.Mmap(fd, 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
+	// PROT_WRITE required: the compositor writes into client pools both for
+	// surface rendering and for capture (ext-image-copy-capture) buffers.
+	data, err := unix.Mmap(fd, 0, int(size), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
 		_ = unix.Close(fd)
 		return fmt.Errorf("mmap failed for pool %d: %w", id, err)

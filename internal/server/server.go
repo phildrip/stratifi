@@ -22,6 +22,8 @@ type Server struct {
 
 	keymapFD   int
 	keymapSize uint32
+
+	captureGrabber FrameGrabber
 }
 
 // NewServer creates a new Wayland server listening on the specified socket name.
@@ -62,6 +64,13 @@ func (s *Server) SetOnToplevel(fn func(c *Client, toplevel *XdgToplevel, xdgSurf
 // SetOnClientDestroy registers a callback invoked when a client disconnects.
 func (s *Server) SetOnClientDestroy(fn func(clientID uint32)) {
 	s.onClientDestroy = fn
+}
+
+// CountClients returns the number of currently connected clients.
+func (s *Server) CountClients() int {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	return len(s.clients)
 }
 
 // GetClient retrieves an active client by its ID.

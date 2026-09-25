@@ -181,12 +181,12 @@ func TestServerClientRoundTrip(t *testing.T) {
 
 	// 8. Create buffer (wl_shm_pool.create_buffer, opcode 0)
 	start = w.BeginMessage(7, 0)
-	_ = w.WriteUint32(8)                                         // buffer_id = 8
-	_ = w.WriteInt32(0)                                          // offset = 0
-	_ = w.WriteInt32(64)                                         // width = 64
-	_ = w.WriteInt32(64)                                         // height = 64
-	_ = w.WriteInt32(64 * 4)                                     // stride = 256
-	_ = w.WriteUint32(uint32(wayland.WlShmFormatArgb8888))       // format
+	_ = w.WriteUint32(8)                                   // buffer_id = 8
+	_ = w.WriteInt32(0)                                    // offset = 0
+	_ = w.WriteInt32(64)                                   // width = 64
+	_ = w.WriteInt32(64)                                   // height = 64
+	_ = w.WriteInt32(64 * 4)                               // stride = 256
+	_ = w.WriteUint32(uint32(wayland.WlShmFormatArgb8888)) // format
 	_ = w.EndMessage(start, 7, 0)
 
 	// 9. Attach buffer to surface (wl_surface.attach, opcode 1)

@@ -31,6 +31,15 @@ const (
 	ObjDataDevice
 	ObjDataSource
 	ObjDataOffer
+
+	// Screen capture protocol objects (ext-image-copy-capture-v1).
+	ObjCaptureSourceManagerOutput
+	ObjCaptureSourceManagerToplevel
+	ObjCaptureSource
+	ObjCaptureSession
+	ObjCaptureFrame
+	ObjCaptureCursorSession
+	ObjImageCopyCaptureManager
 )
 
 // ObjectSlot represents an entry in the client's object lookup table.
