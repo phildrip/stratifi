@@ -216,3 +216,145 @@ func TestServerClientRoundTrip(t *testing.T) {
 		t.Fatalf("timeout waiting for surface commit")
 	}
 }
+
+// TestObjectSlotRecycling verifies that recycling an object ID (such as after delete_id)
+// updates the existing slot and prevents returning obsolete interface types from dispatch.
+func TestObjectSlotRecycling(t *testing.T) {
+	c := &Client{
+		objects: make([]ObjectSlot, 0, 16),
+	}
+
+	// 1. Initial registration (e.g. temporary wl_callback)
+	c.registerObject(49, ObjCallback)
+	objType, found := c.findObject(49)
+	if !found || objType != ObjCallback {
+		t.Fatalf("expected ObjCallback, got %v (found=%v)", objType, found)
+	}
+
+	// 2. Client recycles ID 49 for a new wl_shm_pool
+	c.registerObject(49, ObjShmPool)
+	objType, found = c.findObject(49)
+	if !found || objType != ObjShmPool {
+		t.Fatalf("expected ObjShmPool after recycling, got %v (found=%v)", objType, found)
+	}
+
+	// Verify no duplicate active slots exist for ID 49
+	activeCount := 0
+	for _, slot := range c.objects {
+		if slot.Active && slot.ID == 49 {
+			activeCount++
+		}
+	}
+	if activeCount != 1 {
+		t.Fatalf("expected exactly 1 active slot for ID 49, found %d", activeCount)
+	}
+
+	// 3. Unregister
+	c.unregisterObject(49)
+	_, found = c.findObject(49)
+	if found {
+		t.Fatalf("expected ID 49 to be not found after unregister")
+	}
+}
+
+// TestSurfaceCommitReentrancy verifies that invoking GetSurfaceBuffer inside onCommit
+// does not cause a mutex deadlock.
+func TestSurfaceCommitReentrancy(t *testing.T) {
+	srv := &Server{
+		clients: make(map[uint32]*Client),
+	}
+
+	c := &Client{
+		id:       1,
+		server:   srv,
+		surfaces: make([]Surface, 0, 4),
+		buffers:  make([]ShmBuffer, 0, 4),
+		pools:    make([]ShmPool, 0, 4),
+	}
+	srv.clients[1] = c
+
+	// Register surface ID 3
+	c.surfaces = append(c.surfaces, Surface{
+		ID:     3,
+		Active: true,
+		Pending: SurfaceState{
+			AttachedBufferID: 10,
+		},
+	})
+
+	doneCh := make(chan bool, 1)
+
+	// onCommit callback queries GetSurfaceBuffer on client
+	srv.SetOnCommit(func(s *Surface) {
+		// Must not deadlock acquiring c.mu
+		data, w, h, stride, ok := c.GetSurfaceBuffer(s.ID)
+		_ = data
+		_ = w
+		_ = h
+		_ = stride
+		_ = ok
+		doneCh <- true
+	})
+
+	// Invoke commit
+	if err := c.HandleWlSurfaceCommit(3); err != nil {
+		t.Fatalf("HandleWlSurfaceCommit failed: %v", err)
+	}
+
+	select {
+	case <-doneCh:
+		// Succeeded without deadlock
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("deadlock detected: onCommit callback did not complete")
+	}
+}
+
+// TestClientLifecycleDestroy verifies that onClientDestroy is invoked when a client terminates.
+func TestClientLifecycleDestroy(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bloxwm-destroy-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sockPath := filepath.Join(tempDir, "wayland-destroy-0")
+	srv, err := NewServer(sockPath)
+	if err != nil {
+		t.Fatalf("NewServer failed: %v", err)
+	}
+	defer srv.Close()
+
+	destroyedCh := make(chan uint32, 1)
+	srv.SetOnClientDestroy(func(clientID uint32) {
+		destroyedCh <- clientID
+	})
+
+	go func() {
+		_ = srv.Run()
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	// Connect client
+	addr, err := net.ResolveUnixAddr("unix", sockPath)
+	if err != nil {
+		t.Fatalf("ResolveUnixAddr failed: %v", err)
+	}
+
+	netConn, err := net.DialUnix("unix", nil, addr)
+	if err != nil {
+		t.Fatalf("DialUnix failed: %v", err)
+	}
+
+	// Close client connection immediately to trigger disconnect
+	netConn.Close()
+
+	select {
+	case clientID := <-destroyedCh:
+		if clientID == 0 {
+			t.Fatalf("expected non-zero clientID, got %d", clientID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timeout waiting for onClientDestroy callback")
+	}
+}
