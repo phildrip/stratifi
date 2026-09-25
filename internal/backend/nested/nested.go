@@ -18,6 +18,7 @@ type Callbacks struct {
 	OnPointerButton func(button uint32, state uint32)
 	OnPointerLeave  func()
 	OnKey           func(key uint32, state uint32)
+	OnModifiers     func(depressed, latched, locked, group uint32)
 	OnClose         func()
 }
 
@@ -42,6 +43,7 @@ type Backend struct {
 	xdgWmBaseID  uint32
 	seatID       uint32
 	pointerID    uint32
+	keyboardID   uint32
 	surfaceID    uint32
 	xdgSurfaceID uint32
 	toplevelID   uint32
@@ -231,6 +233,12 @@ func (b *Backend) initProtocol() error {
 		start = b.writer.BeginMessage(b.seatID, 0) // wl_seat.get_pointer
 		_ = b.writer.WriteUint32(b.pointerID)
 		_ = b.writer.EndMessage(start, b.seatID, 0)
+
+		// Get keyboard
+		b.keyboardID = b.allocID()
+		start = b.writer.BeginMessage(b.seatID, 1) // wl_seat.get_keyboard
+		_ = b.writer.WriteUint32(b.keyboardID)
+		_ = b.writer.EndMessage(start, b.seatID, 1)
 	}
 
 	// Create surface
@@ -484,6 +492,23 @@ func (b *Backend) RunEventLoop() {
 				_, _ = r.ReadUint32() // surface
 				if b.callbacks.OnPointerLeave != nil {
 					b.callbacks.OnPointerLeave()
+				}
+			} else if hdr.ObjectID == b.keyboardID && hdr.Opcode == 3 { // wl_keyboard.key
+				_, _ = r.ReadUint32() // serial
+				_, _ = r.ReadUint32() // time
+				key, _ := r.ReadUint32()
+				state, _ := r.ReadUint32()
+				if b.callbacks.OnKey != nil {
+					b.callbacks.OnKey(key, state)
+				}
+			} else if hdr.ObjectID == b.keyboardID && hdr.Opcode == 4 { // wl_keyboard.modifiers
+				_, _ = r.ReadUint32() // serial
+				depressed, _ := r.ReadUint32()
+				latched, _ := r.ReadUint32()
+				locked, _ := r.ReadUint32()
+				group, _ := r.ReadUint32()
+				if b.callbacks.OnModifiers != nil {
+					b.callbacks.OnModifiers(depressed, latched, locked, group)
 				}
 			} else if hdr.ObjectID == b.toplevelID && hdr.Opcode == 1 { // xdg_toplevel.close
 				if b.callbacks.OnClose != nil {

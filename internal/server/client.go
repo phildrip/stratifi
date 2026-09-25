@@ -38,6 +38,9 @@ type Client struct {
 
 	serial atomic.Uint32
 	closed bool
+
+	pointerID  uint32
+	keyboardID uint32
 }
 
 func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
@@ -749,6 +752,7 @@ func (c *Client) HandleWlSeatGetPointer(senderID uint32, id uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.registerObject(id, ObjPointer)
+	c.pointerID = id
 	return nil
 }
 
@@ -756,6 +760,7 @@ func (c *Client) HandleWlSeatGetKeyboard(senderID uint32, id uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.registerObject(id, ObjKeyboard)
+	c.keyboardID = id
 
 	if c.server.keymapFD >= 0 && c.server.keymapSize > 0 {
 		w := c.conn.WriterRef()
@@ -786,6 +791,9 @@ func (c *Client) HandleWlPointerRelease(senderID uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unregisterObject(senderID)
+	if c.pointerID == senderID {
+		c.pointerID = 0
+	}
 	return nil
 }
 
@@ -795,7 +803,117 @@ func (c *Client) HandleWlKeyboardRelease(senderID uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unregisterObject(senderID)
+	if c.keyboardID == senderID {
+		c.keyboardID = 0
+	}
 	return nil
+}
+
+// SendPointerEnter dispatches wl_pointer.enter to the client.
+func (c *Client) SendPointerEnter(surfaceID uint32, sx, sy float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pointerID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlPointerEnter(w, c.pointerID, serial, surfaceID, wire.ToFixed(sx), wire.ToFixed(sy))
+	_ = wayland.SendWlPointerFrame(w, c.pointerID)
+	_ = c.conn.Flush()
+}
+
+// SendPointerLeave dispatches wl_pointer.leave to the client.
+func (c *Client) SendPointerLeave(surfaceID uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pointerID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlPointerLeave(w, c.pointerID, serial, surfaceID)
+	_ = wayland.SendWlPointerFrame(w, c.pointerID)
+	_ = c.conn.Flush()
+}
+
+// SendPointerMotion dispatches wl_pointer.motion to the client.
+func (c *Client) SendPointerMotion(timeMs uint32, sx, sy float64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pointerID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	_ = wayland.SendWlPointerMotion(w, c.pointerID, timeMs, wire.ToFixed(sx), wire.ToFixed(sy))
+	_ = wayland.SendWlPointerFrame(w, c.pointerID)
+	_ = c.conn.Flush()
+}
+
+// SendPointerButton dispatches wl_pointer.button to the client.
+func (c *Client) SendPointerButton(timeMs uint32, button uint32, state uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pointerID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlPointerButton(w, c.pointerID, serial, timeMs, button, state)
+	_ = wayland.SendWlPointerFrame(w, c.pointerID)
+	_ = c.conn.Flush()
+}
+
+// SendKeyboardEnter dispatches wl_keyboard.enter to the client.
+func (c *Client) SendKeyboardEnter(surfaceID uint32, keys []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyboardID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlKeyboardEnter(w, c.keyboardID, serial, surfaceID, keys)
+	_ = c.conn.Flush()
+}
+
+// SendKeyboardLeave dispatches wl_keyboard.leave to the client.
+func (c *Client) SendKeyboardLeave(surfaceID uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyboardID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlKeyboardLeave(w, c.keyboardID, serial, surfaceID)
+	_ = c.conn.Flush()
+}
+
+// SendKeyboardKey dispatches wl_keyboard.key to the client.
+func (c *Client) SendKeyboardKey(timeMs uint32, key uint32, state uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyboardID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlKeyboardKey(w, c.keyboardID, serial, timeMs, key, state)
+	_ = c.conn.Flush()
+}
+
+// SendKeyboardModifiers dispatches wl_keyboard.modifiers to the client.
+func (c *Client) SendKeyboardModifiers(depressed, latched, locked, group uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyboardID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	serial := c.NextSerial()
+	_ = wayland.SendWlKeyboardModifiers(w, c.keyboardID, serial, depressed, latched, locked, group)
+	_ = c.conn.Flush()
 }
 
 // ConfigureToplevel sends xdg_toplevel.configure and xdg_surface.configure to client.

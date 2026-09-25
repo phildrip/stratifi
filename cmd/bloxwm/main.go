@@ -8,10 +8,12 @@ import (
 	"syscall"
 
 	"bloxwm/internal/backend/nested"
+	"bloxwm/internal/input"
 	"bloxwm/internal/layout"
 	"bloxwm/internal/render"
 	"bloxwm/internal/server"
 	"golang.org/x/sys/unix"
+	"time"
 )
 
 type WindowMapping struct {
@@ -121,23 +123,69 @@ func main() {
 		mu.Unlock()
 	}
 
-	// 2. Initialize Nested Backend connecting to parent Sway
+	// 2. Initialize zero-allocation Input RingBuffer and Router
+	ringBuf := input.NewRingBuffer(2048)
+	var router *input.Router
+
+	router = input.NewRouter(
+		func(x, y float64) (input.WindowInfo, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			hit := engine.HitTest(layout.Point{X: int32(x), Y: int32(y)})
+			if hit.Type != layout.HitNone {
+				if m, ok := windows[hit.WindowID]; ok {
+					return input.WindowInfo{
+						WinID:     m.WinID,
+						ClientID:  m.ClientID,
+						SurfaceID: m.SurfaceID,
+						Rect:      m.Rect,
+					}, true
+				}
+			}
+			return input.WindowInfo{}, false
+		},
+		func(clientID uint32) *server.Client {
+			if srv == nil {
+				return nil
+			}
+			return srv.GetClient(clientID)
+		},
+		func(oldWin, newWin layout.WindowID) {
+			mu.Lock()
+			activeWin = newWin
+			mu.Unlock()
+			redrawAll()
+		},
+	)
+
+	// 3. Initialize Nested Backend connecting to parent Sway
 	cb := nested.Callbacks{
 		OnPointerMotion: func(x, y float64) {
-			mu.Lock()
-			hit := engine.HitTest(layout.Point{X: int32(x), Y: int32(y)})
-			if hit.Type != layout.HitNone && hit.WindowID != activeWin {
-				activeWin = hit.WindowID
-				mu.Unlock()
-				redrawAll()
-				return
-			}
-			mu.Unlock()
+			ringBuf.Push(input.InputEvent{
+				Type:     input.EventPointerMotionAbsolute,
+				TimeUsec: uint64(time.Now().UnixMicro()),
+				X:        x,
+				Y:        y,
+			})
 		},
 		OnPointerButton: func(button, state uint32) {
-			if state == 1 { // Button press
-				redrawAll()
-			}
+			ringBuf.Push(input.InputEvent{
+				Type:     input.EventPointerButton,
+				TimeUsec: uint64(time.Now().UnixMicro()),
+				Code:     button,
+				State:    state,
+			})
+		},
+		OnKey: func(key, state uint32) {
+			ringBuf.Push(input.InputEvent{
+				Type:     input.EventKey,
+				TimeUsec: uint64(time.Now().UnixMicro()),
+				Code:     key,
+				State:    state,
+			})
+		},
+		OnModifiers: func(depressed, latched, locked, group uint32) {
+			router.HandleKeyboardModifiers(depressed, latched, locked, group)
 		},
 		OnClose: func() {
 			fmt.Println("[*] Parent window closed. Exiting.")
@@ -155,10 +203,25 @@ func main() {
 
 	go backend.RunEventLoop()
 
+	// 4. Start high-throughput Input Consumer Loop
+	go func() {
+		var batch [32]input.InputEvent
+		for {
+			n := ringBuf.Drain(batch[:])
+			if n == 0 {
+				time.Sleep(1 * time.Millisecond)
+				continue
+			}
+			for i := 0; i < n; i++ {
+				router.ProcessEvent(batch[i])
+			}
+		}
+	}()
+
 	// Initial screen paint
 	redrawAll()
 
-	// 3. Initialize bloxwm Wayland Server
+	// 5. Initialize bloxwm Wayland Server
 	socketName := "wayland-blox-0"
 	srv, err = server.NewServer(socketName)
 	if err != nil {
