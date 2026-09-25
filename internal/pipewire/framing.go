@@ -17,9 +17,10 @@ const HeaderSize = 16
 // Header is a decoded pw native message header.
 type Header struct {
 	ID     uint32 // object/resource id
-	Opcode uint32
-	Size   uint32 // pod byte span (header+body, 8-aligned)
-	Seq    uint32
+	Opcode uint32 // top byte of word 2
+	Size   uint32 // body byte span (low 24 bits of word 2)
+	Seq    uint32 // word 3
+	NFDs   uint32 // ancillary fd count (word 4)
 }
 
 // ErrShortHeader reports a truncated message header.
@@ -28,17 +29,25 @@ var ErrShortHeader = fmt.Errorf("pipewire: message shorter than header")
 // ErrBodyOverrun reports a declared body size larger than the buffer.
 var ErrBodyOverrun = fmt.Errorf("pipewire: declared body overruns buffer")
 
-// DecodeHeader parses the 16-byte header at buf[0]. It returns the header
-// and the total packet span (header + size).
+// DecodeHeader parses the 16-byte header at buf[0] (protocol v3):
+//
+//	word0: object id
+//	word1: opcode in the top byte, body size in the low 24 bits
+//	word2: message seq
+//	word3: ancillary fd count
+//
+// It returns the header and the total packet span (header + body size).
 func DecodeHeader(buf []byte) (Header, int, error) {
 	if len(buf) < HeaderSize {
 		return Header{}, 0, ErrShortHeader
 	}
+	w1 := leU32(buf[4:8])
 	h := Header{
 		ID:     leU32(buf[0:4]),
-		Opcode: leU32(buf[4:8]),
-		Size:   leU32(buf[8:12]),
-		Seq:    leU32(buf[12:16]),
+		Opcode: w1 >> 24,
+		Size:   w1 & 0xffffff,
+		Seq:    leU32(buf[8:12]),
+		NFDs:   leU32(buf[12:16]),
 	}
 	if int(h.Size) > len(buf)-HeaderSize {
 		return h, 0, ErrBodyOverrun
@@ -78,19 +87,18 @@ func (w *Writer) Begin(id, opcode uint32) {
 	w.seq++
 	w.buf = append(w.buf,
 		byte(id), byte(id>>8), byte(id>>16), byte(id>>24),
-		byte(opcode), byte(opcode>>8), byte(opcode>>16), byte(opcode>>24),
-		0, 0, 0, 0,
+		0, 0, 0, byte(opcode), // opcode in top byte, size patched by Finish
 		byte(w.seq), byte(w.seq>>8), byte(w.seq>>16), byte(w.seq>>24),
+		0, 0, 0, 0, // fd count (set with message body)
 	)
 }
 
-// Finish patches the size placeholder to the body span.
+// Finish patches the size (low 24 bits of word 2) to the body span.
 func (w *Writer) Finish() {
 	size := len(w.buf) - HeaderSize
-	w.buf[8] = byte(size)
-	w.buf[9] = byte(size >> 8)
-	w.buf[10] = byte(size >> 16)
-	w.buf[11] = byte(size >> 24)
+	w.buf[4] = byte(size)
+	w.buf[5] = byte(size >> 8)
+	w.buf[6] = byte(size >> 16)
 }
 
 // PutU32 appends a little-endian uint32 to the body.

@@ -24,6 +24,9 @@ func TestHeaderRoundTrip(t *testing.T) {
 	if h.ID != 7 || h.Opcode != 3 {
 		t.Errorf("header id/op = %d/%d", h.ID, h.Opcode)
 	}
+	if h.NFDs != 0 {
+		t.Errorf("n_fds = %d, want 0", h.NFDs)
+	}
 	if total != len(buf) {
 		t.Errorf("total = %d, want %d", total, len(buf))
 	}
@@ -76,14 +79,14 @@ func TestSeqIncrements(t *testing.T) {
 	w.Begin(1, 2)
 	w.Finish()
 
-	if got := leU32(w.Bytes()[12:16]); got != 1 {
-		t.Errorf("first seq = %d", got)
+	if h0, _, _ := DecodeHeader(w.Bytes()); h0.Seq != 1 {
+		t.Errorf("first seq = %d", h0.Seq)
 	}
-	if got := leU32(w.Bytes()[HeaderSize+12 : HeaderSize+16]); got != 2 {
-		t.Errorf("second seq = %d", got)
+	if h1, _, _ := DecodeHeader(w.Bytes()[HeaderSize:]); h1.Seq != 2 {
+		t.Errorf("second seq = %d", h1.Seq)
 	}
-	if got := leU32(w.Bytes()[2*HeaderSize+12 : 2*HeaderSize+16]); got != 3 {
-		t.Errorf("third seq = %d", got)
+	if h2, _, _ := DecodeHeader(w.Bytes()[2*HeaderSize:]); h2.Seq != 3 {
+		t.Errorf("third seq = %d", h2.Seq)
 	}
 }
 
@@ -109,7 +112,7 @@ func TestShortHeaderErrors(t *testing.T) {
 		t.Error("expected ErrShortHeader")
 	}
 	full := make([]byte, 32)
-	full[8] = 0x20 // size 32 > available 16
+	full[4] = 0x20 // size in low 24 bits of word 1
 	if _, _, err := DecodeHeader(full); err == nil {
 		t.Error("expected ErrBodyOverrun")
 	}
