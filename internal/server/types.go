@@ -21,6 +21,16 @@ const (
 	ObjXdgWmBase
 	ObjXdgSurface
 	ObjXdgToplevel
+	ObjOutput
+	ObjSeat
+	ObjPointer
+	ObjKeyboard
+	ObjSubcompositor
+	ObjSubsurface
+	ObjDataDeviceManager
+	ObjDataDevice
+	ObjDataSource
+	ObjDataOffer
 )
 
 // ObjectSlot represents an entry in the client's object lookup table.

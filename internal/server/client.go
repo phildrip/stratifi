@@ -15,7 +15,11 @@ import (
 const (
 	GlobalCompositor uint32 = 1
 	GlobalShm        uint32 = 2
-	GlobalXdgWmBase   uint32 = 3
+	GlobalXdgWmBase  uint32 = 3
+	GlobalOutput     uint32 = 4
+	GlobalSeat       uint32 = 5
+	GlobalSubcompositor uint32 = 6
+	GlobalDataDeviceManager uint32 = 7
 )
 
 // Client represents a connected Wayland client and its object hierarchy.
@@ -53,12 +57,24 @@ func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
 	return c
 }
 
+// ID returns the unique numeric identifier for this client.
+func (c *Client) ID() uint32 {
+	return c.id
+}
+
 // NextSerial returns a monotonically increasing serial number for events.
 func (c *Client) NextSerial() uint32 {
 	return c.serial.Add(1)
 }
 
 func (c *Client) registerObject(id uint32, t ObjectType) {
+	for i := range c.objects {
+		if c.objects[i].ID == id {
+			c.objects[i].Type = t
+			c.objects[i].Active = true
+			return
+		}
+	}
 	for i := range c.objects {
 		if !c.objects[i].Active {
 			c.objects[i] = ObjectSlot{ID: id, Type: t, Active: true}
@@ -91,10 +107,12 @@ func (c *Client) Run() error {
 	defer c.Close()
 
 	for {
+		fmt.Printf("[CLIENT %d] waiting for next ReadMsg...\n", c.id)
 		reader, err := c.conn.ReadMsg()
 		if err != nil {
 			return err
 		}
+		fmt.Printf("[CLIENT %d] ReadMsg got %d bytes\n", c.id, reader.Remaining())
 
 		// A single read may contain multiple back-to-back Wayland messages
 		for reader.Remaining() >= wire.HeaderSize {
@@ -124,6 +142,7 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 	if !found {
 		return fmt.Errorf("unknown object ID %d (opcode %d)", hdr.ObjectID, hdr.Opcode)
 	}
+	fmt.Printf("[SERVER DISPATCH] obj=%d op=%d (type=%d)\n", hdr.ObjectID, hdr.Opcode, objType)
 
 	switch objType {
 	case ObjDisplay:
@@ -146,6 +165,26 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 		return xdgshell.DispatchXdgSurface(r, hdr, c)
 	case ObjXdgToplevel:
 		return xdgshell.DispatchXdgToplevel(r, hdr, c)
+	case ObjOutput:
+		return wayland.DispatchWlOutput(r, hdr, c)
+	case ObjSeat:
+		return wayland.DispatchWlSeat(r, hdr, c)
+	case ObjPointer:
+		return wayland.DispatchWlPointer(r, hdr, c)
+	case ObjKeyboard:
+		return wayland.DispatchWlKeyboard(r, hdr, c)
+	case ObjSubcompositor:
+		return wayland.DispatchWlSubcompositor(r, hdr, c)
+	case ObjSubsurface:
+		return wayland.DispatchWlSubsurface(r, hdr, c)
+	case ObjDataDeviceManager:
+		return wayland.DispatchWlDataDeviceManager(r, hdr, c)
+	case ObjDataDevice:
+		return wayland.DispatchWlDataDevice(r, hdr, c)
+	case ObjDataSource:
+		return wayland.DispatchWlDataSource(r, hdr, c)
+	case ObjRegion:
+		return wayland.DispatchWlRegion(r, hdr, c)
 	default:
 		return fmt.Errorf("no dispatcher for object type %d (id %d)", objType, hdr.ObjectID)
 	}
@@ -154,6 +193,7 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 // --- WlDisplayHandler ---
 
 func (c *Client) HandleWlDisplaySync(senderID uint32, callback uint32) error {
+	fmt.Printf("[+] HandleWlDisplaySync: callback=%d\n", callback)
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	if err := wayland.SendWlCallbackDone(w, callback, serial); err != nil {
@@ -175,7 +215,19 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalShm, "wl_shm", 1); err != nil {
 		return err
 	}
-	return wayland.SendWlRegistryGlobal(w, registryID, GlobalXdgWmBase, "xdg_wm_base", 3)
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalXdgWmBase, "xdg_wm_base", 3); err != nil {
+		return err
+	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutput, "wl_output", 2); err != nil {
+		return err
+	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalSeat, "wl_seat", 5); err != nil {
+		return err
+	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalSubcompositor, "wl_subcompositor", 1); err != nil {
+		return err
+	}
+	return wayland.SendWlRegistryGlobal(w, registryID, GlobalDataDeviceManager, "wl_data_device_manager", 3)
 }
 
 // --- WlRegistryHandler ---
@@ -195,6 +247,22 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		_ = wayland.SendWlShmFormat(w, id, uint32(wayland.WlShmFormatXrgb8888))
 	case GlobalXdgWmBase:
 		c.registerObject(id, ObjXdgWmBase)
+	case GlobalOutput:
+		c.registerObject(id, ObjOutput)
+		w := c.conn.WriterRef()
+		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "bloxwm", "bloxwm-display", 0)
+		_ = wayland.SendWlOutputScale(w, id, 1)
+		_ = wayland.SendWlOutputMode(w, id, 0x3, 960, 640, 60000)
+		_ = wayland.SendWlOutputDone(w, id)
+	case GlobalSeat:
+		c.registerObject(id, ObjSeat)
+		w := c.conn.WriterRef()
+		_ = wayland.SendWlSeatCapabilities(w, id, 3) // Pointer | Keyboard
+		_ = wayland.SendWlSeatName(w, id, "seat0")
+	case GlobalSubcompositor:
+		c.registerObject(id, ObjSubcompositor)
+	case GlobalDataDeviceManager:
+		c.registerObject(id, ObjDataDeviceManager)
 	default:
 		return fmt.Errorf("unknown global name %d (iface %s)", name, ifaceName)
 	}
@@ -227,6 +295,23 @@ func (c *Client) HandleWlCompositorRelease(senderID uint32) error {
 	c.mu.Lock()
 	c.unregisterObject(senderID)
 	c.mu.Unlock()
+	return nil
+}
+
+// --- WlRegionHandler ---
+
+func (c *Client) HandleWlRegionDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleWlRegionAdd(senderID uint32, x int32, y int32, width int32, height int32) error {
+	return nil
+}
+
+func (c *Client) HandleWlRegionSubtract(senderID uint32, x int32, y int32, width int32, height int32) error {
 	return nil
 }
 
@@ -387,10 +472,6 @@ func (c *Client) HandleWlSurfaceDamageBuffer(senderID uint32, x int32, y int32, 
 }
 
 func (c *Client) HandleWlSurfaceFrame(senderID uint32, callback uint32) error {
-	c.mu.Lock()
-	c.registerObject(callback, ObjCallback)
-	c.mu.Unlock()
-
 	w := c.conn.WriterRef()
 	timeMs := uint32(c.NextSerial() * 16)
 	_ = wayland.SendWlCallbackDone(w, callback, timeMs)
@@ -407,7 +488,6 @@ func (c *Client) HandleWlSurfaceSetInputRegion(senderID uint32, region uint32) e
 
 func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	for i := range c.surfaces {
 		if c.surfaces[i].Active && c.surfaces[i].ID == senderID {
@@ -415,11 +495,17 @@ func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 			c.surfaces[i].Current = c.surfaces[i].Pending
 			c.surfaces[i].Pending.HasDamage = false
 
-			// Notify compositor of surface update
-			c.server.onSurfaceCommitted(&c.surfaces[i])
+			surfCopy := c.surfaces[i]
+			c.mu.Unlock()
+
+			// Notify compositor of surface update outside of c.mu
+			if c.server.onCommit != nil {
+				c.server.onSurfaceCommitted(&surfCopy)
+			}
 			return nil
 		}
 	}
+	c.mu.Unlock()
 	return fmt.Errorf("surface %d not found for commit", senderID)
 }
 
@@ -487,7 +573,6 @@ func (c *Client) HandleXdgSurfaceDestroy(senderID uint32) error {
 
 func (c *Client) HandleXdgSurfaceGetToplevel(senderID uint32, id uint32) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	c.registerObject(id, ObjXdgToplevel)
 	c.xdgToplevels = append(c.xdgToplevels, XdgToplevel{
@@ -500,16 +585,25 @@ func (c *Client) HandleXdgSurfaceGetToplevel(senderID uint32, id uint32) error {
 		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == senderID {
 			c.xdgSurfaces[i].ToplevelID = id
 
-			// Send initial configure sequence
+			top := c.xdgToplevels[len(c.xdgToplevels)-1]
+			if c.server.onToplevel != nil {
+				c.mu.Unlock()
+				c.server.onToplevelCreated(c, &top, senderID)
+				return nil
+			}
+
+			// Send default initial configure sequence
 			w := c.conn.WriterRef()
 			_ = xdgshell.SendXdgToplevelConfigure(w, id, 0, 0, nil)
 
 			serial := c.NextSerial()
 			c.xdgSurfaces[i].LastSerial = serial
 			_ = xdgshell.SendXdgSurfaceConfigure(w, senderID, serial)
+			c.mu.Unlock()
 			return nil
 		}
 	}
+	c.mu.Unlock()
 	return fmt.Errorf("xdg_surface %d not found for get_toplevel", senderID)
 }
 
@@ -637,6 +731,264 @@ func (c *Client) HandleXdgToplevelUnsetFullscreen(senderID uint32) error {
 }
 
 func (c *Client) HandleXdgToplevelSetMinimized(senderID uint32) error {
+	return nil
+}
+
+// --- WlOutputHandler ---
+
+func (c *Client) HandleWlOutputRelease(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// --- WlSeatHandler ---
+
+func (c *Client) HandleWlSeatGetPointer(senderID uint32, id uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjPointer)
+	return nil
+}
+
+func (c *Client) HandleWlSeatGetKeyboard(senderID uint32, id uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjKeyboard)
+
+	if c.server.keymapFD >= 0 && c.server.keymapSize > 0 {
+		w := c.conn.WriterRef()
+		_ = wayland.SendWlKeyboardKeymap(w, id, 1, c.server.keymapFD, c.server.keymapSize)
+		_ = wayland.SendWlKeyboardRepeatInfo(w, id, 25, 400)
+	}
+	return nil
+}
+
+func (c *Client) HandleWlSeatGetTouch(senderID uint32, id uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlSeatRelease(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// --- WlPointerHandler ---
+
+func (c *Client) HandleWlPointerSetCursor(senderID uint32, serial uint32, surface uint32, hotspotX int32, hotspotY int32) error {
+	return nil
+}
+
+func (c *Client) HandleWlPointerRelease(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// --- WlKeyboardHandler ---
+
+func (c *Client) HandleWlKeyboardRelease(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// ConfigureToplevel sends xdg_toplevel.configure and xdg_surface.configure to client.
+func (c *Client) ConfigureToplevel(xdgSurfaceID uint32, toplevelID uint32, width, height int32, states []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	w := c.conn.WriterRef()
+	_ = xdgshell.SendXdgToplevelConfigure(w, toplevelID, width, height, states)
+	serial := c.NextSerial()
+	for i := range c.xdgSurfaces {
+		if c.xdgSurfaces[i].ID == xdgSurfaceID {
+			c.xdgSurfaces[i].LastSerial = serial
+			break
+		}
+	}
+	_ = xdgshell.SendXdgSurfaceConfigure(w, xdgSurfaceID, serial)
+	_ = c.conn.Flush()
+}
+
+// GetSurfaceBuffer returns the raw mapped pixel slice and dimensions for the surface's current attached buffer.
+func (c *Client) GetSurfaceBuffer(surfaceID uint32) (data []byte, width, height, stride int32, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var bufID uint32
+	for i := range c.surfaces {
+		if c.surfaces[i].Active && c.surfaces[i].ID == surfaceID {
+			bufID = c.surfaces[i].Current.AttachedBufferID
+			break
+		}
+	}
+	if bufID == 0 {
+		return nil, 0, 0, 0, false
+	}
+
+	var buf *ShmBuffer
+	for i := range c.buffers {
+		if c.buffers[i].ID == bufID {
+			buf = &c.buffers[i]
+			break
+		}
+	}
+	if buf == nil {
+		return nil, 0, 0, 0, false
+	}
+
+	for i := range c.pools {
+		if c.pools[i].ID == buf.PoolID {
+			pool := &c.pools[i]
+			start := int(buf.Offset)
+			end := start + int(buf.Stride*buf.Height)
+			if start >= 0 && end <= len(pool.Data) {
+				return pool.Data[start:end], buf.Width, buf.Height, buf.Stride, true
+			}
+			break
+		}
+	}
+
+	return nil, 0, 0, 0, false
+}
+
+// ReleaseSurfaceBuffer sends wl_buffer.release to the currently attached buffer.
+func (c *Client) ReleaseSurfaceBuffer(surfaceID uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var bufID uint32
+	for i := range c.surfaces {
+		if c.surfaces[i].Active && c.surfaces[i].ID == surfaceID {
+			bufID = c.surfaces[i].Current.AttachedBufferID
+			break
+		}
+	}
+	if bufID == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	_ = wayland.SendWlBufferRelease(w, bufID)
+}
+
+// GetSurfaceIDForXdgSurface returns the underlying wl_surface ID for an xdg_surface ID.
+func (c *Client) GetSurfaceIDForXdgSurface(xdgSurfaceID uint32) uint32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.xdgSurfaces {
+		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == xdgSurfaceID {
+			return c.xdgSurfaces[i].SurfaceID
+		}
+	}
+	return 0
+}
+
+// --- WlSubcompositorHandler ---
+
+func (c *Client) HandleWlSubcompositorDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleWlSubcompositorGetSubsurface(senderID uint32, id uint32, surface uint32, parent uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjSubsurface)
+	return nil
+}
+
+// --- WlSubsurfaceHandler ---
+
+func (c *Client) HandleWlSubsurfaceDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleWlSubsurfaceSetPosition(senderID uint32, x int32, y int32) error {
+	return nil
+}
+
+func (c *Client) HandleWlSubsurfacePlaceAbove(senderID uint32, sibling uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlSubsurfacePlaceBelow(senderID uint32, sibling uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlSubsurfaceSetSync(senderID uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlSubsurfaceSetDesync(senderID uint32) error {
+	return nil
+}
+
+// --- WlDataDeviceManagerHandler ---
+
+func (c *Client) HandleWlDataDeviceManagerCreateDataSource(senderID uint32, id uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjDataSource)
+	return nil
+}
+
+func (c *Client) HandleWlDataDeviceManagerGetDataDevice(senderID uint32, id uint32, seat uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjDataDevice)
+	return nil
+}
+
+func (c *Client) HandleWlDataDeviceManagerRelease(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// --- WlDataDeviceHandler ---
+
+func (c *Client) HandleWlDataDeviceStartDrag(senderID uint32, source uint32, origin uint32, icon uint32, serial uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlDataDeviceSetSelection(senderID uint32, source uint32, serial uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlDataDeviceRelease(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// --- WlDataSourceHandler ---
+
+func (c *Client) HandleWlDataSourceOffer(senderID uint32, mimeType string) error {
+	return nil
+}
+
+func (c *Client) HandleWlDataSourceDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleWlDataSourceSetActions(senderID uint32, dndActions uint32) error {
 	return nil
 }
 

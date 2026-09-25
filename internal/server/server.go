@@ -15,8 +15,13 @@ type Server struct {
 	clientMu   sync.RWMutex
 	nextClient atomic.Uint32
 
-	onCommit func(s *Surface)
-	closed   atomic.Bool
+	onCommit        func(s *Surface)
+	onToplevel      func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	onClientDestroy func(clientID uint32)
+	closed          atomic.Bool
+
+	keymapFD   int
+	keymapSize uint32
 }
 
 // NewServer creates a new Wayland server listening on the specified socket name.
@@ -29,7 +34,14 @@ func NewServer(socketName string) (*Server, error) {
 	return &Server{
 		wireServer: ws,
 		clients:    make(map[uint32]*Client),
+		keymapFD:   -1,
 	}, nil
+}
+
+// SetKeymap configures the shared keymap FD and size distributed to clients via wl_keyboard.
+func (s *Server) SetKeymap(fd int, size uint32) {
+	s.keymapFD = fd
+	s.keymapSize = size
 }
 
 // SocketPath returns the active filesystem path of the Wayland socket.
@@ -42,9 +54,32 @@ func (s *Server) SetOnCommit(fn func(s *Surface)) {
 	s.onCommit = fn
 }
 
+// SetOnToplevel registers a callback invoked whenever a client requests a toplevel window.
+func (s *Server) SetOnToplevel(fn func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)) {
+	s.onToplevel = fn
+}
+
+// SetOnClientDestroy registers a callback invoked when a client disconnects.
+func (s *Server) SetOnClientDestroy(fn func(clientID uint32)) {
+	s.onClientDestroy = fn
+}
+
+// GetClient retrieves an active client by its ID.
+func (s *Server) GetClient(clientID uint32) *Client {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	return s.clients[clientID]
+}
+
 func (s *Server) onSurfaceCommitted(surf *Surface) {
 	if s.onCommit != nil {
 		s.onCommit(surf)
+	}
+}
+
+func (s *Server) onToplevelCreated(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32) {
+	if s.onToplevel != nil {
+		s.onToplevel(c, toplevel, xdgSurfaceID)
 	}
 }
 
@@ -67,10 +102,15 @@ func (s *Server) Run() error {
 		s.clientMu.Unlock()
 
 		go func(c *Client, id uint32) {
-			_ = c.Run()
+			if err := c.Run(); err != nil {
+				fmt.Printf("[-] Client %d error: %v\n", id, err)
+			}
 			s.clientMu.Lock()
 			delete(s.clients, id)
 			s.clientMu.Unlock()
+			if s.onClientDestroy != nil {
+				s.onClientDestroy(id)
+			}
 		}(client, clientID)
 	}
 	return nil
