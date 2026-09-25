@@ -22,9 +22,10 @@ type Conn struct {
 	recvFDs   []int
 	nextResID atomicUint32
 
-	CoreID  uint32 // core proxy id (0 for the first core)
-	Version string
-	cookie  uint32
+	CoreID     uint32 // core proxy id (0 for the first core)
+	Version    string
+	cookie     uint32
+	registryID uint32 // bound registry proxy id
 }
 
 // atomicUint32 is a minimal atomic counter without importing sync/atomic
@@ -37,7 +38,12 @@ type atomicUint32 struct {
 func (a *atomicUint32) next() uint32 {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	// Proxy id 1 is reserved for the server's client resource (it carries
+	// client_info events); client-allocated proxies start at 2.
 	a.v++
+	if a.v < 2 {
+		a.v = 2
+	}
 	return a.v
 }
 
@@ -93,6 +99,51 @@ const (
 	CoreMethodCreateObject uint32 = 6
 	CoreMethodDestroy      uint32 = 7
 )
+
+// Client method opcodes (pw/client.h).
+const (
+	ClientMethodUpdateProperties uint32 = 2
+)
+
+// UpdateClientProperties announces the compositor's identity on the client
+// proxy (PW_ID_CLIENT=1). The access module grants registry permissions on
+// this update — without it get_registry returns zero globals.
+func (c *Conn) UpdateClientProperties() error {
+	var b spa.Builder
+	b.Reserve(256)
+	b.BeginStruct() // outer struct {dict}
+	b.BeginStruct() // dict
+	b.Int(6)        // n_items
+	b.String("application.name")
+	b.String("bloxwm")
+	b.String("application.process.binary")
+	b.String("bloxwm")
+	b.String("application.process.user")
+	b.String("phil")
+	b.String("application.process.host")
+	b.String("bloxwm-desktop")
+	b.String("application.language")
+	b.String("en_GB.UTF-8")
+	b.String("core.name")
+	b.String("pipewire-0")
+	b.End()
+	b.End()
+
+	var w Writer
+	var fdSlots [4]int
+	w.Init(make([]byte, 0, 512), &fdSlots)
+	w.Begin(PWIDClient, ClientMethodUpdateProperties)
+	w.PutBytes(b.Bytes())
+	w.Finish()
+
+	if _, err := c.nc.Write(w.Bytes()); err != nil {
+		return fmt.Errorf("pipewire: client update: %w", err)
+	}
+	return nil
+}
+
+// PWIDClient is the client's own proxy id (PW_ID_CLIENT).
+const PWIDClient uint32 = 1
 
 // Hello performs the version handshake: Struct{Int(PW_VERSION_CORE)}.
 func (c *Conn) Hello() error {
