@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "bloxwm",
+  "project_id": "0d4be00e-6709-4ed3-a0b6-ace87cd56c1b"
+}
