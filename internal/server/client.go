@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"bloxwm/internal/protocol/wayland"
+	"bloxwm/internal/protocol/xdgshell"
 	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
 )
@@ -23,11 +24,13 @@ type Client struct {
 	conn   *wire.Conn
 	server *Server
 
-	mu       sync.Mutex
-	objects  []ObjectSlot
-	pools    []ShmPool
-	buffers  []ShmBuffer
-	surfaces []Surface
+	mu           sync.Mutex
+	objects      []ObjectSlot
+	pools        []ShmPool
+	buffers      []ShmBuffer
+	surfaces     []Surface
+	xdgSurfaces  []XdgSurface
+	xdgToplevels []XdgToplevel
 
 	serial atomic.Uint32
 	closed bool
@@ -35,13 +38,15 @@ type Client struct {
 
 func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
 	c := &Client{
-		id:       id,
-		conn:     conn,
-		server:   s,
-		objects:  make([]ObjectSlot, 0, 64),
-		pools:    make([]ShmPool, 0, 16),
-		buffers:  make([]ShmBuffer, 0, 32),
-		surfaces: make([]Surface, 0, 16),
+		id:           id,
+		conn:         conn,
+		server:       s,
+		objects:      make([]ObjectSlot, 0, 64),
+		pools:        make([]ShmPool, 0, 16),
+		buffers:      make([]ShmBuffer, 0, 32),
+		surfaces:     make([]Surface, 0, 16),
+		xdgSurfaces:  make([]XdgSurface, 0, 16),
+		xdgToplevels: make([]XdgToplevel, 0, 16),
 	}
 	// Object ID 1 is always the wl_display singleton
 	c.registerObject(1, ObjDisplay)
@@ -135,6 +140,12 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 		return wayland.DispatchWlSurface(r, hdr, c)
 	case ObjBuffer:
 		return wayland.DispatchWlBuffer(r, hdr, c)
+	case ObjXdgWmBase:
+		return xdgshell.DispatchXdgWmBase(r, hdr, c)
+	case ObjXdgSurface:
+		return xdgshell.DispatchXdgSurface(r, hdr, c)
+	case ObjXdgToplevel:
+		return xdgshell.DispatchXdgToplevel(r, hdr, c)
 	default:
 		return fmt.Errorf("no dispatcher for object type %d (id %d)", objType, hdr.ObjectID)
 	}
@@ -142,7 +153,7 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 
 // --- WlDisplayHandler ---
 
-func (c *Client) HandleSync(senderID uint32, callback uint32) error {
+func (c *Client) HandleWlDisplaySync(senderID uint32, callback uint32) error {
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	if err := wayland.SendWlCallbackDone(w, callback, serial); err != nil {
@@ -151,7 +162,7 @@ func (c *Client) HandleSync(senderID uint32, callback uint32) error {
 	return wayland.SendWlDisplayDeleteId(w, 1, callback)
 }
 
-func (c *Client) HandleGetRegistry(senderID uint32, registryID uint32) error {
+func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) error {
 	c.mu.Lock()
 	c.registerObject(registryID, ObjRegistry)
 	c.mu.Unlock()
@@ -169,7 +180,7 @@ func (c *Client) HandleGetRegistry(senderID uint32, registryID uint32) error {
 
 // --- WlRegistryHandler ---
 
-func (c *Client) HandleBind(senderID uint32, name uint32, ifaceName string, version uint32, id uint32) error {
+func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName string, version uint32, id uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -192,7 +203,7 @@ func (c *Client) HandleBind(senderID uint32, name uint32, ifaceName string, vers
 
 // --- WlCompositorHandler ---
 
-func (c *Client) HandleCreateSurface(senderID uint32, id uint32) error {
+func (c *Client) HandleWlCompositorCreateSurface(senderID uint32, id uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -205,14 +216,14 @@ func (c *Client) HandleCreateSurface(senderID uint32, id uint32) error {
 	return nil
 }
 
-func (c *Client) HandleCreateRegion(senderID uint32, id uint32) error {
+func (c *Client) HandleWlCompositorCreateRegion(senderID uint32, id uint32) error {
 	c.mu.Lock()
 	c.registerObject(id, ObjRegion)
 	c.mu.Unlock()
 	return nil
 }
 
-func (c *Client) HandleRelease(senderID uint32) error {
+func (c *Client) HandleWlCompositorRelease(senderID uint32) error {
 	c.mu.Lock()
 	c.unregisterObject(senderID)
 	c.mu.Unlock()
@@ -221,7 +232,7 @@ func (c *Client) HandleRelease(senderID uint32) error {
 
 // --- WlShmHandler ---
 
-func (c *Client) HandleCreatePool(senderID uint32, id uint32, fd int, size int32) error {
+func (c *Client) HandleWlShmCreatePool(senderID uint32, id uint32, fd int, size int32) error {
 	if size <= 0 {
 		_ = unix.Close(fd)
 		return fmt.Errorf("invalid pool size: %d", size)
@@ -246,9 +257,16 @@ func (c *Client) HandleCreatePool(senderID uint32, id uint32, fd int, size int32
 	return nil
 }
 
-// --- WlShmPoolHandler & WlBufferHandler & WlSurfaceHandler ---
+func (c *Client) HandleWlShmRelease(senderID uint32) error {
+	c.mu.Lock()
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	return nil
+}
 
-func (c *Client) HandleCreateBuffer(senderID uint32, id uint32, offset int32, width int32, height int32, stride int32, format uint32) error {
+// --- WlShmPoolHandler ---
+
+func (c *Client) HandleWlShmPoolCreateBuffer(senderID uint32, id uint32, offset int32, width int32, height int32, stride int32, format uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -266,41 +284,22 @@ func (c *Client) HandleCreateBuffer(senderID uint32, id uint32, offset int32, wi
 	return nil
 }
 
-func (c *Client) HandleDestroy(senderID uint32) error {
+func (c *Client) HandleWlShmPoolDestroy(senderID uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.unregisterObject(senderID)
-
-	// Clean up if it was a pool
 	for i := range c.pools {
 		if c.pools[i].ID == senderID {
 			_ = c.pools[i].Close()
 			c.pools = append(c.pools[:i], c.pools[i+1:]...)
-			return nil
+			break
 		}
 	}
-
-	// Clean up if it was a buffer
-	for i := range c.buffers {
-		if c.buffers[i].ID == senderID {
-			c.buffers = append(c.buffers[:i], c.buffers[i+1:]...)
-			return nil
-		}
-	}
-
-	// Clean up if it was a surface
-	for i := range c.surfaces {
-		if c.surfaces[i].ID == senderID {
-			c.surfaces[i].Active = false
-			return nil
-		}
-	}
-
 	return nil
 }
 
-func (c *Client) HandleResize(senderID uint32, size int32) error {
+func (c *Client) HandleWlShmPoolResize(senderID uint32, size int32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -319,9 +318,39 @@ func (c *Client) HandleResize(senderID uint32, size int32) error {
 	return fmt.Errorf("pool %d not found for resize", senderID)
 }
 
+// --- WlBufferHandler ---
+
+func (c *Client) HandleWlBufferDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.unregisterObject(senderID)
+	for i := range c.buffers {
+		if c.buffers[i].ID == senderID {
+			c.buffers = append(c.buffers[:i], c.buffers[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 // --- WlSurfaceHandler ---
 
-func (c *Client) HandleAttach(senderID uint32, buffer uint32, x int32, y int32) error {
+func (c *Client) HandleWlSurfaceDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.unregisterObject(senderID)
+	for i := range c.surfaces {
+		if c.surfaces[i].ID == senderID {
+			c.surfaces[i].Active = false
+			break
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleWlSurfaceAttach(senderID uint32, buffer uint32, x int32, y int32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -336,7 +365,7 @@ func (c *Client) HandleAttach(senderID uint32, buffer uint32, x int32, y int32) 
 	return fmt.Errorf("surface %d not found for attach", senderID)
 }
 
-func (c *Client) HandleDamage(senderID uint32, x int32, y int32, width int32, height int32) error {
+func (c *Client) HandleWlSurfaceDamage(senderID uint32, x int32, y int32, width int32, height int32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -353,11 +382,11 @@ func (c *Client) HandleDamage(senderID uint32, x int32, y int32, width int32, he
 	return fmt.Errorf("surface %d not found for damage", senderID)
 }
 
-func (c *Client) HandleDamageBuffer(senderID uint32, x int32, y int32, width int32, height int32) error {
-	return c.HandleDamage(senderID, x, y, width, height)
+func (c *Client) HandleWlSurfaceDamageBuffer(senderID uint32, x int32, y int32, width int32, height int32) error {
+	return c.HandleWlSurfaceDamage(senderID, x, y, width, height)
 }
 
-func (c *Client) HandleFrame(senderID uint32, callback uint32) error {
+func (c *Client) HandleWlSurfaceFrame(senderID uint32, callback uint32) error {
 	c.mu.Lock()
 	c.registerObject(callback, ObjCallback)
 	c.mu.Unlock()
@@ -368,19 +397,15 @@ func (c *Client) HandleFrame(senderID uint32, callback uint32) error {
 	return wayland.SendWlDisplayDeleteId(w, 1, callback)
 }
 
-func (c *Client) HandleGetRelease(senderID uint32, callback uint32) error {
+func (c *Client) HandleWlSurfaceSetOpaqueRegion(senderID uint32, region uint32) error {
 	return nil
 }
 
-func (c *Client) HandleSetOpaqueRegion(senderID uint32, region uint32) error {
+func (c *Client) HandleWlSurfaceSetInputRegion(senderID uint32, region uint32) error {
 	return nil
 }
 
-func (c *Client) HandleSetInputRegion(senderID uint32, region uint32) error {
-	return nil
-}
-
-func (c *Client) HandleCommit(senderID uint32) error {
+func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -398,15 +423,220 @@ func (c *Client) HandleCommit(senderID uint32) error {
 	return fmt.Errorf("surface %d not found for commit", senderID)
 }
 
-func (c *Client) HandleSetBufferTransform(senderID uint32, transform int32) error {
+func (c *Client) HandleWlSurfaceSetBufferTransform(senderID uint32, transform int32) error {
 	return nil
 }
 
-func (c *Client) HandleSetBufferScale(senderID uint32, scale int32) error {
+func (c *Client) HandleWlSurfaceSetBufferScale(senderID uint32, scale int32) error {
 	return nil
 }
 
-func (c *Client) HandleOffset(senderID uint32, x int32, y int32) error {
+func (c *Client) HandleWlSurfaceOffset(senderID uint32, x int32, y int32) error {
+	return nil
+}
+
+func (c *Client) HandleWlSurfaceGetRelease(senderID uint32, callback uint32) error {
+	return nil
+}
+
+// --- XdgWmBaseHandler ---
+
+func (c *Client) HandleXdgWmBaseDestroy(senderID uint32) error {
+	c.mu.Lock()
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleXdgWmBaseCreatePositioner(senderID uint32, id uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgWmBaseGetXdgSurface(senderID uint32, id uint32, surfaceID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.registerObject(id, ObjXdgSurface)
+	c.xdgSurfaces = append(c.xdgSurfaces, XdgSurface{
+		ID:        id,
+		SurfaceID: surfaceID,
+		Active:    true,
+	})
+	return nil
+}
+
+func (c *Client) HandleXdgWmBasePong(senderID uint32, serial uint32) error {
+	return nil
+}
+
+// --- XdgSurfaceHandler ---
+
+func (c *Client) HandleXdgSurfaceDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.unregisterObject(senderID)
+	for i := range c.xdgSurfaces {
+		if c.xdgSurfaces[i].ID == senderID {
+			c.xdgSurfaces[i].Active = false
+			break
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleXdgSurfaceGetToplevel(senderID uint32, id uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.registerObject(id, ObjXdgToplevel)
+	c.xdgToplevels = append(c.xdgToplevels, XdgToplevel{
+		ID:           id,
+		XdgSurfaceID: senderID,
+		Active:       true,
+	})
+
+	for i := range c.xdgSurfaces {
+		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == senderID {
+			c.xdgSurfaces[i].ToplevelID = id
+
+			// Send initial configure sequence
+			w := c.conn.WriterRef()
+			_ = xdgshell.SendXdgToplevelConfigure(w, id, 0, 0, nil)
+
+			serial := c.NextSerial()
+			c.xdgSurfaces[i].LastSerial = serial
+			_ = xdgshell.SendXdgSurfaceConfigure(w, senderID, serial)
+			return nil
+		}
+	}
+	return fmt.Errorf("xdg_surface %d not found for get_toplevel", senderID)
+}
+
+func (c *Client) HandleXdgSurfaceGetPopup(senderID uint32, id uint32, parent uint32, positioner uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgSurfaceSetWindowGeometry(senderID uint32, x int32, y int32, width int32, height int32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgSurfaceAckConfigure(senderID uint32, serial uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.xdgSurfaces {
+		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == senderID {
+			c.xdgSurfaces[i].Configured = true
+			return nil
+		}
+	}
+	return nil
+}
+
+// --- XdgToplevelHandler ---
+
+func (c *Client) HandleXdgToplevelDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.unregisterObject(senderID)
+	for i := range c.xdgToplevels {
+		if c.xdgToplevels[i].ID == senderID {
+			c.xdgToplevels[i].Active = false
+			break
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetParent(senderID uint32, parent uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetTitle(senderID uint32, title string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.xdgToplevels {
+		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
+			c.xdgToplevels[i].Title = title
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetAppId(senderID uint32, appId string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.xdgToplevels {
+		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
+			c.xdgToplevels[i].AppID = appId
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelShowWindowMenu(senderID uint32, seat uint32, serial uint32, x int32, y int32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelMove(senderID uint32, seat uint32, serial uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelResize(senderID uint32, seat uint32, serial uint32, edges uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetMaxSize(senderID uint32, width int32, height int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.xdgToplevels {
+		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
+			c.xdgToplevels[i].MaxWidth = width
+			c.xdgToplevels[i].MaxHeight = height
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetMinSize(senderID uint32, width int32, height int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.xdgToplevels {
+		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
+			c.xdgToplevels[i].MinWidth = width
+			c.xdgToplevels[i].MinHeight = height
+			return nil
+		}
+	}
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetMaximized(senderID uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelUnsetMaximized(senderID uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetFullscreen(senderID uint32, output uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelUnsetFullscreen(senderID uint32) error {
+	return nil
+}
+
+func (c *Client) HandleXdgToplevelSetMinimized(senderID uint32) error {
 	return nil
 }
 

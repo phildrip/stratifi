@@ -38,23 +38,23 @@ const (
 
 // XdgWmBaseHandler represents the server-side request handler for xdg_wm_base.
 type XdgWmBaseHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleCreatePositioner(senderID uint32, Id uint32) error
-	HandleGetXdgSurface(senderID uint32, Id uint32, Surface uint32) error
-	HandlePong(senderID uint32, Serial uint32) error
+	HandleXdgWmBaseDestroy(senderID uint32) error
+	HandleXdgWmBaseCreatePositioner(senderID uint32, Id uint32) error
+	HandleXdgWmBaseGetXdgSurface(senderID uint32, Id uint32, Surface uint32) error
+	HandleXdgWmBasePong(senderID uint32, Serial uint32) error
 }
 
 // DispatchXdgWmBase decodes incoming requests for xdg_wm_base and calls the handler.
 func DispatchXdgWmBase(r *wire.Reader, hdr wire.Header, h XdgWmBaseHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleXdgWmBaseDestroy(hdr.ObjectID)
 	case 1: // create_positioner
 		argId, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_wm_base.create_positioner.id: %w", err)
 		}
-		return h.HandleCreatePositioner(hdr.ObjectID, argId)
+		return h.HandleXdgWmBaseCreatePositioner(hdr.ObjectID, argId)
 	case 2: // get_xdg_surface
 		argId, err := r.ReadUint32()
 		if err != nil {
@@ -64,13 +64,13 @@ func DispatchXdgWmBase(r *wire.Reader, hdr wire.Header, h XdgWmBaseHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_wm_base.get_xdg_surface.surface: %w", err)
 		}
-		return h.HandleGetXdgSurface(hdr.ObjectID, argId, argSurface)
+		return h.HandleXdgWmBaseGetXdgSurface(hdr.ObjectID, argId, argSurface)
 	case 3: // pong
 		argSerial, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_wm_base.pong.serial: %w", err)
 		}
-		return h.HandlePong(hdr.ObjectID, argSerial)
+		return h.HandleXdgWmBasePong(hdr.ObjectID, argSerial)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface xdg_wm_base", hdr.Opcode)
 	}
@@ -151,23 +151,23 @@ const (
 
 // XdgPositionerHandler represents the server-side request handler for xdg_positioner.
 type XdgPositionerHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleSetSize(senderID uint32, Width int32, Height int32) error
-	HandleSetAnchorRect(senderID uint32, X int32, Y int32, Width int32, Height int32) error
-	HandleSetAnchor(senderID uint32, Anchor uint32) error
-	HandleSetGravity(senderID uint32, Gravity uint32) error
-	HandleSetConstraintAdjustment(senderID uint32, ConstraintAdjustment uint32) error
-	HandleSetOffset(senderID uint32, X int32, Y int32) error
-	HandleSetReactive(senderID uint32) error
-	HandleSetParentSize(senderID uint32, ParentWidth int32, ParentHeight int32) error
-	HandleSetParentConfigure(senderID uint32, Serial uint32) error
+	HandleXdgPositionerDestroy(senderID uint32) error
+	HandleXdgPositionerSetSize(senderID uint32, Width int32, Height int32) error
+	HandleXdgPositionerSetAnchorRect(senderID uint32, X int32, Y int32, Width int32, Height int32) error
+	HandleXdgPositionerSetAnchor(senderID uint32, Anchor uint32) error
+	HandleXdgPositionerSetGravity(senderID uint32, Gravity uint32) error
+	HandleXdgPositionerSetConstraintAdjustment(senderID uint32, ConstraintAdjustment uint32) error
+	HandleXdgPositionerSetOffset(senderID uint32, X int32, Y int32) error
+	HandleXdgPositionerSetReactive(senderID uint32) error
+	HandleXdgPositionerSetParentSize(senderID uint32, ParentWidth int32, ParentHeight int32) error
+	HandleXdgPositionerSetParentConfigure(senderID uint32, Serial uint32) error
 }
 
 // DispatchXdgPositioner decodes incoming requests for xdg_positioner and calls the handler.
 func DispatchXdgPositioner(r *wire.Reader, hdr wire.Header, h XdgPositionerHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleXdgPositionerDestroy(hdr.ObjectID)
 	case 1: // set_size
 		argWidth, err := r.ReadInt32()
 		if err != nil {
@@ -177,7 +177,7 @@ func DispatchXdgPositioner(r *wire.Reader, hdr wire.Header, h XdgPositionerHandl
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_size.height: %w", err)
 		}
-		return h.HandleSetSize(hdr.ObjectID, argWidth, argHeight)
+		return h.HandleXdgPositionerSetSize(hdr.ObjectID, argWidth, argHeight)
 	case 2: // set_anchor_rect
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -195,25 +195,25 @@ func DispatchXdgPositioner(r *wire.Reader, hdr wire.Header, h XdgPositionerHandl
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_anchor_rect.height: %w", err)
 		}
-		return h.HandleSetAnchorRect(hdr.ObjectID, argX, argY, argWidth, argHeight)
+		return h.HandleXdgPositionerSetAnchorRect(hdr.ObjectID, argX, argY, argWidth, argHeight)
 	case 3: // set_anchor
 		argAnchor, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_anchor.anchor: %w", err)
 		}
-		return h.HandleSetAnchor(hdr.ObjectID, argAnchor)
+		return h.HandleXdgPositionerSetAnchor(hdr.ObjectID, argAnchor)
 	case 4: // set_gravity
 		argGravity, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_gravity.gravity: %w", err)
 		}
-		return h.HandleSetGravity(hdr.ObjectID, argGravity)
+		return h.HandleXdgPositionerSetGravity(hdr.ObjectID, argGravity)
 	case 5: // set_constraint_adjustment
 		argConstraintAdjustment, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_constraint_adjustment.constraint_adjustment: %w", err)
 		}
-		return h.HandleSetConstraintAdjustment(hdr.ObjectID, argConstraintAdjustment)
+		return h.HandleXdgPositionerSetConstraintAdjustment(hdr.ObjectID, argConstraintAdjustment)
 	case 6: // set_offset
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -223,9 +223,9 @@ func DispatchXdgPositioner(r *wire.Reader, hdr wire.Header, h XdgPositionerHandl
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_offset.y: %w", err)
 		}
-		return h.HandleSetOffset(hdr.ObjectID, argX, argY)
+		return h.HandleXdgPositionerSetOffset(hdr.ObjectID, argX, argY)
 	case 7: // set_reactive
-		return h.HandleSetReactive(hdr.ObjectID)
+		return h.HandleXdgPositionerSetReactive(hdr.ObjectID)
 	case 8: // set_parent_size
 		argParentWidth, err := r.ReadInt32()
 		if err != nil {
@@ -235,13 +235,13 @@ func DispatchXdgPositioner(r *wire.Reader, hdr wire.Header, h XdgPositionerHandl
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_parent_size.parent_height: %w", err)
 		}
-		return h.HandleSetParentSize(hdr.ObjectID, argParentWidth, argParentHeight)
+		return h.HandleXdgPositionerSetParentSize(hdr.ObjectID, argParentWidth, argParentHeight)
 	case 9: // set_parent_configure
 		argSerial, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_positioner.set_parent_configure.serial: %w", err)
 		}
-		return h.HandleSetParentConfigure(hdr.ObjectID, argSerial)
+		return h.HandleXdgPositionerSetParentConfigure(hdr.ObjectID, argSerial)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface xdg_positioner", hdr.Opcode)
 	}
@@ -278,24 +278,24 @@ const (
 
 // XdgSurfaceHandler represents the server-side request handler for xdg_surface.
 type XdgSurfaceHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleGetToplevel(senderID uint32, Id uint32) error
-	HandleGetPopup(senderID uint32, Id uint32, Parent uint32, Positioner uint32) error
-	HandleSetWindowGeometry(senderID uint32, X int32, Y int32, Width int32, Height int32) error
-	HandleAckConfigure(senderID uint32, Serial uint32) error
+	HandleXdgSurfaceDestroy(senderID uint32) error
+	HandleXdgSurfaceGetToplevel(senderID uint32, Id uint32) error
+	HandleXdgSurfaceGetPopup(senderID uint32, Id uint32, Parent uint32, Positioner uint32) error
+	HandleXdgSurfaceSetWindowGeometry(senderID uint32, X int32, Y int32, Width int32, Height int32) error
+	HandleXdgSurfaceAckConfigure(senderID uint32, Serial uint32) error
 }
 
 // DispatchXdgSurface decodes incoming requests for xdg_surface and calls the handler.
 func DispatchXdgSurface(r *wire.Reader, hdr wire.Header, h XdgSurfaceHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleXdgSurfaceDestroy(hdr.ObjectID)
 	case 1: // get_toplevel
 		argId, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_surface.get_toplevel.id: %w", err)
 		}
-		return h.HandleGetToplevel(hdr.ObjectID, argId)
+		return h.HandleXdgSurfaceGetToplevel(hdr.ObjectID, argId)
 	case 2: // get_popup
 		argId, err := r.ReadUint32()
 		if err != nil {
@@ -309,7 +309,7 @@ func DispatchXdgSurface(r *wire.Reader, hdr wire.Header, h XdgSurfaceHandler) er
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_surface.get_popup.positioner: %w", err)
 		}
-		return h.HandleGetPopup(hdr.ObjectID, argId, argParent, argPositioner)
+		return h.HandleXdgSurfaceGetPopup(hdr.ObjectID, argId, argParent, argPositioner)
 	case 3: // set_window_geometry
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -327,13 +327,13 @@ func DispatchXdgSurface(r *wire.Reader, hdr wire.Header, h XdgSurfaceHandler) er
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_surface.set_window_geometry.height: %w", err)
 		}
-		return h.HandleSetWindowGeometry(hdr.ObjectID, argX, argY, argWidth, argHeight)
+		return h.HandleXdgSurfaceSetWindowGeometry(hdr.ObjectID, argX, argY, argWidth, argHeight)
 	case 4: // ack_configure
 		argSerial, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_surface.ack_configure.serial: %w", err)
 		}
-		return h.HandleAckConfigure(hdr.ObjectID, argSerial)
+		return h.HandleXdgSurfaceAckConfigure(hdr.ObjectID, argSerial)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface xdg_surface", hdr.Opcode)
 	}
@@ -429,45 +429,45 @@ const (
 
 // XdgToplevelHandler represents the server-side request handler for xdg_toplevel.
 type XdgToplevelHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleSetParent(senderID uint32, Parent uint32) error
-	HandleSetTitle(senderID uint32, Title string) error
-	HandleSetAppId(senderID uint32, AppId string) error
-	HandleShowWindowMenu(senderID uint32, Seat uint32, Serial uint32, X int32, Y int32) error
-	HandleMove(senderID uint32, Seat uint32, Serial uint32) error
-	HandleResize(senderID uint32, Seat uint32, Serial uint32, Edges uint32) error
-	HandleSetMaxSize(senderID uint32, Width int32, Height int32) error
-	HandleSetMinSize(senderID uint32, Width int32, Height int32) error
-	HandleSetMaximized(senderID uint32) error
-	HandleUnsetMaximized(senderID uint32) error
-	HandleSetFullscreen(senderID uint32, Output uint32) error
-	HandleUnsetFullscreen(senderID uint32) error
-	HandleSetMinimized(senderID uint32) error
+	HandleXdgToplevelDestroy(senderID uint32) error
+	HandleXdgToplevelSetParent(senderID uint32, Parent uint32) error
+	HandleXdgToplevelSetTitle(senderID uint32, Title string) error
+	HandleXdgToplevelSetAppId(senderID uint32, AppId string) error
+	HandleXdgToplevelShowWindowMenu(senderID uint32, Seat uint32, Serial uint32, X int32, Y int32) error
+	HandleXdgToplevelMove(senderID uint32, Seat uint32, Serial uint32) error
+	HandleXdgToplevelResize(senderID uint32, Seat uint32, Serial uint32, Edges uint32) error
+	HandleXdgToplevelSetMaxSize(senderID uint32, Width int32, Height int32) error
+	HandleXdgToplevelSetMinSize(senderID uint32, Width int32, Height int32) error
+	HandleXdgToplevelSetMaximized(senderID uint32) error
+	HandleXdgToplevelUnsetMaximized(senderID uint32) error
+	HandleXdgToplevelSetFullscreen(senderID uint32, Output uint32) error
+	HandleXdgToplevelUnsetFullscreen(senderID uint32) error
+	HandleXdgToplevelSetMinimized(senderID uint32) error
 }
 
 // DispatchXdgToplevel decodes incoming requests for xdg_toplevel and calls the handler.
 func DispatchXdgToplevel(r *wire.Reader, hdr wire.Header, h XdgToplevelHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleXdgToplevelDestroy(hdr.ObjectID)
 	case 1: // set_parent
 		argParent, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.set_parent.parent: %w", err)
 		}
-		return h.HandleSetParent(hdr.ObjectID, argParent)
+		return h.HandleXdgToplevelSetParent(hdr.ObjectID, argParent)
 	case 2: // set_title
 		argTitle, err := r.ReadString()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.set_title.title: %w", err)
 		}
-		return h.HandleSetTitle(hdr.ObjectID, argTitle)
+		return h.HandleXdgToplevelSetTitle(hdr.ObjectID, argTitle)
 	case 3: // set_app_id
 		argAppId, err := r.ReadString()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.set_app_id.app_id: %w", err)
 		}
-		return h.HandleSetAppId(hdr.ObjectID, argAppId)
+		return h.HandleXdgToplevelSetAppId(hdr.ObjectID, argAppId)
 	case 4: // show_window_menu
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -485,7 +485,7 @@ func DispatchXdgToplevel(r *wire.Reader, hdr wire.Header, h XdgToplevelHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.show_window_menu.y: %w", err)
 		}
-		return h.HandleShowWindowMenu(hdr.ObjectID, argSeat, argSerial, argX, argY)
+		return h.HandleXdgToplevelShowWindowMenu(hdr.ObjectID, argSeat, argSerial, argX, argY)
 	case 5: // move
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -495,7 +495,7 @@ func DispatchXdgToplevel(r *wire.Reader, hdr wire.Header, h XdgToplevelHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.move.serial: %w", err)
 		}
-		return h.HandleMove(hdr.ObjectID, argSeat, argSerial)
+		return h.HandleXdgToplevelMove(hdr.ObjectID, argSeat, argSerial)
 	case 6: // resize
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -509,7 +509,7 @@ func DispatchXdgToplevel(r *wire.Reader, hdr wire.Header, h XdgToplevelHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.resize.edges: %w", err)
 		}
-		return h.HandleResize(hdr.ObjectID, argSeat, argSerial, argEdges)
+		return h.HandleXdgToplevelResize(hdr.ObjectID, argSeat, argSerial, argEdges)
 	case 7: // set_max_size
 		argWidth, err := r.ReadInt32()
 		if err != nil {
@@ -519,7 +519,7 @@ func DispatchXdgToplevel(r *wire.Reader, hdr wire.Header, h XdgToplevelHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.set_max_size.height: %w", err)
 		}
-		return h.HandleSetMaxSize(hdr.ObjectID, argWidth, argHeight)
+		return h.HandleXdgToplevelSetMaxSize(hdr.ObjectID, argWidth, argHeight)
 	case 8: // set_min_size
 		argWidth, err := r.ReadInt32()
 		if err != nil {
@@ -529,21 +529,21 @@ func DispatchXdgToplevel(r *wire.Reader, hdr wire.Header, h XdgToplevelHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.set_min_size.height: %w", err)
 		}
-		return h.HandleSetMinSize(hdr.ObjectID, argWidth, argHeight)
+		return h.HandleXdgToplevelSetMinSize(hdr.ObjectID, argWidth, argHeight)
 	case 9: // set_maximized
-		return h.HandleSetMaximized(hdr.ObjectID)
+		return h.HandleXdgToplevelSetMaximized(hdr.ObjectID)
 	case 10: // unset_maximized
-		return h.HandleUnsetMaximized(hdr.ObjectID)
+		return h.HandleXdgToplevelUnsetMaximized(hdr.ObjectID)
 	case 11: // set_fullscreen
 		argOutput, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_toplevel.set_fullscreen.output: %w", err)
 		}
-		return h.HandleSetFullscreen(hdr.ObjectID, argOutput)
+		return h.HandleXdgToplevelSetFullscreen(hdr.ObjectID, argOutput)
 	case 12: // unset_fullscreen
-		return h.HandleUnsetFullscreen(hdr.ObjectID)
+		return h.HandleXdgToplevelUnsetFullscreen(hdr.ObjectID)
 	case 13: // set_minimized
-		return h.HandleSetMinimized(hdr.ObjectID)
+		return h.HandleXdgToplevelSetMinimized(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface xdg_toplevel", hdr.Opcode)
 	}
@@ -617,16 +617,16 @@ const (
 
 // XdgPopupHandler represents the server-side request handler for xdg_popup.
 type XdgPopupHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleGrab(senderID uint32, Seat uint32, Serial uint32) error
-	HandleReposition(senderID uint32, Positioner uint32, Token uint32) error
+	HandleXdgPopupDestroy(senderID uint32) error
+	HandleXdgPopupGrab(senderID uint32, Seat uint32, Serial uint32) error
+	HandleXdgPopupReposition(senderID uint32, Positioner uint32, Token uint32) error
 }
 
 // DispatchXdgPopup decodes incoming requests for xdg_popup and calls the handler.
 func DispatchXdgPopup(r *wire.Reader, hdr wire.Header, h XdgPopupHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleXdgPopupDestroy(hdr.ObjectID)
 	case 1: // grab
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -636,7 +636,7 @@ func DispatchXdgPopup(r *wire.Reader, hdr wire.Header, h XdgPopupHandler) error 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_popup.grab.serial: %w", err)
 		}
-		return h.HandleGrab(hdr.ObjectID, argSeat, argSerial)
+		return h.HandleXdgPopupGrab(hdr.ObjectID, argSeat, argSerial)
 	case 2: // reposition
 		argPositioner, err := r.ReadUint32()
 		if err != nil {
@@ -646,7 +646,7 @@ func DispatchXdgPopup(r *wire.Reader, hdr wire.Header, h XdgPopupHandler) error 
 		if err != nil {
 			return fmt.Errorf("failed reading xdg_popup.reposition.token: %w", err)
 		}
-		return h.HandleReposition(hdr.ObjectID, argPositioner, argToken)
+		return h.HandleXdgPopupReposition(hdr.ObjectID, argPositioner, argToken)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface xdg_popup", hdr.Opcode)
 	}

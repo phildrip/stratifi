@@ -140,7 +140,7 @@ func generateGo(p Protocol, pkgName string) ([]byte, error) {
 		fmt.Fprintf(&buf, "// %sHandler represents the server-side request handler for %s.\n", ifaceGoName, iface.Name)
 		fmt.Fprintf(&buf, "type %sHandler interface {\n", ifaceGoName)
 		for _, req := range iface.Requests {
-			methodName := "Handle" + toCamelCase(req.Name)
+			methodName := "Handle" + ifaceGoName + toCamelCase(req.Name)
 			var args []string
 			args = append(args, "senderID uint32")
 			for _, arg := range req.Args {
@@ -199,7 +199,7 @@ func generateGo(p Protocol, pkgName string) ([]byte, error) {
 				}
 				fmt.Fprintf(&buf, "\t\tif err != nil {\n\t\t\treturn fmt.Errorf(\"failed reading %s.%s.%s: %%w\", err)\n\t\t}\n", iface.Name, req.Name, arg.Name)
 			}
-			fmt.Fprintf(&buf, "\t\treturn h.Handle%s(%s)\n", toCamelCase(req.Name), strings.Join(callArgs, ", "))
+			fmt.Fprintf(&buf, "\t\treturn h.Handle%s%s(%s)\n", ifaceGoName, toCamelCase(req.Name), strings.Join(callArgs, ", "))
 		}
 		fmt.Fprintf(&buf, "\tdefault:\n")
 		fmt.Fprintf(&buf, "\t\treturn fmt.Errorf(\"unknown opcode %%d for interface %s\", hdr.Opcode)\n", iface.Name)

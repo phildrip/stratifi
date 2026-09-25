@@ -34,8 +34,8 @@ const (
 
 // WlDisplayHandler represents the server-side request handler for wl_display.
 type WlDisplayHandler interface {
-	HandleSync(senderID uint32, Callback uint32) error
-	HandleGetRegistry(senderID uint32, Registry uint32) error
+	HandleWlDisplaySync(senderID uint32, Callback uint32) error
+	HandleWlDisplayGetRegistry(senderID uint32, Registry uint32) error
 }
 
 // DispatchWlDisplay decodes incoming requests for wl_display and calls the handler.
@@ -46,13 +46,13 @@ func DispatchWlDisplay(r *wire.Reader, hdr wire.Header, h WlDisplayHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_display.sync.callback: %w", err)
 		}
-		return h.HandleSync(hdr.ObjectID, argCallback)
+		return h.HandleWlDisplaySync(hdr.ObjectID, argCallback)
 	case 1: // get_registry
 		argRegistry, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_display.get_registry.registry: %w", err)
 		}
-		return h.HandleGetRegistry(hdr.ObjectID, argRegistry)
+		return h.HandleWlDisplayGetRegistry(hdr.ObjectID, argRegistry)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_display", hdr.Opcode)
 	}
@@ -99,7 +99,7 @@ const (
 
 // WlRegistryHandler represents the server-side request handler for wl_registry.
 type WlRegistryHandler interface {
-	HandleBind(senderID uint32, Name uint32, ifaceName string, version uint32, Id uint32) error
+	HandleWlRegistryBind(senderID uint32, Name uint32, ifaceName string, version uint32, Id uint32) error
 }
 
 // DispatchWlRegistry decodes incoming requests for wl_registry and calls the handler.
@@ -122,7 +122,7 @@ func DispatchWlRegistry(r *wire.Reader, hdr wire.Header, h WlRegistryHandler) er
 		if err != nil {
 			return fmt.Errorf("failed reading wl_registry.bind.id: %w", err)
 		}
-		return h.HandleBind(hdr.ObjectID, argName, argIdIface, argIdVer, argId)
+		return h.HandleWlRegistryBind(hdr.ObjectID, argName, argIdIface, argIdVer, argId)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_registry", hdr.Opcode)
 	}
@@ -195,9 +195,9 @@ const (
 
 // WlCompositorHandler represents the server-side request handler for wl_compositor.
 type WlCompositorHandler interface {
-	HandleCreateSurface(senderID uint32, Id uint32) error
-	HandleCreateRegion(senderID uint32, Id uint32) error
-	HandleRelease(senderID uint32) error
+	HandleWlCompositorCreateSurface(senderID uint32, Id uint32) error
+	HandleWlCompositorCreateRegion(senderID uint32, Id uint32) error
+	HandleWlCompositorRelease(senderID uint32) error
 }
 
 // DispatchWlCompositor decodes incoming requests for wl_compositor and calls the handler.
@@ -208,15 +208,15 @@ func DispatchWlCompositor(r *wire.Reader, hdr wire.Header, h WlCompositorHandler
 		if err != nil {
 			return fmt.Errorf("failed reading wl_compositor.create_surface.id: %w", err)
 		}
-		return h.HandleCreateSurface(hdr.ObjectID, argId)
+		return h.HandleWlCompositorCreateSurface(hdr.ObjectID, argId)
 	case 1: // create_region
 		argId, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_compositor.create_region.id: %w", err)
 		}
-		return h.HandleCreateRegion(hdr.ObjectID, argId)
+		return h.HandleWlCompositorCreateRegion(hdr.ObjectID, argId)
 	case 2: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlCompositorRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_compositor", hdr.Opcode)
 	}
@@ -242,9 +242,9 @@ const (
 
 // WlShmPoolHandler represents the server-side request handler for wl_shm_pool.
 type WlShmPoolHandler interface {
-	HandleCreateBuffer(senderID uint32, Id uint32, Offset int32, Width int32, Height int32, Stride int32, Format uint32) error
-	HandleDestroy(senderID uint32) error
-	HandleResize(senderID uint32, Size int32) error
+	HandleWlShmPoolCreateBuffer(senderID uint32, Id uint32, Offset int32, Width int32, Height int32, Stride int32, Format uint32) error
+	HandleWlShmPoolDestroy(senderID uint32) error
+	HandleWlShmPoolResize(senderID uint32, Size int32) error
 }
 
 // DispatchWlShmPool decodes incoming requests for wl_shm_pool and calls the handler.
@@ -275,15 +275,15 @@ func DispatchWlShmPool(r *wire.Reader, hdr wire.Header, h WlShmPoolHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shm_pool.create_buffer.format: %w", err)
 		}
-		return h.HandleCreateBuffer(hdr.ObjectID, argId, argOffset, argWidth, argHeight, argStride, argFormat)
+		return h.HandleWlShmPoolCreateBuffer(hdr.ObjectID, argId, argOffset, argWidth, argHeight, argStride, argFormat)
 	case 1: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlShmPoolDestroy(hdr.ObjectID)
 	case 2: // resize
 		argSize, err := r.ReadInt32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shm_pool.resize.size: %w", err)
 		}
-		return h.HandleResize(hdr.ObjectID, argSize)
+		return h.HandleWlShmPoolResize(hdr.ObjectID, argSize)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_shm_pool", hdr.Opcode)
 	}
@@ -467,8 +467,8 @@ const (
 
 // WlShmHandler represents the server-side request handler for wl_shm.
 type WlShmHandler interface {
-	HandleCreatePool(senderID uint32, Id uint32, Fd int, Size int32) error
-	HandleRelease(senderID uint32) error
+	HandleWlShmCreatePool(senderID uint32, Id uint32, Fd int, Size int32) error
+	HandleWlShmRelease(senderID uint32) error
 }
 
 // DispatchWlShm decodes incoming requests for wl_shm and calls the handler.
@@ -487,9 +487,9 @@ func DispatchWlShm(r *wire.Reader, hdr wire.Header, h WlShmHandler) error {
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shm.create_pool.size: %w", err)
 		}
-		return h.HandleCreatePool(hdr.ObjectID, argId, argFd, argSize)
+		return h.HandleWlShmCreatePool(hdr.ObjectID, argId, argFd, argSize)
 	case 1: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlShmRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_shm", hdr.Opcode)
 	}
@@ -520,14 +520,14 @@ const (
 
 // WlBufferHandler represents the server-side request handler for wl_buffer.
 type WlBufferHandler interface {
-	HandleDestroy(senderID uint32) error
+	HandleWlBufferDestroy(senderID uint32) error
 }
 
 // DispatchWlBuffer decodes incoming requests for wl_buffer and calls the handler.
 func DispatchWlBuffer(r *wire.Reader, hdr wire.Header, h WlBufferHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlBufferDestroy(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_buffer", hdr.Opcode)
 	}
@@ -570,11 +570,11 @@ const (
 
 // WlDataOfferHandler represents the server-side request handler for wl_data_offer.
 type WlDataOfferHandler interface {
-	HandleAccept(senderID uint32, Serial uint32, MimeType string) error
-	HandleReceive(senderID uint32, MimeType string, Fd int) error
-	HandleDestroy(senderID uint32) error
-	HandleFinish(senderID uint32) error
-	HandleSetActions(senderID uint32, DndActions uint32, PreferredAction uint32) error
+	HandleWlDataOfferAccept(senderID uint32, Serial uint32, MimeType string) error
+	HandleWlDataOfferReceive(senderID uint32, MimeType string, Fd int) error
+	HandleWlDataOfferDestroy(senderID uint32) error
+	HandleWlDataOfferFinish(senderID uint32) error
+	HandleWlDataOfferSetActions(senderID uint32, DndActions uint32, PreferredAction uint32) error
 }
 
 // DispatchWlDataOffer decodes incoming requests for wl_data_offer and calls the handler.
@@ -589,7 +589,7 @@ func DispatchWlDataOffer(r *wire.Reader, hdr wire.Header, h WlDataOfferHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_offer.accept.mime_type: %w", err)
 		}
-		return h.HandleAccept(hdr.ObjectID, argSerial, argMimeType)
+		return h.HandleWlDataOfferAccept(hdr.ObjectID, argSerial, argMimeType)
 	case 1: // receive
 		argMimeType, err := r.ReadString()
 		if err != nil {
@@ -599,11 +599,11 @@ func DispatchWlDataOffer(r *wire.Reader, hdr wire.Header, h WlDataOfferHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_offer.receive.fd: %w", err)
 		}
-		return h.HandleReceive(hdr.ObjectID, argMimeType, argFd)
+		return h.HandleWlDataOfferReceive(hdr.ObjectID, argMimeType, argFd)
 	case 2: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlDataOfferDestroy(hdr.ObjectID)
 	case 3: // finish
-		return h.HandleFinish(hdr.ObjectID)
+		return h.HandleWlDataOfferFinish(hdr.ObjectID)
 	case 4: // set_actions
 		argDndActions, err := r.ReadUint32()
 		if err != nil {
@@ -613,7 +613,7 @@ func DispatchWlDataOffer(r *wire.Reader, hdr wire.Header, h WlDataOfferHandler) 
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_offer.set_actions.preferred_action: %w", err)
 		}
-		return h.HandleSetActions(hdr.ObjectID, argDndActions, argPreferredAction)
+		return h.HandleWlDataOfferSetActions(hdr.ObjectID, argDndActions, argPreferredAction)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_data_offer", hdr.Opcode)
 	}
@@ -676,9 +676,9 @@ const (
 
 // WlDataSourceHandler represents the server-side request handler for wl_data_source.
 type WlDataSourceHandler interface {
-	HandleOffer(senderID uint32, MimeType string) error
-	HandleDestroy(senderID uint32) error
-	HandleSetActions(senderID uint32, DndActions uint32) error
+	HandleWlDataSourceOffer(senderID uint32, MimeType string) error
+	HandleWlDataSourceDestroy(senderID uint32) error
+	HandleWlDataSourceSetActions(senderID uint32, DndActions uint32) error
 }
 
 // DispatchWlDataSource decodes incoming requests for wl_data_source and calls the handler.
@@ -689,15 +689,15 @@ func DispatchWlDataSource(r *wire.Reader, hdr wire.Header, h WlDataSourceHandler
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_source.offer.mime_type: %w", err)
 		}
-		return h.HandleOffer(hdr.ObjectID, argMimeType)
+		return h.HandleWlDataSourceOffer(hdr.ObjectID, argMimeType)
 	case 1: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlDataSourceDestroy(hdr.ObjectID)
 	case 2: // set_actions
 		argDndActions, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_source.set_actions.dnd_actions: %w", err)
 		}
-		return h.HandleSetActions(hdr.ObjectID, argDndActions)
+		return h.HandleWlDataSourceSetActions(hdr.ObjectID, argDndActions)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_data_source", hdr.Opcode)
 	}
@@ -781,9 +781,9 @@ const (
 
 // WlDataDeviceHandler represents the server-side request handler for wl_data_device.
 type WlDataDeviceHandler interface {
-	HandleStartDrag(senderID uint32, Source uint32, Origin uint32, Icon uint32, Serial uint32) error
-	HandleSetSelection(senderID uint32, Source uint32, Serial uint32) error
-	HandleRelease(senderID uint32) error
+	HandleWlDataDeviceStartDrag(senderID uint32, Source uint32, Origin uint32, Icon uint32, Serial uint32) error
+	HandleWlDataDeviceSetSelection(senderID uint32, Source uint32, Serial uint32) error
+	HandleWlDataDeviceRelease(senderID uint32) error
 }
 
 // DispatchWlDataDevice decodes incoming requests for wl_data_device and calls the handler.
@@ -806,7 +806,7 @@ func DispatchWlDataDevice(r *wire.Reader, hdr wire.Header, h WlDataDeviceHandler
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_device.start_drag.serial: %w", err)
 		}
-		return h.HandleStartDrag(hdr.ObjectID, argSource, argOrigin, argIcon, argSerial)
+		return h.HandleWlDataDeviceStartDrag(hdr.ObjectID, argSource, argOrigin, argIcon, argSerial)
 	case 1: // set_selection
 		argSource, err := r.ReadUint32()
 		if err != nil {
@@ -816,9 +816,9 @@ func DispatchWlDataDevice(r *wire.Reader, hdr wire.Header, h WlDataDeviceHandler
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_device.set_selection.serial: %w", err)
 		}
-		return h.HandleSetSelection(hdr.ObjectID, argSource, argSerial)
+		return h.HandleWlDataDeviceSetSelection(hdr.ObjectID, argSource, argSerial)
 	case 2: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlDataDeviceRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_data_device", hdr.Opcode)
 	}
@@ -912,9 +912,9 @@ const (
 
 // WlDataDeviceManagerHandler represents the server-side request handler for wl_data_device_manager.
 type WlDataDeviceManagerHandler interface {
-	HandleCreateDataSource(senderID uint32, Id uint32) error
-	HandleGetDataDevice(senderID uint32, Id uint32, Seat uint32) error
-	HandleRelease(senderID uint32) error
+	HandleWlDataDeviceManagerCreateDataSource(senderID uint32, Id uint32) error
+	HandleWlDataDeviceManagerGetDataDevice(senderID uint32, Id uint32, Seat uint32) error
+	HandleWlDataDeviceManagerRelease(senderID uint32) error
 }
 
 // DispatchWlDataDeviceManager decodes incoming requests for wl_data_device_manager and calls the handler.
@@ -925,7 +925,7 @@ func DispatchWlDataDeviceManager(r *wire.Reader, hdr wire.Header, h WlDataDevice
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_device_manager.create_data_source.id: %w", err)
 		}
-		return h.HandleCreateDataSource(hdr.ObjectID, argId)
+		return h.HandleWlDataDeviceManagerCreateDataSource(hdr.ObjectID, argId)
 	case 1: // get_data_device
 		argId, err := r.ReadUint32()
 		if err != nil {
@@ -935,9 +935,9 @@ func DispatchWlDataDeviceManager(r *wire.Reader, hdr wire.Header, h WlDataDevice
 		if err != nil {
 			return fmt.Errorf("failed reading wl_data_device_manager.get_data_device.seat: %w", err)
 		}
-		return h.HandleGetDataDevice(hdr.ObjectID, argId, argSeat)
+		return h.HandleWlDataDeviceManagerGetDataDevice(hdr.ObjectID, argId, argSeat)
 	case 2: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlDataDeviceManagerRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_data_device_manager", hdr.Opcode)
 	}
@@ -960,7 +960,7 @@ const (
 
 // WlShellHandler represents the server-side request handler for wl_shell.
 type WlShellHandler interface {
-	HandleGetShellSurface(senderID uint32, Id uint32, Surface uint32) error
+	HandleWlShellGetShellSurface(senderID uint32, Id uint32, Surface uint32) error
 }
 
 // DispatchWlShell decodes incoming requests for wl_shell and calls the handler.
@@ -975,7 +975,7 @@ func DispatchWlShell(r *wire.Reader, hdr wire.Header, h WlShellHandler) error {
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell.get_shell_surface.surface: %w", err)
 		}
-		return h.HandleGetShellSurface(hdr.ObjectID, argId, argSurface)
+		return h.HandleWlShellGetShellSurface(hdr.ObjectID, argId, argSurface)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_shell", hdr.Opcode)
 	}
@@ -1037,16 +1037,16 @@ const (
 
 // WlShellSurfaceHandler represents the server-side request handler for wl_shell_surface.
 type WlShellSurfaceHandler interface {
-	HandlePong(senderID uint32, Serial uint32) error
-	HandleMove(senderID uint32, Seat uint32, Serial uint32) error
-	HandleResize(senderID uint32, Seat uint32, Serial uint32, Edges uint32) error
-	HandleSetToplevel(senderID uint32) error
-	HandleSetTransient(senderID uint32, Parent uint32, X int32, Y int32, Flags uint32) error
-	HandleSetFullscreen(senderID uint32, Method uint32, Framerate uint32, Output uint32) error
-	HandleSetPopup(senderID uint32, Seat uint32, Serial uint32, Parent uint32, X int32, Y int32, Flags uint32) error
-	HandleSetMaximized(senderID uint32, Output uint32) error
-	HandleSetTitle(senderID uint32, Title string) error
-	HandleSetClass(senderID uint32, Class string) error
+	HandleWlShellSurfacePong(senderID uint32, Serial uint32) error
+	HandleWlShellSurfaceMove(senderID uint32, Seat uint32, Serial uint32) error
+	HandleWlShellSurfaceResize(senderID uint32, Seat uint32, Serial uint32, Edges uint32) error
+	HandleWlShellSurfaceSetToplevel(senderID uint32) error
+	HandleWlShellSurfaceSetTransient(senderID uint32, Parent uint32, X int32, Y int32, Flags uint32) error
+	HandleWlShellSurfaceSetFullscreen(senderID uint32, Method uint32, Framerate uint32, Output uint32) error
+	HandleWlShellSurfaceSetPopup(senderID uint32, Seat uint32, Serial uint32, Parent uint32, X int32, Y int32, Flags uint32) error
+	HandleWlShellSurfaceSetMaximized(senderID uint32, Output uint32) error
+	HandleWlShellSurfaceSetTitle(senderID uint32, Title string) error
+	HandleWlShellSurfaceSetClass(senderID uint32, Class string) error
 }
 
 // DispatchWlShellSurface decodes incoming requests for wl_shell_surface and calls the handler.
@@ -1057,7 +1057,7 @@ func DispatchWlShellSurface(r *wire.Reader, hdr wire.Header, h WlShellSurfaceHan
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.pong.serial: %w", err)
 		}
-		return h.HandlePong(hdr.ObjectID, argSerial)
+		return h.HandleWlShellSurfacePong(hdr.ObjectID, argSerial)
 	case 1: // move
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -1067,7 +1067,7 @@ func DispatchWlShellSurface(r *wire.Reader, hdr wire.Header, h WlShellSurfaceHan
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.move.serial: %w", err)
 		}
-		return h.HandleMove(hdr.ObjectID, argSeat, argSerial)
+		return h.HandleWlShellSurfaceMove(hdr.ObjectID, argSeat, argSerial)
 	case 2: // resize
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -1081,9 +1081,9 @@ func DispatchWlShellSurface(r *wire.Reader, hdr wire.Header, h WlShellSurfaceHan
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.resize.edges: %w", err)
 		}
-		return h.HandleResize(hdr.ObjectID, argSeat, argSerial, argEdges)
+		return h.HandleWlShellSurfaceResize(hdr.ObjectID, argSeat, argSerial, argEdges)
 	case 3: // set_toplevel
-		return h.HandleSetToplevel(hdr.ObjectID)
+		return h.HandleWlShellSurfaceSetToplevel(hdr.ObjectID)
 	case 4: // set_transient
 		argParent, err := r.ReadUint32()
 		if err != nil {
@@ -1101,7 +1101,7 @@ func DispatchWlShellSurface(r *wire.Reader, hdr wire.Header, h WlShellSurfaceHan
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.set_transient.flags: %w", err)
 		}
-		return h.HandleSetTransient(hdr.ObjectID, argParent, argX, argY, argFlags)
+		return h.HandleWlShellSurfaceSetTransient(hdr.ObjectID, argParent, argX, argY, argFlags)
 	case 5: // set_fullscreen
 		argMethod, err := r.ReadUint32()
 		if err != nil {
@@ -1115,7 +1115,7 @@ func DispatchWlShellSurface(r *wire.Reader, hdr wire.Header, h WlShellSurfaceHan
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.set_fullscreen.output: %w", err)
 		}
-		return h.HandleSetFullscreen(hdr.ObjectID, argMethod, argFramerate, argOutput)
+		return h.HandleWlShellSurfaceSetFullscreen(hdr.ObjectID, argMethod, argFramerate, argOutput)
 	case 6: // set_popup
 		argSeat, err := r.ReadUint32()
 		if err != nil {
@@ -1141,25 +1141,25 @@ func DispatchWlShellSurface(r *wire.Reader, hdr wire.Header, h WlShellSurfaceHan
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.set_popup.flags: %w", err)
 		}
-		return h.HandleSetPopup(hdr.ObjectID, argSeat, argSerial, argParent, argX, argY, argFlags)
+		return h.HandleWlShellSurfaceSetPopup(hdr.ObjectID, argSeat, argSerial, argParent, argX, argY, argFlags)
 	case 7: // set_maximized
 		argOutput, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.set_maximized.output: %w", err)
 		}
-		return h.HandleSetMaximized(hdr.ObjectID, argOutput)
+		return h.HandleWlShellSurfaceSetMaximized(hdr.ObjectID, argOutput)
 	case 8: // set_title
 		argTitle, err := r.ReadString()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.set_title.title: %w", err)
 		}
-		return h.HandleSetTitle(hdr.ObjectID, argTitle)
+		return h.HandleWlShellSurfaceSetTitle(hdr.ObjectID, argTitle)
 	case 9: // set_class
 		argClass, err := r.ReadString()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_shell_surface.set_class.class_: %w", err)
 		}
-		return h.HandleSetClass(hdr.ObjectID, argClass)
+		return h.HandleWlShellSurfaceSetClass(hdr.ObjectID, argClass)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_shell_surface", hdr.Opcode)
 	}
@@ -1236,25 +1236,25 @@ const (
 
 // WlSurfaceHandler represents the server-side request handler for wl_surface.
 type WlSurfaceHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleAttach(senderID uint32, Buffer uint32, X int32, Y int32) error
-	HandleDamage(senderID uint32, X int32, Y int32, Width int32, Height int32) error
-	HandleFrame(senderID uint32, Callback uint32) error
-	HandleSetOpaqueRegion(senderID uint32, Region uint32) error
-	HandleSetInputRegion(senderID uint32, Region uint32) error
-	HandleCommit(senderID uint32) error
-	HandleSetBufferTransform(senderID uint32, Transform int32) error
-	HandleSetBufferScale(senderID uint32, Scale int32) error
-	HandleDamageBuffer(senderID uint32, X int32, Y int32, Width int32, Height int32) error
-	HandleOffset(senderID uint32, X int32, Y int32) error
-	HandleGetRelease(senderID uint32, Callback uint32) error
+	HandleWlSurfaceDestroy(senderID uint32) error
+	HandleWlSurfaceAttach(senderID uint32, Buffer uint32, X int32, Y int32) error
+	HandleWlSurfaceDamage(senderID uint32, X int32, Y int32, Width int32, Height int32) error
+	HandleWlSurfaceFrame(senderID uint32, Callback uint32) error
+	HandleWlSurfaceSetOpaqueRegion(senderID uint32, Region uint32) error
+	HandleWlSurfaceSetInputRegion(senderID uint32, Region uint32) error
+	HandleWlSurfaceCommit(senderID uint32) error
+	HandleWlSurfaceSetBufferTransform(senderID uint32, Transform int32) error
+	HandleWlSurfaceSetBufferScale(senderID uint32, Scale int32) error
+	HandleWlSurfaceDamageBuffer(senderID uint32, X int32, Y int32, Width int32, Height int32) error
+	HandleWlSurfaceOffset(senderID uint32, X int32, Y int32) error
+	HandleWlSurfaceGetRelease(senderID uint32, Callback uint32) error
 }
 
 // DispatchWlSurface decodes incoming requests for wl_surface and calls the handler.
 func DispatchWlSurface(r *wire.Reader, hdr wire.Header, h WlSurfaceHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlSurfaceDestroy(hdr.ObjectID)
 	case 1: // attach
 		argBuffer, err := r.ReadUint32()
 		if err != nil {
@@ -1268,7 +1268,7 @@ func DispatchWlSurface(r *wire.Reader, hdr wire.Header, h WlSurfaceHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.attach.y: %w", err)
 		}
-		return h.HandleAttach(hdr.ObjectID, argBuffer, argX, argY)
+		return h.HandleWlSurfaceAttach(hdr.ObjectID, argBuffer, argX, argY)
 	case 2: // damage
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -1286,39 +1286,39 @@ func DispatchWlSurface(r *wire.Reader, hdr wire.Header, h WlSurfaceHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.damage.height: %w", err)
 		}
-		return h.HandleDamage(hdr.ObjectID, argX, argY, argWidth, argHeight)
+		return h.HandleWlSurfaceDamage(hdr.ObjectID, argX, argY, argWidth, argHeight)
 	case 3: // frame
 		argCallback, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.frame.callback: %w", err)
 		}
-		return h.HandleFrame(hdr.ObjectID, argCallback)
+		return h.HandleWlSurfaceFrame(hdr.ObjectID, argCallback)
 	case 4: // set_opaque_region
 		argRegion, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.set_opaque_region.region: %w", err)
 		}
-		return h.HandleSetOpaqueRegion(hdr.ObjectID, argRegion)
+		return h.HandleWlSurfaceSetOpaqueRegion(hdr.ObjectID, argRegion)
 	case 5: // set_input_region
 		argRegion, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.set_input_region.region: %w", err)
 		}
-		return h.HandleSetInputRegion(hdr.ObjectID, argRegion)
+		return h.HandleWlSurfaceSetInputRegion(hdr.ObjectID, argRegion)
 	case 6: // commit
-		return h.HandleCommit(hdr.ObjectID)
+		return h.HandleWlSurfaceCommit(hdr.ObjectID)
 	case 7: // set_buffer_transform
 		argTransform, err := r.ReadInt32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.set_buffer_transform.transform: %w", err)
 		}
-		return h.HandleSetBufferTransform(hdr.ObjectID, argTransform)
+		return h.HandleWlSurfaceSetBufferTransform(hdr.ObjectID, argTransform)
 	case 8: // set_buffer_scale
 		argScale, err := r.ReadInt32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.set_buffer_scale.scale: %w", err)
 		}
-		return h.HandleSetBufferScale(hdr.ObjectID, argScale)
+		return h.HandleWlSurfaceSetBufferScale(hdr.ObjectID, argScale)
 	case 9: // damage_buffer
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -1336,7 +1336,7 @@ func DispatchWlSurface(r *wire.Reader, hdr wire.Header, h WlSurfaceHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.damage_buffer.height: %w", err)
 		}
-		return h.HandleDamageBuffer(hdr.ObjectID, argX, argY, argWidth, argHeight)
+		return h.HandleWlSurfaceDamageBuffer(hdr.ObjectID, argX, argY, argWidth, argHeight)
 	case 10: // offset
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -1346,13 +1346,13 @@ func DispatchWlSurface(r *wire.Reader, hdr wire.Header, h WlSurfaceHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.offset.y: %w", err)
 		}
-		return h.HandleOffset(hdr.ObjectID, argX, argY)
+		return h.HandleWlSurfaceOffset(hdr.ObjectID, argX, argY)
 	case 11: // get_release
 		argCallback, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_surface.get_release.callback: %w", err)
 		}
-		return h.HandleGetRelease(hdr.ObjectID, argCallback)
+		return h.HandleWlSurfaceGetRelease(hdr.ObjectID, argCallback)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_surface", hdr.Opcode)
 	}
@@ -1428,10 +1428,10 @@ const (
 
 // WlSeatHandler represents the server-side request handler for wl_seat.
 type WlSeatHandler interface {
-	HandleGetPointer(senderID uint32, Id uint32) error
-	HandleGetKeyboard(senderID uint32, Id uint32) error
-	HandleGetTouch(senderID uint32, Id uint32) error
-	HandleRelease(senderID uint32) error
+	HandleWlSeatGetPointer(senderID uint32, Id uint32) error
+	HandleWlSeatGetKeyboard(senderID uint32, Id uint32) error
+	HandleWlSeatGetTouch(senderID uint32, Id uint32) error
+	HandleWlSeatRelease(senderID uint32) error
 }
 
 // DispatchWlSeat decodes incoming requests for wl_seat and calls the handler.
@@ -1442,21 +1442,21 @@ func DispatchWlSeat(r *wire.Reader, hdr wire.Header, h WlSeatHandler) error {
 		if err != nil {
 			return fmt.Errorf("failed reading wl_seat.get_pointer.id: %w", err)
 		}
-		return h.HandleGetPointer(hdr.ObjectID, argId)
+		return h.HandleWlSeatGetPointer(hdr.ObjectID, argId)
 	case 1: // get_keyboard
 		argId, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_seat.get_keyboard.id: %w", err)
 		}
-		return h.HandleGetKeyboard(hdr.ObjectID, argId)
+		return h.HandleWlSeatGetKeyboard(hdr.ObjectID, argId)
 	case 2: // get_touch
 		argId, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_seat.get_touch.id: %w", err)
 		}
-		return h.HandleGetTouch(hdr.ObjectID, argId)
+		return h.HandleWlSeatGetTouch(hdr.ObjectID, argId)
 	case 3: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlSeatRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_seat", hdr.Opcode)
 	}
@@ -1544,8 +1544,8 @@ const (
 
 // WlPointerHandler represents the server-side request handler for wl_pointer.
 type WlPointerHandler interface {
-	HandleSetCursor(senderID uint32, Serial uint32, Surface uint32, HotspotX int32, HotspotY int32) error
-	HandleRelease(senderID uint32) error
+	HandleWlPointerSetCursor(senderID uint32, Serial uint32, Surface uint32, HotspotX int32, HotspotY int32) error
+	HandleWlPointerRelease(senderID uint32) error
 }
 
 // DispatchWlPointer decodes incoming requests for wl_pointer and calls the handler.
@@ -1568,9 +1568,9 @@ func DispatchWlPointer(r *wire.Reader, hdr wire.Header, h WlPointerHandler) erro
 		if err != nil {
 			return fmt.Errorf("failed reading wl_pointer.set_cursor.hotspot_y: %w", err)
 		}
-		return h.HandleSetCursor(hdr.ObjectID, argSerial, argSurface, argHotspotX, argHotspotY)
+		return h.HandleWlPointerSetCursor(hdr.ObjectID, argSerial, argSurface, argHotspotX, argHotspotY)
 	case 1: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlPointerRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_pointer", hdr.Opcode)
 	}
@@ -1765,14 +1765,14 @@ const (
 
 // WlKeyboardHandler represents the server-side request handler for wl_keyboard.
 type WlKeyboardHandler interface {
-	HandleRelease(senderID uint32) error
+	HandleWlKeyboardRelease(senderID uint32) error
 }
 
 // DispatchWlKeyboard decodes incoming requests for wl_keyboard and calls the handler.
 func DispatchWlKeyboard(r *wire.Reader, hdr wire.Header, h WlKeyboardHandler) error {
 	switch hdr.Opcode {
 	case 0: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlKeyboardRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_keyboard", hdr.Opcode)
 	}
@@ -1893,14 +1893,14 @@ const (
 
 // WlTouchHandler represents the server-side request handler for wl_touch.
 type WlTouchHandler interface {
-	HandleRelease(senderID uint32) error
+	HandleWlTouchRelease(senderID uint32) error
 }
 
 // DispatchWlTouch decodes incoming requests for wl_touch and calls the handler.
 func DispatchWlTouch(r *wire.Reader, hdr wire.Header, h WlTouchHandler) error {
 	switch hdr.Opcode {
 	case 0: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlTouchRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_touch", hdr.Opcode)
 	}
@@ -2054,14 +2054,14 @@ const (
 
 // WlOutputHandler represents the server-side request handler for wl_output.
 type WlOutputHandler interface {
-	HandleRelease(senderID uint32) error
+	HandleWlOutputRelease(senderID uint32) error
 }
 
 // DispatchWlOutput decodes incoming requests for wl_output and calls the handler.
 func DispatchWlOutput(r *wire.Reader, hdr wire.Header, h WlOutputHandler) error {
 	switch hdr.Opcode {
 	case 0: // release
-		return h.HandleRelease(hdr.ObjectID)
+		return h.HandleWlOutputRelease(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_output", hdr.Opcode)
 	}
@@ -2161,16 +2161,16 @@ const (
 
 // WlRegionHandler represents the server-side request handler for wl_region.
 type WlRegionHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleAdd(senderID uint32, X int32, Y int32, Width int32, Height int32) error
-	HandleSubtract(senderID uint32, X int32, Y int32, Width int32, Height int32) error
+	HandleWlRegionDestroy(senderID uint32) error
+	HandleWlRegionAdd(senderID uint32, X int32, Y int32, Width int32, Height int32) error
+	HandleWlRegionSubtract(senderID uint32, X int32, Y int32, Width int32, Height int32) error
 }
 
 // DispatchWlRegion decodes incoming requests for wl_region and calls the handler.
 func DispatchWlRegion(r *wire.Reader, hdr wire.Header, h WlRegionHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlRegionDestroy(hdr.ObjectID)
 	case 1: // add
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -2188,7 +2188,7 @@ func DispatchWlRegion(r *wire.Reader, hdr wire.Header, h WlRegionHandler) error 
 		if err != nil {
 			return fmt.Errorf("failed reading wl_region.add.height: %w", err)
 		}
-		return h.HandleAdd(hdr.ObjectID, argX, argY, argWidth, argHeight)
+		return h.HandleWlRegionAdd(hdr.ObjectID, argX, argY, argWidth, argHeight)
 	case 2: // subtract
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -2206,7 +2206,7 @@ func DispatchWlRegion(r *wire.Reader, hdr wire.Header, h WlRegionHandler) error 
 		if err != nil {
 			return fmt.Errorf("failed reading wl_region.subtract.height: %w", err)
 		}
-		return h.HandleSubtract(hdr.ObjectID, argX, argY, argWidth, argHeight)
+		return h.HandleWlRegionSubtract(hdr.ObjectID, argX, argY, argWidth, argHeight)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_region", hdr.Opcode)
 	}
@@ -2231,15 +2231,15 @@ const (
 
 // WlSubcompositorHandler represents the server-side request handler for wl_subcompositor.
 type WlSubcompositorHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleGetSubsurface(senderID uint32, Id uint32, Surface uint32, Parent uint32) error
+	HandleWlSubcompositorDestroy(senderID uint32) error
+	HandleWlSubcompositorGetSubsurface(senderID uint32, Id uint32, Surface uint32, Parent uint32) error
 }
 
 // DispatchWlSubcompositor decodes incoming requests for wl_subcompositor and calls the handler.
 func DispatchWlSubcompositor(r *wire.Reader, hdr wire.Header, h WlSubcompositorHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlSubcompositorDestroy(hdr.ObjectID)
 	case 1: // get_subsurface
 		argId, err := r.ReadUint32()
 		if err != nil {
@@ -2253,7 +2253,7 @@ func DispatchWlSubcompositor(r *wire.Reader, hdr wire.Header, h WlSubcompositorH
 		if err != nil {
 			return fmt.Errorf("failed reading wl_subcompositor.get_subsurface.parent: %w", err)
 		}
-		return h.HandleGetSubsurface(hdr.ObjectID, argId, argSurface, argParent)
+		return h.HandleWlSubcompositorGetSubsurface(hdr.ObjectID, argId, argSurface, argParent)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_subcompositor", hdr.Opcode)
 	}
@@ -2281,19 +2281,19 @@ const (
 
 // WlSubsurfaceHandler represents the server-side request handler for wl_subsurface.
 type WlSubsurfaceHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleSetPosition(senderID uint32, X int32, Y int32) error
-	HandlePlaceAbove(senderID uint32, Sibling uint32) error
-	HandlePlaceBelow(senderID uint32, Sibling uint32) error
-	HandleSetSync(senderID uint32) error
-	HandleSetDesync(senderID uint32) error
+	HandleWlSubsurfaceDestroy(senderID uint32) error
+	HandleWlSubsurfaceSetPosition(senderID uint32, X int32, Y int32) error
+	HandleWlSubsurfacePlaceAbove(senderID uint32, Sibling uint32) error
+	HandleWlSubsurfacePlaceBelow(senderID uint32, Sibling uint32) error
+	HandleWlSubsurfaceSetSync(senderID uint32) error
+	HandleWlSubsurfaceSetDesync(senderID uint32) error
 }
 
 // DispatchWlSubsurface decodes incoming requests for wl_subsurface and calls the handler.
 func DispatchWlSubsurface(r *wire.Reader, hdr wire.Header, h WlSubsurfaceHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlSubsurfaceDestroy(hdr.ObjectID)
 	case 1: // set_position
 		argX, err := r.ReadInt32()
 		if err != nil {
@@ -2303,23 +2303,23 @@ func DispatchWlSubsurface(r *wire.Reader, hdr wire.Header, h WlSubsurfaceHandler
 		if err != nil {
 			return fmt.Errorf("failed reading wl_subsurface.set_position.y: %w", err)
 		}
-		return h.HandleSetPosition(hdr.ObjectID, argX, argY)
+		return h.HandleWlSubsurfaceSetPosition(hdr.ObjectID, argX, argY)
 	case 2: // place_above
 		argSibling, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_subsurface.place_above.sibling: %w", err)
 		}
-		return h.HandlePlaceAbove(hdr.ObjectID, argSibling)
+		return h.HandleWlSubsurfacePlaceAbove(hdr.ObjectID, argSibling)
 	case 3: // place_below
 		argSibling, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_subsurface.place_below.sibling: %w", err)
 		}
-		return h.HandlePlaceBelow(hdr.ObjectID, argSibling)
+		return h.HandleWlSubsurfacePlaceBelow(hdr.ObjectID, argSibling)
 	case 4: // set_sync
-		return h.HandleSetSync(hdr.ObjectID)
+		return h.HandleWlSubsurfaceSetSync(hdr.ObjectID)
 	case 5: // set_desync
-		return h.HandleSetDesync(hdr.ObjectID)
+		return h.HandleWlSubsurfaceSetDesync(hdr.ObjectID)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_subsurface", hdr.Opcode)
 	}
@@ -2344,22 +2344,22 @@ const (
 
 // WlFixesHandler represents the server-side request handler for wl_fixes.
 type WlFixesHandler interface {
-	HandleDestroy(senderID uint32) error
-	HandleDestroyRegistry(senderID uint32, Registry uint32) error
-	HandleAckGlobalRemove(senderID uint32, Registry uint32, Name uint32) error
+	HandleWlFixesDestroy(senderID uint32) error
+	HandleWlFixesDestroyRegistry(senderID uint32, Registry uint32) error
+	HandleWlFixesAckGlobalRemove(senderID uint32, Registry uint32, Name uint32) error
 }
 
 // DispatchWlFixes decodes incoming requests for wl_fixes and calls the handler.
 func DispatchWlFixes(r *wire.Reader, hdr wire.Header, h WlFixesHandler) error {
 	switch hdr.Opcode {
 	case 0: // destroy
-		return h.HandleDestroy(hdr.ObjectID)
+		return h.HandleWlFixesDestroy(hdr.ObjectID)
 	case 1: // destroy_registry
 		argRegistry, err := r.ReadUint32()
 		if err != nil {
 			return fmt.Errorf("failed reading wl_fixes.destroy_registry.registry: %w", err)
 		}
-		return h.HandleDestroyRegistry(hdr.ObjectID, argRegistry)
+		return h.HandleWlFixesDestroyRegistry(hdr.ObjectID, argRegistry)
 	case 2: // ack_global_remove
 		argRegistry, err := r.ReadUint32()
 		if err != nil {
@@ -2369,7 +2369,7 @@ func DispatchWlFixes(r *wire.Reader, hdr wire.Header, h WlFixesHandler) error {
 		if err != nil {
 			return fmt.Errorf("failed reading wl_fixes.ack_global_remove.name: %w", err)
 		}
-		return h.HandleAckGlobalRemove(hdr.ObjectID, argRegistry, argName)
+		return h.HandleWlFixesAckGlobalRemove(hdr.ObjectID, argRegistry, argName)
 	default:
 		return fmt.Errorf("unknown opcode %d for interface wl_fixes", hdr.Opcode)
 	}

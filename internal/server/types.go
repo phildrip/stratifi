@@ -83,3 +83,29 @@ type Surface struct {
 	Pending  SurfaceState
 	Active   bool
 }
+
+// XdgSurface represents the xdg_surface wrapper around a wl_surface.
+type XdgSurface struct {
+	ID         uint32
+	SurfaceID  uint32
+	ToplevelID uint32
+	Configured bool
+	LastSerial uint32
+	Active     bool
+}
+
+// XdgToplevel tracks properties of an application window.
+type XdgToplevel struct {
+	ID           uint32
+	XdgSurfaceID uint32
+	Title        string
+	AppID        string
+	MaxWidth     int32
+	MaxHeight    int32
+	MinWidth     int32
+	MinHeight    int32
+	Maximized    bool
+	Fullscreen   bool
+	Activated    bool
+	Active       bool
+}
