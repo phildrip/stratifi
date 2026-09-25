@@ -1,27 +1,55 @@
-# Agent Instructions
+# AI Agent Guide (bloxwm)
 
-This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
+This is the repository for **bloxwm**, a modern, block-based Wayland window manager and compositor written in Go with Data-Oriented Design principles.
 
-> **Architecture in one line:** Issues live in a local Dolt database
-> (`.beads/dolt/`); cross-machine sync uses `bd dolt push/pull` (a
-> git-compatible protocol), stored under `refs/dolt/data` on your git
-> remote — separate from `refs/heads/*` where your code lives.
-> `.beads/issues.jsonl` is a passive export, not the wire protocol.
->
-> See [sync-concepts](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md)
-> for the one-screen overview and anti-patterns (don't treat JSONL as the
-> source of truth; don't `bd import` during normal operation; don't
-> reach for third-party Dolt hosting before trying the default).
+This file outlines the operating principles for AI agents and human contributors, indexes the architectural standards in `skills/`, and documents issue tracking with `bd` (Beads).
 
-## Quick Reference
+---
+
+## High-Level Guidelines
+
+1. **Philosophy:** Write code that is explicit, readable, predictable, and easy to delete. Prefer clarity over cleverness or premature abstractions. A little repetition is better than a bad abstraction.
+2. **Data-Oriented Design (Mandatory on Hot Paths):** Compositors are soft real-time graphics engines. Hot paths (input processing, layout calculations, vblank tick, and rendering) must use flat contiguous memory, generational indices (`WindowID uint32`), and zero heap allocations (`0 allocs/op`) to eliminate GC latency spikes.
+3. **Testing, Profiling & CPU Cache Verification:** Every bug fix, modification, or feature MUST include automated tests. Use table-driven tests for layout math, parsers, and state transitions. Include allocation benchmarks (`go test -benchmem`) and hardware CPU cache counter profiling (`perf stat` checking L1/LLC cache miss rates) for core hot paths.
+4. **Refactoring & Blast Radius:** Leave touched code cleaner than you found it (Boy Scout rule), but constrain your blast radius to the local scope of your change. Avoid surgical laziness, but avoid rewriting unrelated subsystems.
+5. **Issue Tracking:** Use `bd` (Beads) for all issue and task tracking. Follow the beads workflow outlined below.
+
+---
+
+## Skills & Architecture Documentation Index
+
+Detailed architectural and engineering standards are organized under `skills/`:
+
+| Document | Scope & Contents |
+| :--- | :--- |
+| **[`skills/general-guidelines.md`](skills/general-guidelines.md)** | Universal rules of engagement, testing philosophy, refactoring boundaries, and PR protocols. |
+| **[`skills/backend-architecture.md`](skills/backend-architecture.md)** | Go architecture, `pkg/errors` stack preservation, small interfaces, identifier naming, and pragmatic SRP. |
+| **[`skills/data-oriented-design.md`](skills/data-oriented-design.md)** | **Core bloxwm Tenet:** SlotMaps, generational indices, SoA/AoS cache optimization, ring buffers, and zero-allocation hot paths. |
+
+---
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
 
 ```bash
 bd ready              # Find available work
 bd show <id>          # View issue details
-bd update <id> --claim  # Claim work atomically
+bd update <id> --claim  # Claim work
 bd close <id>         # Complete work
 bd dolt push          # Push beads data to remote
 ```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 
 ## Non-Interactive Shell Commands
 
@@ -40,34 +68,6 @@ rm -f file                  # NOT: rm file
 rm -rf directory            # NOT: rm -r directory
 cp -rf source dest          # NOT: cp -r source dest
 ```
-
-**Other commands that may prompt:**
-- `scp` - use `-o BatchMode=yes` for non-interactive
-- `ssh` - use `-o BatchMode=yes` to fail instead of prompting
-- `apt-get` - use `-y` flag
-- `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
-
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
-## Beads Issue Tracker
-
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
-
-### Quick Reference
-
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 
 ## Agent Context Profiles
 
@@ -101,27 +101,3 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - Do not commit or push without clear authority from the active profile or the current user request.
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
-
-<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
-## Beads Issue Tracker
-
-Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
-
-### Quick Reference
-
-```bash
-bd ready                # Find available work
-bd show <id>            # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>           # Complete work
-bd prime                # Refresh Beads context
-```
-
-### Rules
-
-- Use `bd` for all task tracking; do not create markdown TODO lists.
-- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
-<!-- END BEADS CODEX SETUP -->
