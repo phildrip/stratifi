@@ -572,6 +572,262 @@ static int end_frame(VkRenderer* r) {
 static int wait_frame(VkRenderer* r, uint64_t timeoutNs) {
     return (int)vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, timeoutNs);
 }
+
+// --- CPU-upload textures (bloxwm-o2x phase 3) ---
+//
+// Client content is shm (memfd, not dmabuf), so the GPU path uploads via
+// host-visible linear images: memcpy into mapped memory, then a command
+// buffer transitions UNDEFINED -> SHADER_READ_ONLY_OPTIMAL for sampling.
+// RADV supports linear sampled images; a staging-buffer copy to OPTIMAL
+// tiling is the optimization path later.
+
+static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, uint32_t height, uint32_t stride, const uint8_t* pixels, VkUploadTexture* out) {
+    memset(out, 0, sizeof(VkUploadTexture));
+    out->width = width;
+    out->height = height;
+    out->stride = stride;
+
+    VkImageCreateInfo imgInfo = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_B8G8R8A8_SRGB,
+        .extent = { width, height, 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_LINEAR,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkResult res = vkCreateImage(r->device, &imgInfo, NULL, &out->image);
+    if (res != VK_SUCCESS) return (int)res;
+
+    VkMemoryRequirements memReqs;
+    vkGetImageMemoryRequirements(r->device, out->image, &memReqs);
+
+    VkPhysicalDeviceMemoryProperties memProps;
+    vkGetPhysicalDeviceMemoryProperties(r->pdev, &memProps);
+    int memType = -1;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((memReqs.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))) {
+            memType = (int)i;
+            break;
+        }
+    }
+    if (memType < 0) { vkDestroyImage(r->device, out->image, NULL); return -11; }
+
+    VkMemoryAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memReqs.size,
+        .memoryTypeIndex = (uint32_t)memType,
+    };
+    res = vkAllocateMemory(r->device, &allocInfo, NULL, &out->memory);
+    if (res != VK_SUCCESS) {
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
+    }
+    res = vkBindImageMemory(r->device, out->image, out->memory, 0);
+    if (res != VK_SUCCESS) {
+        vkFreeMemory(r->device, out->memory, NULL);
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
+    }
+
+    // Map and copy row by row (mapped layout pitch may exceed stride).
+    void* mapped;
+    res = vkMapMemory(r->device, out->memory, 0, memReqs.size, 0, &out->mapped);
+    if (res != VK_SUCCESS) {
+        vkFreeMemory(r->device, out->memory, NULL);
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
+    }
+
+    VkImageSubresource sub = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT };
+    VkSubresourceLayout lay;
+    vkGetImageSubresourceLayout(r->device, out->image, &sub, &lay);
+    uint8_t* dst = (uint8_t*)out->mapped;
+    for (uint32_t row = 0; row < height; row++) {
+        memcpy(dst + lay.rowPitch * row, pixels + stride * row, stride);
+    }
+
+    // View for sampling.
+    VkImageViewCreateInfo viewInfo = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = out->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_B8G8R8A8_SRGB,
+        .subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1,
+        },
+    };
+    res = vkCreateImageView(r->device, &viewInfo, NULL, &out->view);
+    if (res != VK_SUCCESS) {
+        vkUnmapMemory(r->device, out->memory);
+        vkFreeMemory(r->device, out->memory, NULL);
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
+    }
+
+    // Transition UNDEFINED -> SHADER_READ_ONLY via a one-shot command.
+    vkResetFences(r->device, 1, &r->fence);
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
+    if (res != VK_SUCCESS) return (int)res;
+
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = out->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(r->cmdBuf,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &barrier);
+    vkEndCommandBuffer(r->cmdBuf);
+
+    VkSubmitInfo submitInfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
+    res = vkQueueSubmit(r->queue, 1, &submitInfo, r->fence);
+    if (res != VK_SUCCESS) return (int)res;
+    res = vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    if (res != VK_SUCCESS) return (int)res;
+    vkResetFences(r->device, 1, &r->fence);
+    return 0;
+}
+// Texture is a CPU-uploaded client surface texture (sampling view).
+// The GPU executor caches one per surface and replaces it on commit.
+
+
+static void destroy_upload_texture(VkContext* ctx, VkUploadTexture* t) {
+    if (t->view) vkDestroyImageView(ctx->device, t->view, NULL);
+    if (t->mapped) vkUnmapMemory(ctx->device, t->memory);
+    if (t->memory) vkFreeMemory(ctx->device, t->memory, NULL);
+    if (t->image) vkDestroyImage(ctx->device, t->image, NULL);
+    memset(t, 0, sizeof(VkUploadTexture));
+}
+
+static void draw_texture_view(VkRenderer* r, VkImageView view,
+    float dstX, float dstY, float dstW, float dstH,
+    float srcU, float srcV, float srcW, float srcH, float alpha) {
+    draw_texture_quad(r, view, dstX, dstY, dstW, dstH, srcU, srcV, srcW, srcH, alpha);
+}
+
+static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* outRows, uint32_t outStride) {
+    // Staging buffer sized for outStride*height.
+    VkBufferCreateInfo binfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = (VkDeviceSize)outStride * t->height,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer buf;
+    VkResult res = vkCreateBuffer(ctx->device, &binfo, NULL, &buf);
+    if (res != VK_SUCCESS) return (int)res;
+
+    VkMemoryRequirements reqs;
+    vkGetBufferMemoryRequirements(ctx->device, buf, &reqs);
+    VkPhysicalDeviceMemoryProperties mprops;
+    vkGetPhysicalDeviceMemoryProperties(ctx->pdev, &mprops);
+    int memType = -1;
+    for (uint32_t i = 0; i < mprops.memoryTypeCount; i++) {
+        if ((reqs.memoryTypeBits & (1 << i)) &&
+            (mprops.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))) {
+            memType = (int)i;
+            break;
+        }
+    }
+    if (memType < 0) { vkDestroyBuffer(ctx->device, buf, NULL); return -21; }
+
+    VkMemoryAllocateInfo ainfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = reqs.size, .memoryTypeIndex = (uint32_t)memType };
+    VkDeviceMemory mem;
+    res = vkAllocateMemory(ctx->device, &ainfo, NULL, &mem);
+    if (res != VK_SUCCESS) { vkDestroyBuffer(ctx->device, buf, NULL); return (int)res; }
+    res = vkBindBufferMemory(ctx->device, buf, mem, 0);
+    if (res != VK_SUCCESS) { vkFreeMemory(ctx->device, mem, NULL); vkDestroyBuffer(ctx->device, buf, NULL); return (int)res; }
+
+    vkResetFences(ctx->device, 1, &r->fence);
+    VkCommandBufferBeginInfo binfo2 = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+    res = vkBeginCommandBuffer(r->cmdBuf, &binfo2);
+    if (res != VK_SUCCESS) goto fail;
+
+    // COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL
+    VkImageMemoryBarrier pre = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = t->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &pre);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = { t->width, t->height, 1 },
+        .bufferOffset = 0,
+        .bufferRowLength = t->width,
+        .bufferImageHeight = t->height,
+    };
+    vkCmdCopyImageToBuffer(r->cmdBuf, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+
+    // Back to COLOR_ATTACHMENT_OPTIMAL for future frames.
+    VkImageMemoryBarrier post = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = t->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &post);
+    vkEndCommandBuffer(r->cmdBuf);
+
+    VkSubmitInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
+    res = vkQueueSubmit(r->queue, 1, &sinfo, r->fence);
+    if (res != VK_SUCCESS) goto fail;
+    res = vkWaitForFences(ctx->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    if (res != VK_SUCCESS) goto fail;
+    vkResetFences(ctx->device, 1, &r->fence);
+
+    // Copy out row by row.
+    {
+        void* mapped;
+        res = vkMapMemory(ctx->device, mem, 0, reqs.size, 0, &mapped);
+        if (res == VK_SUCCESS) {
+            for (uint32_t row = 0; row < t->height; row++) {
+                memcpy((uint8_t*)outRows + (size_t)outStride * row, (uint8_t*)mapped + (size_t)t->width * 4 * row, (size_t)t->width * 4);
+            }
+            vkUnmapMemory(ctx->device, mem);
+        }
+        vkFreeMemory(ctx->device, mem, NULL);
+        vkDestroyBuffer(ctx->device, buf, NULL);
+        return 0;
+    }
+fail:
+    vkResetFences(ctx->device, 1, &r->fence);
+    vkFreeMemory(ctx->device, mem, NULL);
+    vkDestroyBuffer(ctx->device, buf, NULL);
+    return -1;
+}
 */
 import "C"
 import (
@@ -718,4 +974,94 @@ func (ren *Renderer) Close() error {
 
 	C.destroy_vk_renderer(&ren.r)
 	return nil
+}
+
+type Texture struct {
+	t      C.VkUploadTexture
+	Width  uint32
+	Height uint32
+	Stride uint32
+}
+
+// UploadTexture copies BGRA pixel data into a host-visible linear image
+// and prepares it for sampling. pixels has stride bytes per row.
+func (ren *Renderer) UploadTexture(width, height, stride uint32, pixels []byte) (*Texture, error) {
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+
+	if int(stride)*int(height) > len(pixels) {
+		return nil, fmt.Errorf("upload: %d rows x %d stride > %d bytes", height, stride, len(pixels))
+	}
+
+	var t C.VkUploadTexture
+	var res C.int
+	if len(pixels) > 0 {
+		res = C.upload_texture_impl(&ren.dev.ctx, &ren.r,
+			C.uint32_t(width), C.uint32_t(height), C.uint32_t(stride),
+			(*C.uint8_t)(unsafe.Pointer(&pixels[0])), &t)
+	} else {
+		res = C.upload_texture_impl(&ren.dev.ctx, &ren.r,
+			C.uint32_t(width), C.uint32_t(height), C.uint32_t(stride),
+			nil, &t)
+	}
+	if res != 0 {
+		return nil, fmt.Errorf("upload_texture failed (code %d)", int(res))
+	}
+	return &Texture{t: t, Width: width, Height: height, Stride: stride}, nil
+}
+
+// DestroyTexture frees the upload texture's GPU resources.
+func (ren *Renderer) DestroyTexture(tex *Texture) {
+	if tex == nil {
+		return
+	}
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+	C.destroy_upload_texture(&ren.dev.ctx, &tex.t)
+}
+
+// BeginFrameOn starts recording against the target for executor-driven
+// frames (GPU executor path).
+func (ren *Renderer) BeginFrameOn(target *RenderTarget, r, g, b, a float32) error {
+	return ren.BeginFrame(target, r, g, b, a)
+}
+
+// DrawTextureView renders a CPU-uploaded texture quad (view-based).
+func (ren *Renderer) DrawTextureView(tex *Texture, dstX, dstY, dstW, dstH float32, alpha float32) {
+	if tex == nil {
+		return
+	}
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+	C.draw_texture_view(&ren.r, tex.t.view,
+		C.float(dstX), C.float(dstY), C.float(dstW), C.float(dstH),
+		0, 0, 1, 1,
+		C.float(alpha),
+	)
+}
+
+// ReadbackTarget copies the render target's pixels to the CPU (BGRA,
+// row-major, tightly packed). Used by tests and diagnostics.
+func (ren *Renderer) ReadbackTarget(target *RenderTarget) ([]byte, bool) {
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+
+	out := make([]byte, int(target.Width)*4*int(target.Height))
+	if out == nil {
+		return nil, false
+	}
+
+	var pixels []byte
+	var res C.int
+	if len(out) > 0 {
+		res = C.readback_target(&ren.dev.ctx, &ren.r, &target.target,
+			unsafe.Pointer(&out[0]), C.uint32_t(target.Width*4))
+	} else {
+		res = C.readback_target(&ren.dev.ctx, &ren.r, &target.target, nil, 0)
+	}
+	if res != 0 {
+		return nil, false
+	}
+	_ = pixels
+	return out, true
 }

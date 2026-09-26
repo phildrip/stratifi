@@ -180,6 +180,17 @@ func main() {
 		BorderWidth:    engine.Config.BorderWidth,
 		TitlebarHeight: engine.Config.TitlebarHeight,
 	})
+	if os.Getenv("BLOXWM_GPU") == "1" {
+		if gpuExec, err := compositor.NewVulkanExecutor(outputW, outputH); err == nil {
+			// GPU composites each frame; BridgeTo copies into the parent
+			// shm surface after every render (KMS scanout removes this).
+			frameLoop.SetExecutor(compositor.BridgeExecutor{Inner: gpuExec, Out: backend})
+			defer gpuExec.Close()
+			fmt.Println("[+] GPU compositing enabled (Vulkan executor)")
+		} else {
+			fmt.Printf("[-] GPU executor unavailable (%v); using shm blitter\n", err)
+		}
+	}
 
 	go backend.RunEventLoop()
 
@@ -243,9 +254,9 @@ func main() {
 	// ACTOR GOROUTINE: owns all scene state (windows, surfaceToWin,
 	// activeWin) and renders. No other goroutine touches these.
 	var (
-		windows     = make(map[layout.WindowID]*WindowMapping)
+		windows      = make(map[layout.WindowID]*WindowMapping)
 		surfaceToWin = make(map[objRef]layout.WindowID)
-		activeWin   layout.WindowID
+		activeWin    layout.WindowID
 	)
 
 	renderTick := make(chan struct{}, 1) // coalescing render requests

@@ -201,6 +201,10 @@ type Executor interface {
 // SetConfig overrides the chrome metrics. Must be called before Run.
 func (fl *FrameLoop) SetConfig(cfg FrameConfig) { fl.cfg = cfg }
 
+// SetExecutor swaps the materializer (CPU blitter → Vulkan). Must be
+// called before the first render.
+func (fl *FrameLoop) SetExecutor(ex Executor) { fl.executor = ex }
+
 // SetScene/SetSnapshot/SetInfo install the actor's data hooks. Must be
 // called before Run/RenderOnce; the hooks then run on the calling
 // goroutine (the actor), which owns the scene state — no locking.

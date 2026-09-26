@@ -25,4 +25,15 @@ typedef struct {
     uint64_t modifier;
 } VkImportedBuffer;
 
+// CPU-upload texture (bloxwm-o2x phase 3): host-visible linear image.
+typedef struct {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    void* mapped;
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;
+} VkUploadTexture;
+
 #endif // VK_COMMON_H
