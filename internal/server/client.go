@@ -35,11 +35,11 @@ type Client struct {
 
 	mu           sync.Mutex
 	objects      objectTable
-	pools        []ShmPool
-	buffers      []ShmBuffer
-	surfaces     []Surface
-	xdgSurfaces  []XdgSurface
-	xdgToplevels []XdgToplevel
+	pools        poolStore
+	buffers      bufferStore
+	surfaces     surfaceStore
+	xdgSurfaces  xdgStore[XdgSurface]
+	xdgToplevels xdgStore[XdgToplevel]
 
 	serial atomic.Uint32
 	closed bool
@@ -55,12 +55,6 @@ func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
 		id:     id,
 		conn:   conn,
 		server: s,
-
-		pools:        make([]ShmPool, 0, 16),
-		buffers:      make([]ShmBuffer, 0, 32),
-		surfaces:     make([]Surface, 0, 16),
-		xdgSurfaces:  make([]XdgSurface, 0, 16),
-		xdgToplevels: make([]XdgToplevel, 0, 16),
 	}
 	// Object ID 1 is always the wl_display singleton
 	c.registerObject(1, ObjDisplay)
@@ -87,21 +81,11 @@ func (c *Client) unregisterObject(id uint32) {
 }
 
 func (c *Client) findBuffer(id uint32) (ShmBuffer, bool) {
-	for i := range c.buffers {
-		if c.buffers[i].ID == id {
-			return c.buffers[i], true
-		}
-	}
-	return ShmBuffer{}, false
+	return c.buffers.get(id)
 }
 
 func (c *Client) findPool(id uint32) (*ShmPool, bool) {
-	for i := range c.pools {
-		if c.pools[i].ID == id {
-			return &c.pools[i], true
-		}
-	}
-	return nil, false
+	return c.pools.get(id)
 }
 
 func (c *Client) findObject(id uint32) (ObjectType, bool) {
@@ -304,7 +288,7 @@ func (c *Client) HandleWlCompositorCreateSurface(senderID uint32, id uint32) err
 	defer c.mu.Unlock()
 
 	c.registerObject(id, ObjSurface)
-	c.surfaces = append(c.surfaces, Surface{
+	c.surfaces.add(Surface{
 		ID:       id,
 		ClientID: c.id,
 		Active:   true,
@@ -363,7 +347,7 @@ func (c *Client) HandleWlShmCreatePool(senderID uint32, id uint32, fd int, size 
 	defer c.mu.Unlock()
 
 	c.registerObject(id, ObjShmPool)
-	c.pools = append(c.pools, ShmPool{
+	c.pools.add(ShmPool{
 		ID:   id,
 		FD:   fd,
 		Size: int(size),
@@ -386,7 +370,7 @@ func (c *Client) HandleWlShmPoolCreateBuffer(senderID uint32, id uint32, offset 
 	defer c.mu.Unlock()
 
 	c.registerObject(id, ObjBuffer)
-	c.buffers = append(c.buffers, ShmBuffer{
+	c.buffers.add(ShmBuffer{
 		ID:       id,
 		PoolID:   senderID,
 		Offset:   offset,
@@ -404,12 +388,9 @@ func (c *Client) HandleWlShmPoolDestroy(senderID uint32) error {
 	defer c.mu.Unlock()
 
 	c.unregisterObject(senderID)
-	for i := range c.pools {
-		if c.pools[i].ID == senderID {
-			_ = c.pools[i].Close()
-			c.pools = append(c.pools[:i], c.pools[i+1:]...)
-			break
-		}
+	if pool, ok := c.pools.get(senderID); ok {
+		_ = pool.Close()
+		c.pools.remove(senderID)
 	}
 	return nil
 }
@@ -418,19 +399,18 @@ func (c *Client) HandleWlShmPoolResize(senderID uint32, size int32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.pools {
-		if c.pools[i].ID == senderID {
-			_ = unix.Munmap(c.pools[i].Data)
-			data, err := unix.Mmap(c.pools[i].FD, 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
-			if err != nil {
-				return fmt.Errorf("remap failed: %w", err)
-			}
-			c.pools[i].Size = int(size)
-			c.pools[i].Data = data
-			return nil
-		}
+	pool, ok := c.pools.get(senderID)
+	if !ok {
+		return fmt.Errorf("pool %d not found for resize", senderID)
 	}
-	return fmt.Errorf("pool %d not found for resize", senderID)
+	_ = unix.Munmap(pool.Data)
+	data, err := unix.Mmap(pool.FD, 0, int(size), unix.PROT_READ, unix.MAP_SHARED)
+	if err != nil {
+		return fmt.Errorf("remap failed: %w", err)
+	}
+	pool.Size = int(size)
+	pool.Data = data
+	return nil
 }
 
 // --- WlBufferHandler ---
@@ -440,12 +420,7 @@ func (c *Client) HandleWlBufferDestroy(senderID uint32) error {
 	defer c.mu.Unlock()
 
 	c.unregisterObject(senderID)
-	for i := range c.buffers {
-		if c.buffers[i].ID == senderID {
-			c.buffers = append(c.buffers[:i], c.buffers[i+1:]...)
-			break
-		}
-	}
+	c.buffers.remove(senderID)
 	return nil
 }
 
@@ -456,12 +431,7 @@ func (c *Client) HandleWlSurfaceDestroy(senderID uint32) error {
 	defer c.mu.Unlock()
 
 	c.unregisterObject(senderID)
-	for i := range c.surfaces {
-		if c.surfaces[i].ID == senderID {
-			c.surfaces[i].Active = false
-			break
-		}
-	}
+	c.surfaces.mutate(senderID, func(sf *Surface) { sf.Active = false })
 	return nil
 }
 
@@ -469,32 +439,38 @@ func (c *Client) HandleWlSurfaceAttach(senderID uint32, buffer uint32, x int32, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.surfaces {
-		if c.surfaces[i].Active && c.surfaces[i].ID == senderID {
-			c.surfaces[i].Pending.AttachedBufferID = buffer
-			c.surfaces[i].Pending.BufferOffsetX = x
-			c.surfaces[i].Pending.BufferOffsetY = y
-			return nil
+	applied := c.surfaces.mutate(senderID, func(sf *Surface) {
+		if !sf.Active {
+			return
 		}
+		sf.Pending.AttachedBufferID = buffer
+		sf.Pending.BufferOffsetX = x
+		sf.Pending.BufferOffsetY = y
+	})
+	if !applied {
+		return fmt.Errorf("surface %d not found for attach", senderID)
 	}
-	return fmt.Errorf("surface %d not found for attach", senderID)
+	return nil
 }
 
 func (c *Client) HandleWlSurfaceDamage(senderID uint32, x int32, y int32, width int32, height int32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.surfaces {
-		if c.surfaces[i].Active && c.surfaces[i].ID == senderID {
-			c.surfaces[i].Pending.DamageX = x
-			c.surfaces[i].Pending.DamageY = y
-			c.surfaces[i].Pending.DamageW = width
-			c.surfaces[i].Pending.DamageH = height
-			c.surfaces[i].Pending.HasDamage = true
-			return nil
+	applied := c.surfaces.mutate(senderID, func(sf *Surface) {
+		if !sf.Active {
+			return
 		}
+		sf.Pending.DamageX = x
+		sf.Pending.DamageY = y
+		sf.Pending.DamageW = width
+		sf.Pending.DamageH = height
+		sf.Pending.HasDamage = true
+	})
+	if !applied {
+		return fmt.Errorf("surface %d not found for damage", senderID)
 	}
-	return fmt.Errorf("surface %d not found for damage", senderID)
+	return nil
 }
 
 func (c *Client) HandleWlSurfaceDamageBuffer(senderID uint32, x int32, y int32, width int32, height int32) error {
@@ -519,24 +495,27 @@ func (c *Client) HandleWlSurfaceSetInputRegion(senderID uint32, region uint32) e
 func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	c.mu.Lock()
 
-	for i := range c.surfaces {
-		if c.surfaces[i].Active && c.surfaces[i].ID == senderID {
-			// Atomic state commit: pending -> current
-			c.surfaces[i].Current = c.surfaces[i].Pending
-			c.surfaces[i].Pending.HasDamage = false
-
-			surfCopy := c.surfaces[i]
-			c.mu.Unlock()
-
-			// Notify compositor of surface update outside of c.mu
-			if c.server.onCommit != nil {
-				c.server.onSurfaceCommitted(&surfCopy)
-			}
-			return nil
+	var surfCopy Surface
+	committed := c.surfaces.mutate(senderID, func(sf *Surface) {
+		if !sf.Active {
+			return
 		}
+		// Atomic state commit: pending -> current
+		sf.Current = sf.Pending
+		sf.Pending.HasDamage = false
+		surfCopy = *sf
+	})
+	if !committed {
+		c.mu.Unlock()
+		return fmt.Errorf("surface %d not found for commit", senderID)
 	}
 	c.mu.Unlock()
-	return fmt.Errorf("surface %d not found for commit", senderID)
+
+	// Notify compositor of surface update outside of c.mu
+	if c.server.onCommit != nil {
+		c.server.onSurfaceCommitted(&surfCopy)
+	}
+	return nil
 }
 
 func (c *Client) HandleWlSurfaceSetBufferTransform(senderID uint32, transform int32) error {
@@ -573,7 +552,7 @@ func (c *Client) HandleXdgWmBaseGetXdgSurface(senderID uint32, id uint32, surfac
 	defer c.mu.Unlock()
 
 	c.registerObject(id, ObjXdgSurface)
-	c.xdgSurfaces = append(c.xdgSurfaces, XdgSurface{
+	c.xdgSurfaces.add(id, XdgSurface{
 		ID:        id,
 		SurfaceID: surfaceID,
 		Active:    true,
@@ -592,12 +571,7 @@ func (c *Client) HandleXdgSurfaceDestroy(senderID uint32) error {
 	defer c.mu.Unlock()
 
 	c.unregisterObject(senderID)
-	for i := range c.xdgSurfaces {
-		if c.xdgSurfaces[i].ID == senderID {
-			c.xdgSurfaces[i].Active = false
-			break
-		}
-	}
+	c.xdgSurfaces.mutate(senderID, func(x *XdgSurface) { x.Active = false })
 	return nil
 }
 
@@ -605,33 +579,31 @@ func (c *Client) HandleXdgSurfaceGetToplevel(senderID uint32, id uint32) error {
 	c.mu.Lock()
 
 	c.registerObject(id, ObjXdgToplevel)
-	c.xdgToplevels = append(c.xdgToplevels, XdgToplevel{
+	top := c.xdgToplevels.add(id, XdgToplevel{
 		ID:           id,
 		XdgSurfaceID: senderID,
 		Active:       true,
 	})
 
-	for i := range c.xdgSurfaces {
-		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == senderID {
-			c.xdgSurfaces[i].ToplevelID = id
+	surf, found := c.xdgSurfaces.get(senderID)
+	if found && surf.Active {
+		surf.ToplevelID = id
 
-			top := c.xdgToplevels[len(c.xdgToplevels)-1]
-			if c.server.onToplevel != nil {
-				c.mu.Unlock()
-				c.server.onToplevelCreated(c, &top, senderID)
-				return nil
-			}
-
-			// Send default initial configure sequence
-			w := c.conn.WriterRef()
-			_ = xdgshell.SendXdgToplevelConfigure(w, id, 0, 0, nil)
-
-			serial := c.NextSerial()
-			c.xdgSurfaces[i].LastSerial = serial
-			_ = xdgshell.SendXdgSurfaceConfigure(w, senderID, serial)
+		if c.server.onToplevel != nil {
 			c.mu.Unlock()
+			c.server.onToplevelCreated(c, top, senderID)
 			return nil
 		}
+
+		// Send default initial configure sequence
+		w := c.conn.WriterRef()
+		_ = xdgshell.SendXdgToplevelConfigure(w, id, 0, 0, nil)
+
+		serial := c.NextSerial()
+		surf.LastSerial = serial
+		_ = xdgshell.SendXdgSurfaceConfigure(w, senderID, serial)
+		c.mu.Unlock()
+		return nil
 	}
 	c.mu.Unlock()
 	return fmt.Errorf("xdg_surface %d not found for get_toplevel", senderID)
@@ -649,12 +621,11 @@ func (c *Client) HandleXdgSurfaceAckConfigure(senderID uint32, serial uint32) er
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.xdgSurfaces {
-		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == senderID {
-			c.xdgSurfaces[i].Configured = true
-			return nil
+	c.xdgSurfaces.mutate(senderID, func(x *XdgSurface) {
+		if x.Active {
+			x.Configured = true
 		}
-	}
+	})
 	return nil
 }
 
@@ -665,12 +636,7 @@ func (c *Client) HandleXdgToplevelDestroy(senderID uint32) error {
 	defer c.mu.Unlock()
 
 	c.unregisterObject(senderID)
-	for i := range c.xdgToplevels {
-		if c.xdgToplevels[i].ID == senderID {
-			c.xdgToplevels[i].Active = false
-			break
-		}
-	}
+	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) { x.Active = false })
 	return nil
 }
 
@@ -682,12 +648,11 @@ func (c *Client) HandleXdgToplevelSetTitle(senderID uint32, title string) error 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.xdgToplevels {
-		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
-			c.xdgToplevels[i].Title = title
-			return nil
+	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) {
+		if x.Active {
+			x.Title = title
 		}
-	}
+	})
 	return nil
 }
 
@@ -695,12 +660,11 @@ func (c *Client) HandleXdgToplevelSetAppId(senderID uint32, appId string) error 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.xdgToplevels {
-		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
-			c.xdgToplevels[i].AppID = appId
-			return nil
+	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) {
+		if x.Active {
+			x.AppID = appId
 		}
-	}
+	})
 	return nil
 }
 
@@ -720,13 +684,12 @@ func (c *Client) HandleXdgToplevelSetMaxSize(senderID uint32, width int32, heigh
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.xdgToplevels {
-		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
-			c.xdgToplevels[i].MaxWidth = width
-			c.xdgToplevels[i].MaxHeight = height
-			return nil
+	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) {
+		if x.Active {
+			x.MaxWidth = width
+			x.MaxHeight = height
 		}
-	}
+	})
 	return nil
 }
 
@@ -734,13 +697,12 @@ func (c *Client) HandleXdgToplevelSetMinSize(senderID uint32, width int32, heigh
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.xdgToplevels {
-		if c.xdgToplevels[i].Active && c.xdgToplevels[i].ID == senderID {
-			c.xdgToplevels[i].MinWidth = width
-			c.xdgToplevels[i].MinHeight = height
-			return nil
+	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) {
+		if x.Active {
+			x.MinWidth = width
+			x.MinHeight = height
 		}
-	}
+	})
 	return nil
 }
 
@@ -951,12 +913,7 @@ func (c *Client) ConfigureToplevel(xdgSurfaceID uint32, toplevelID uint32, width
 	w := c.conn.WriterRef()
 	_ = xdgshell.SendXdgToplevelConfigure(w, toplevelID, width, height, states)
 	serial := c.NextSerial()
-	for i := range c.xdgSurfaces {
-		if c.xdgSurfaces[i].ID == xdgSurfaceID {
-			c.xdgSurfaces[i].LastSerial = serial
-			break
-		}
-	}
+	c.xdgSurfaces.mutate(xdgSurfaceID, func(x *XdgSurface) { x.LastSerial = serial })
 	_ = xdgshell.SendXdgSurfaceConfigure(w, xdgSurfaceID, serial)
 	_ = c.conn.Flush()
 }
@@ -966,41 +923,24 @@ func (c *Client) GetSurfaceBuffer(surfaceID uint32) (data []byte, width, height,
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var bufID uint32
-	for i := range c.surfaces {
-		if c.surfaces[i].Active && c.surfaces[i].ID == surfaceID {
-			bufID = c.surfaces[i].Current.AttachedBufferID
-			break
-		}
-	}
-	if bufID == 0 {
+	surf, ok := c.surfaces.get(surfaceID)
+	if !ok || !surf.Active || surf.Current.AttachedBufferID == 0 {
 		return nil, 0, 0, 0, false
 	}
-
-	var buf *ShmBuffer
-	for i := range c.buffers {
-		if c.buffers[i].ID == bufID {
-			buf = &c.buffers[i]
-			break
-		}
-	}
-	if buf == nil {
+	buf, ok := c.buffers.get(surf.Current.AttachedBufferID)
+	if !ok {
 		return nil, 0, 0, 0, false
 	}
-
-	for i := range c.pools {
-		if c.pools[i].ID == buf.PoolID {
-			pool := &c.pools[i]
-			start := int(buf.Offset)
-			end := start + int(buf.Stride*buf.Height)
-			if start >= 0 && end <= len(pool.Data) {
-				return pool.Data[start:end], buf.Width, buf.Height, buf.Stride, true
-			}
-			break
-		}
+	pool, ok := c.pools.get(buf.PoolID)
+	if !ok {
+		return nil, 0, 0, 0, false
 	}
-
-	return nil, 0, 0, 0, false
+	start := int(buf.Offset)
+	end := start + int(buf.Stride*buf.Height)
+	if start < 0 || end > len(pool.Data) {
+		return nil, 0, 0, 0, false
+	}
+	return pool.Data[start:end], buf.Width, buf.Height, buf.Stride, true
 }
 
 // ReleaseSurfaceBuffer sends wl_buffer.release to the currently attached buffer.
@@ -1008,18 +948,12 @@ func (c *Client) ReleaseSurfaceBuffer(surfaceID uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var bufID uint32
-	for i := range c.surfaces {
-		if c.surfaces[i].Active && c.surfaces[i].ID == surfaceID {
-			bufID = c.surfaces[i].Current.AttachedBufferID
-			break
-		}
-	}
-	if bufID == 0 {
+	surf, ok := c.surfaces.get(surfaceID)
+	if !ok || !surf.Active || surf.Current.AttachedBufferID == 0 {
 		return
 	}
 	w := c.conn.WriterRef()
-	_ = wayland.SendWlBufferRelease(w, bufID)
+	_ = wayland.SendWlBufferRelease(w, surf.Current.AttachedBufferID)
 }
 
 // GetSurfaceIDForXdgSurface returns the underlying wl_surface ID for an xdg_surface ID.
@@ -1027,10 +961,8 @@ func (c *Client) GetSurfaceIDForXdgSurface(xdgSurfaceID uint32) uint32 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for i := range c.xdgSurfaces {
-		if c.xdgSurfaces[i].Active && c.xdgSurfaces[i].ID == xdgSurfaceID {
-			return c.xdgSurfaces[i].SurfaceID
-		}
+	if x, ok := c.xdgSurfaces.get(xdgSurfaceID); ok && x.Active {
+		return x.SurfaceID
 	}
 	return 0
 }
@@ -1147,10 +1079,10 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 
-	for i := range c.pools {
-		_ = c.pools[i].Close()
+	for _, p := range c.pools.items {
+		_ = p.Close()
 	}
-	c.pools = nil
+	c.pools = poolStore{}
 	return c.conn.Close()
 }
 

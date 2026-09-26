@@ -259,16 +259,16 @@ func TestSurfaceCommitReentrancy(t *testing.T) {
 	}
 
 	c := &Client{
-		id:       1,
-		server:   srv,
-		surfaces: make([]Surface, 0, 4),
-		buffers:  make([]ShmBuffer, 0, 4),
-		pools:    make([]ShmPool, 0, 4),
+		id:     1,
+		server: srv,
 	}
+	c.surfaces.init()
+	c.buffers.init()
+	c.pools.init()
 	srv.clients[1] = c
 
 	// Register surface ID 3
-	c.surfaces = append(c.surfaces, Surface{
+	c.surfaces.add(Surface{
 		ID:     3,
 		Active: true,
 		Pending: SurfaceState{
