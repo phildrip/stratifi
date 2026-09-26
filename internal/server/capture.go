@@ -240,6 +240,15 @@ func (c *Client) HandleExtImageCopyCaptureFrameV1Capture(senderID uint32) error 
 	bufWidth, bufHeight, bufStride := buf.Width, buf.Height, buf.Stride
 	// Release the client lock: the grab may take milliseconds (Vulkan
 	// readback) and must not block concurrent client traffic.
+	//
+	// OWNERSHIP CONTRACT (bloxwm-aos audit): this is safe today because
+	// dispatch is strictly serial per client — the pool cannot be unmapped
+	// (WlShmPoolDestroy) while the grabber writes, since both run on this
+	// client's single dispatch goroutine. When the compositor core
+	// (bloxwm-o2x) drives grabs from the render thread, the pool MUST be
+	// pinned for the grab's duration (refcount or per-grab lease) before
+	// calling the grabber outside dispatch; WlShmPoolDestroy must refuse
+	// to unmap pinned pools.
 	c.mu.Unlock()
 
 	var failReason uint32
