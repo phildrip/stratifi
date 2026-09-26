@@ -307,7 +307,6 @@ func main() {
 	// Handle client disconnect
 	srv.SetOnClientDestroy(func(clientID uint32) {
 		mu.Lock()
-		defer mu.Unlock()
 
 		for winID, m := range windows {
 			if m.ClientID == clientID {
@@ -339,14 +338,25 @@ func main() {
 		// Focus falls to the first remaining window: without this, the
 		// router holds a dangling focus and keyboard goes nowhere until
 		// the next click.
+		//
+		// LOCK ORDER: SetFocus fires the onFocusChange callback which
+		// takes mu — it must NOT be called while holding mu (Go mutexes
+		// are not reentrant; this deadlock froze the compositor once).
+		// Snapshot the fall target under mu, then unlock before SetFocus.
+		var fallClient, fallSurface uint32
 		if len(winIDs) > 0 {
-			focusID := winIDs[0]
-			if fm, ok := windows[focusID]; ok {
-				activeWin = focusID
-				router.SetFocus(focusID, fm.ClientID, fm.SurfaceID)
+			if fm, ok := windows[winIDs[0]]; ok {
+				fallClient, fallSurface = fm.ClientID, fm.SurfaceID
 			}
 		}
+		mu.Unlock()
+
+		if fallClient != 0 {
+			activeWin = winIDs[0]
+			router.SetFocus(winIDs[0], fallClient, fallSurface)
+		}
 		requestRedraw()
+		return
 	})
 
 	fmt.Printf("[+] bloxwm is active on socket: %s\n", srv.SocketPath())
