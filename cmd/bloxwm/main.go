@@ -4,18 +4,19 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"bloxwm/internal/backend/nested"
-	"bloxwm/internal/input"
 	"bloxwm/internal/compositor"
+	"bloxwm/internal/input"
 	"bloxwm/internal/layout"
 	"bloxwm/internal/server"
 	"golang.org/x/sys/unix"
-	"time"
 )
 
+// WindowMapping ties a layout slot to its client's Wayland objects.
 type WindowMapping struct {
 	WinID        layout.WindowID
 	ClientID     uint32
@@ -27,6 +28,37 @@ type WindowMapping struct {
 	Rect         layout.Rect
 }
 
+// objRef scopes object lookups: Wayland object ids are per-client — two
+// clients both have surface id 3, so bare-id keys silently collide.
+type objRef struct {
+	clientID uint32
+	objID    uint32
+}
+
+// evKind enumerates the shell's event queue payload kinds (plain data;
+// the owner goroutine applies them sequentially — single-owner state).
+type evKind uint8
+
+const (
+	evWindowAdded evKind = iota
+	evClientGone
+	evCommitted
+	evFocusMoved
+	evQuit
+)
+
+// shellEvent is one message to the owner goroutine.
+type shellEvent struct {
+	kind         evKind
+	clientID     uint32
+	surfaceID    uint32
+	xdgSurfaceID uint32
+	toplevelID   uint32
+	winID        layout.WindowID
+	title        string
+	appID        string
+}
+
 func main() {
 	fmt.Println("=================================================================")
 	fmt.Println("                     Starting bloxwm                             ")
@@ -36,13 +68,10 @@ func main() {
 	outputW := int32(1280)
 	outputH := int32(720)
 
-	var mu sync.Mutex
-	windows := make(map[layout.WindowID]*WindowMapping)
-	// (clientID, objectID) keys: Wayland object ids are per-client — two
-	// clients both have surface id 3, so unscoped maps silently collide.
-	type objRef struct{ clientID, objID uint32 }
-	surfaceToWin := make(map[objRef]layout.WindowID)
-	var activeWin layout.WindowID
+	// OWNER-MODEL SHELL: no shared mutex. All scene state below is owned
+	// by the actor goroutine in runActor; server callbacks and the input
+	// pump communicate through the events channel (plain-data sends).
+	events := make(chan shellEvent, 128)
 
 	// 1. Initialize DOD Layout Engine
 	engine := layout.NewEngine(layout.LayoutConfig{
@@ -58,78 +87,25 @@ func main() {
 		H: outputH - 24,
 	}
 
-	var backend *nested.Backend
+	// 2. Router: reads a lock-free rect snapshot (atomic.Pointer) instead
+	// of touching owner state directly; focus moves queue through its own
+	// channel.
+	var sceneInfo atomic.Pointer[[]input.WindowInfo]
 	var srv *server.Server
 	var frameLoop *compositor.FrameLoop
 
-	exitCh := make(chan struct{}, 1) // closed-state signal for graceful shutdown
-
-	// Frame loop (internal/compositor): the nested backend is the Output;
-	// scene and snapshots come from the server state. One renderer
-	// goroutine owns the framebuffer; requests coalesce (drop stale).
-	sceneFn := func(dst []compositor.SceneWindow) []compositor.SceneWindow {
-		mu.Lock()
-		for _, m := range windows {
-			dst = append(dst, compositor.SceneWindow{
-				ClientID:  m.ClientID,
-				SurfaceID: m.SurfaceID,
-				Rect: compositor.Rect{
-					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
-				},
-				Active: m.WinID == activeWin,
-			})
-		}
-		mu.Unlock()
-		return dst
-	}
-	snapshotFn := func(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
-		if srv == nil {
-			return 0, 0, 0, 0, false
-		}
-		client := srv.GetClient(clientID)
-		if client == nil {
-			return 0, 0, 0, 0, false
-		}
-		return client.SnapshotSurfaceBuffer(surfaceID, dst)
-	}
-	infoFn := func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
-		if srv == nil {
-			return 0, 0, 0, false
-		}
-		client := srv.GetClient(clientID)
-		if client == nil {
-			return 0, 0, 0, false
-		}
-		return client.SurfaceBufferInfo(surfaceID)
-	}
-	// frameLoop is created after the nested backend exists (below); the
-	// closures capture the shared state.
-	requestRedraw := func() {
-		if frameLoop != nil {
-			frameLoop.Request()
-		}
-	}
-	// redrawAll is aliased below once the frame loop exists; before that
-	// it is a no-op (nothing to render without an output).
-	redrawAll := requestRedraw
-
-	// 2. Initialize zero-allocation Input RingBuffer and Router
 	ringBuf := input.NewRingBuffer(2048)
 	var router *input.Router
 
 	router = input.NewRouter(
 		func(x, y float64) (input.WindowInfo, bool) {
-			mu.Lock()
-			defer mu.Unlock()
-			hit := engine.HitTest(layout.Point{X: int32(x), Y: int32(y)})
-			if hit.Type != layout.HitNone {
-				if m, ok := windows[hit.WindowID]; ok {
-					return input.WindowInfo{
-						WinID:     m.WinID,
-						ClientID:  m.ClientID,
-						SurfaceID: m.SurfaceID,
-						Rect:      m.Rect,
-					}, true
+			if list := sceneInfo.Load(); list != nil {
+				for _, info := range *list {
+					r := info.Rect
+					if x >= float64(r.X) && x < float64(r.X+r.W) &&
+						y >= float64(r.Y) && y < float64(r.Y+r.H) {
+						return info, true
+					}
 				}
 			}
 			return input.WindowInfo{}, false
@@ -141,14 +117,15 @@ func main() {
 			return srv.GetClient(clientID)
 		},
 		func(oldWin, newWin layout.WindowID) {
-			mu.Lock()
-			activeWin = newWin
-			mu.Unlock()
-			redrawAll()
+			select {
+			case events <- shellEvent{kind: evFocusMoved, winID: newWin}:
+			default:
+			}
 		},
 	)
 
 	// 3. Initialize Nested Backend connecting to parent Sway
+	exitCh := make(chan struct{}, 1)
 	cb := nested.Callbacks{
 		OnPointerMotion: func(x, y float64) {
 			ringBuf.Push(input.InputEvent{
@@ -175,12 +152,12 @@ func main() {
 			})
 		},
 		OnModifiers: func(depressed, latched, locked, group uint32) {
-			router.HandleKeyboardModifiers(depressed, latched, locked, group)
+			// Modifiers route through the router's own state; the input
+			// consumer goroutine applies them.
+			go router.HandleKeyboardModifiers(depressed, latched, locked, group)
 		},
 		OnClose: func() {
-			// Graceful: signal the main loop so deferred cleanup runs
-			// (server Close flushes client sockets instead of vanishing
-			// mid-message, nested backend unmaps cleanly).
+			// Graceful: signal the actor so deferred cleanup runs.
 			fmt.Println("[*] Parent window closed. Shutting down.")
 			select {
 			case exitCh <- struct{}{}:
@@ -189,6 +166,7 @@ func main() {
 		},
 	}
 
+	var backend *nested.Backend
 	var err error
 	backend, err = nested.NewBackend(outputW, outputH, cb)
 	if err != nil {
@@ -197,12 +175,11 @@ func main() {
 	}
 	defer backend.Close()
 
-	frameLoop = compositor.NewFrameLoopWithInfo(backend, sceneFn, snapshotFn, infoFn)
+	frameLoop = compositor.NewFrameLoop(backend, nil, nil)
 	frameLoop.SetConfig(compositor.FrameConfig{
 		BorderWidth:    engine.Config.BorderWidth,
 		TitlebarHeight: engine.Config.TitlebarHeight,
 	})
-	go frameLoop.Run()
 
 	go backend.RunEventLoop()
 
@@ -221,9 +198,6 @@ func main() {
 		}
 	}()
 
-	// Initial screen paint
-	redrawAll()
-
 	// 5. Initialize bloxwm Wayland Server
 	socketName := "wayland-blox-0"
 	srv, err = server.NewServer(socketName)
@@ -238,142 +212,219 @@ func main() {
 		defer unix.Close(kmFD)
 	}
 
-	// Handle new toplevel window
+	// Server callbacks: channel sends only — the actor applies them.
 	srv.SetOnToplevel(func(c *server.Client, toplevel *server.XdgToplevel, xdgSurfaceID uint32) {
-		mu.Lock()
-		defer mu.Unlock()
-
-		winID := engine.SlotMap.Allocate()
-		_ = engine.AddWindow(winID)
-
-		winIDs, rects := engine.Compute(outputBounds)
-
-		// Update all window rects
-		for i, id := range winIDs {
-			if m, ok := windows[id]; ok {
-				m.Rect = rects[i]
-				targetClient := srv.GetClient(m.ClientID)
-				if targetClient != nil {
-					bodyW := m.Rect.W - 2*engine.Config.BorderWidth
-					bodyH := m.Rect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
-					targetClient.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
-				}
-			}
+		events <- shellEvent{
+			kind:         evWindowAdded,
+			clientID:     c.ID(),
+			surfaceID:    c.GetSurfaceIDForXdgSurface(xdgSurfaceID),
+			xdgSurfaceID: xdgSurfaceID,
+			toplevelID:   toplevel.ID,
+			title:        toplevel.Title,
+			appID:        toplevel.AppID,
 		}
-
-		// Find rect for this new window
-		var assignedRect layout.Rect
-		for i, id := range winIDs {
-			if id == winID {
-				assignedRect = rects[i]
-				break
-			}
-		}
-
-		surfaceID := c.GetSurfaceIDForXdgSurface(xdgSurfaceID)
-		mapping := &WindowMapping{
-			WinID:        winID,
-			ClientID:     c.ID(),
-			SurfaceID:    surfaceID,
-			XdgSurfaceID: xdgSurfaceID,
-			ToplevelID:   toplevel.ID,
-			Title:        toplevel.Title,
-			AppID:        toplevel.AppID,
-			Rect:         assignedRect,
-		}
-		windows[winID] = mapping
-		surfaceToWin[objRef{c.ID(), surfaceID}] = winID
-		surfaceToWin[objRef{c.ID(), xdgSurfaceID}] = winID
-		activeWin = winID
-
-		bodyW := assignedRect.W - 2*engine.Config.BorderWidth
-		bodyH := assignedRect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
-		c.ConfigureToplevel(xdgSurfaceID, toplevel.ID, bodyW, bodyH, nil)
-		fmt.Printf("[+] New window registered: WinID=%d Title=%q AppID=%q (size: %dx%d)\n", winID, toplevel.Title, toplevel.AppID, bodyW, bodyH)
 	})
 
-	// Handle surface commit
 	srv.SetOnCommit(func(s *server.Surface) {
-		mu.Lock()
-		if winID, ok := surfaceToWin[objRef{s.ClientID, s.ID}]; ok {
-			if m, exists := windows[winID]; exists {
-				m.SurfaceID = s.ID
-			}
+		select {
+		case events <- shellEvent{kind: evCommitted, clientID: s.ClientID, surfaceID: s.ID}:
+		default:
+			// Commits coalesce: a newer one supersedes the dropped.
 		}
-		requestRedraw()
-		mu.Unlock()
 	})
 
-	// Handle client disconnect
 	srv.SetOnClientDestroy(func(clientID uint32) {
-		mu.Lock()
-
-		for winID, m := range windows {
-			if m.ClientID == clientID {
-				delete(windows, winID)
-				delete(surfaceToWin, objRef{m.ClientID, m.SurfaceID})
-				delete(surfaceToWin, objRef{m.ClientID, m.XdgSurfaceID})
-				_ = engine.RemoveWindow(winID)
-				if activeWin == winID {
-					activeWin = 0
-				}
-				fmt.Printf("[-] Window closed: WinID=%d ClientID=%d\n", winID, clientID)
-			}
-		}
-
-		// Recompute layout for remaining windows
-		winIDs, rects := engine.Compute(outputBounds)
-		for i, id := range winIDs {
-			if m, ok := windows[id]; ok {
-				m.Rect = rects[i]
-				targetClient := srv.GetClient(m.ClientID)
-				if targetClient != nil {
-					bodyW := m.Rect.W - 2*engine.Config.BorderWidth
-					bodyH := m.Rect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
-					targetClient.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
-				}
-			}
-		}
-
-		// Focus falls to the first remaining window: without this, the
-		// router holds a dangling focus and keyboard goes nowhere until
-		// the next click.
-		//
-		// LOCK ORDER: SetFocus fires the onFocusChange callback which
-		// takes mu — it must NOT be called while holding mu (Go mutexes
-		// are not reentrant; this deadlock froze the compositor once).
-		// Snapshot the fall target under mu, then unlock before SetFocus.
-		var fallClient, fallSurface uint32
-		if len(winIDs) > 0 {
-			if fm, ok := windows[winIDs[0]]; ok {
-				fallClient, fallSurface = fm.ClientID, fm.SurfaceID
-			}
-		}
-		mu.Unlock()
-
-		if fallClient != 0 {
-			activeWin = winIDs[0]
-			router.SetFocus(winIDs[0], fallClient, fallSurface)
-		}
-		requestRedraw()
-		return
+		events <- shellEvent{kind: evClientGone, clientID: clientID}
 	})
 
 	fmt.Printf("[+] bloxwm is active on socket: %s\n", srv.SocketPath())
 	fmt.Printf("[+] Run clients with: WAYLAND_DISPLAY=%s foot\n", socketName)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// ACTOR GOROUTINE: owns all scene state (windows, surfaceToWin,
+	// activeWin) and renders. No other goroutine touches these.
+	var (
+		windows     = make(map[layout.WindowID]*WindowMapping)
+		surfaceToWin = make(map[objRef]layout.WindowID)
+		activeWin   layout.WindowID
+	)
 
+	renderTick := make(chan struct{}, 1) // coalescing render requests
+
+	// publishScene pushes a lock-free WindowInfo list for the router's
+	// hit-testing (atomic.Pointer swap: readers never block).
+	publishScene := func() {
+		list := make([]input.WindowInfo, 0, len(windows))
+		for _, m := range windows {
+			list = append(list, input.WindowInfo{
+				WinID:     m.WinID,
+				ClientID:  m.ClientID,
+				SurfaceID: m.SurfaceID,
+				Rect:      m.Rect,
+			})
+		}
+		sceneInfo.Store(&list)
+	}
+
+	// The frame loop renders from closures that run ON the actor
+	// goroutine — single-owner discipline, no locks needed.
+	frameLoop.SetScene(func(dst []compositor.SceneWindow) []compositor.SceneWindow {
+		for _, m := range windows {
+			dst = append(dst, compositor.SceneWindow{
+				ClientID:  m.ClientID,
+				SurfaceID: m.SurfaceID,
+				Rect: compositor.Rect{
+					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
+				},
+				Active: m.WinID == activeWin,
+			})
+		}
+		return dst
+	})
+	frameLoop.SetSnapshot(func(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+		client := srv.GetClient(clientID)
+		if client == nil {
+			return 0, 0, 0, 0, false
+		}
+		return client.SnapshotSurfaceBuffer(surfaceID, dst)
+	})
+	frameLoop.SetInfo(func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
+		client := srv.GetClient(clientID)
+		if client == nil {
+			return 0, 0, 0, false
+		}
+		return client.SurfaceBufferInfo(surfaceID)
+	})
+
+	// Server run loop.
 	go func() {
 		if err := srv.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "[-] Server run error: %v\n", err)
 		}
 	}()
 
-	select {
-	case <-sigCh:
-	case <-exitCh:
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	// The actor: drains events (state mutations), renders on request.
+	applyEvent := func(ev shellEvent) {
+		switch ev.kind {
+		case evWindowAdded:
+			winID := engine.SlotMap.Allocate()
+			_ = engine.AddWindow(winID)
+
+			winIDs, rects := engine.Compute(outputBounds)
+			for i, id := range winIDs {
+				if m, ok := windows[id]; ok {
+					m.Rect = rects[i]
+					if targetClient := srv.GetClient(m.ClientID); targetClient != nil {
+						bodyW := m.Rect.W - 2*engine.Config.BorderWidth
+						bodyH := m.Rect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
+						targetClient.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
+					}
+				}
+			}
+
+			surfaceID := srv.GetClient(ev.clientID).GetSurfaceIDForXdgSurface(ev.xdgSurfaceID)
+			assignedRect := layout.Rect{}
+			for i, id := range winIDs {
+				if id == winID {
+					assignedRect = rects[i]
+					break
+				}
+			}
+			mapping := &WindowMapping{
+				WinID:        winID,
+				ClientID:     ev.clientID,
+				SurfaceID:    surfaceID,
+				XdgSurfaceID: ev.xdgSurfaceID,
+				ToplevelID:   ev.toplevelID,
+				Title:        ev.title,
+				AppID:        ev.appID,
+				Rect:         assignedRect,
+			}
+			windows[winID] = mapping
+			surfaceToWin[objRef{ev.clientID, surfaceID}] = winID
+			surfaceToWin[objRef{ev.clientID, ev.xdgSurfaceID}] = winID
+			activeWin = winID
+
+			bodyW := assignedRect.W - 2*engine.Config.BorderWidth
+			bodyH := assignedRect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
+			if targetClient := srv.GetClient(ev.clientID); targetClient != nil {
+				targetClient.ConfigureToplevel(ev.xdgSurfaceID, ev.toplevelID, bodyW, bodyH, nil)
+			}
+			fmt.Printf("[+] New window registered: WinID=%d Title=%q AppID=%q (size: %dx%d)\n",
+				winID, ev.title, ev.appID, bodyW, bodyH)
+
+		case evCommitted:
+			if winID, ok := surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
+				if m, exists := windows[winID]; exists {
+					m.SurfaceID = ev.surfaceID
+				}
+			}
+
+		case evClientGone:
+			for winID, m := range windows {
+				if m.ClientID == ev.clientID {
+					delete(windows, winID)
+					delete(surfaceToWin, objRef{m.ClientID, m.SurfaceID})
+					delete(surfaceToWin, objRef{m.ClientID, m.XdgSurfaceID})
+					_ = engine.RemoveWindow(winID)
+					if activeWin == winID {
+						activeWin = 0
+					}
+					fmt.Printf("[-] Window closed: WinID=%d ClientID=%d\n", winID, ev.clientID)
+				}
+			}
+
+			// Recompute layout for the survivors and reconfigure them.
+			winIDs, rects := engine.Compute(outputBounds)
+			for i, id := range winIDs {
+				if m, ok := windows[id]; ok {
+					m.Rect = rects[i]
+					if targetClient := srv.GetClient(m.ClientID); targetClient != nil {
+						bodyW := m.Rect.W - 2*engine.Config.BorderWidth
+						bodyH := m.Rect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
+						targetClient.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
+					}
+				}
+			}
+
+			// Focus falls to the first remaining window: a plain channel
+			// command the router applies on its own loop — no cross-
+			// goroutine method calls, no lock-order contracts.
+			if len(winIDs) > 0 {
+				if m, ok := windows[winIDs[0]]; ok {
+					activeWin = winIDs[0]
+					router.RequestFocus(winIDs[0], m.ClientID, m.SurfaceID)
+				}
+			}
+
+			publishScene()
+		}
 	}
-	fmt.Println("[*] Shutting down bloxwm...")
+
+	publishScene()
+
+	for {
+		select {
+		case ev := <-events:
+			applyEvent(ev)
+			// State changed: coalesce a render.
+			select {
+			case renderTick <- struct{}{}:
+			default:
+			}
+
+		case <-renderTick:
+			frameLoop.RenderOnce() // owner goroutine: single-owner discipline
+
+		case <-exitCh:
+			fmt.Println("[*] Shutting down bloxwm...")
+			return
+
+		case <-sigCh:
+			fmt.Println("[*] Shutting down bloxwm...")
+			return
+		}
+	}
 }

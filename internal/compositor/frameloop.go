@@ -187,3 +187,10 @@ type Executor interface {
 
 // SetConfig overrides the chrome metrics. Must be called before Run.
 func (fl *FrameLoop) SetConfig(cfg FrameConfig) { fl.cfg = cfg }
+
+// SetScene/SetSnapshot/SetInfo install the actor's data hooks. Must be
+// called before Run/RenderOnce; the hooks then run on the calling
+// goroutine (the actor), which owns the scene state — no locking.
+func (fl *FrameLoop) SetScene(fn SceneFn)           { fl.scene = fn }
+func (fl *FrameLoop) SetSnapshot(fn SnapshotFn)     { fl.snap = fn }
+func (fl *FrameLoop) SetInfo(fn SurfaceInfoFn)      { fl.info = fn }

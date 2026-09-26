@@ -15,6 +15,9 @@ type WindowInfo struct {
 
 // Router coordinates hardware/synthetic input events, hit-testing against
 // window geometry, and distributing Wayland pointer/keyboard events to clients.
+// Focus state is single-owner: mutations happen only on the event-consumer
+// goroutine (ProcessEvent / SetFocus from there); cross-goroutine focus
+// changes queue through focusReq.
 type Router struct {
 	cursorX float64
 	cursorY float64
@@ -30,6 +33,14 @@ type Router struct {
 	lookupWindow  func(x, y float64) (info WindowInfo, hit bool)
 	getClient     func(clientID uint32) *server.Client
 	onFocusChange func(oldWin, newWin layout.WindowID)
+	focusReq      chan focusTarget
+}
+
+// focusTarget is one queued cross-goroutine focus command.
+type focusTarget struct {
+	winID     layout.WindowID
+	clientID  uint32
+	surfaceID uint32
 }
 
 // NewRouter constructs a new input event router.
@@ -42,6 +53,7 @@ func NewRouter(
 		lookupWindow:  lookupWindow,
 		getClient:     getClient,
 		onFocusChange: onFocusChange,
+		focusReq:      make(chan focusTarget, 8),
 	}
 }
 
@@ -86,8 +98,22 @@ func (r *Router) SetFocus(targetWin layout.WindowID, clientID, surfaceID uint32)
 }
 
 // ProcessEvent routes a single InputEvent to the appropriate subsystem.
-// Operates with zero heap allocations (0 allocs/op).
+// Pending cross-goroutine focus commands drain first (they apply on this
+// goroutine, honoring the router's single-owner focus state). Operates
+// with zero heap allocations (0 allocs/op).
 func (r *Router) ProcessEvent(ev InputEvent) {
+	// Apply queued focus commands first (they supersede stale pointer
+	// focus moves).
+	for {
+		select {
+		case ft := <-r.focusReq:
+			r.SetFocus(ft.winID, ft.clientID, ft.surfaceID)
+			continue
+		default:
+		}
+		break
+	}
+
 	timeMs := uint32(ev.TimeUsec / 1000)
 
 	switch ev.Type {
@@ -99,6 +125,25 @@ func (r *Router) ProcessEvent(ev InputEvent) {
 		r.HandlePointerButton(timeMs, ev.Code, ev.State)
 	case EventKey:
 		r.HandleKeyboardKey(timeMs, ev.Code, ev.State)
+	}
+}
+
+// EventFocusTarget is a cross-goroutine focus command: the owner (compositor
+// actor) goroutine asks the router to move keyboard focus. The router owns
+// its focus state; commands queue through its own event channel and apply
+// on the input-consumer goroutine — no cross-goroutine method calls.
+type InputEventKind uint8
+
+const (
+	EventFocusTarget InputEventKind = 0xFF
+)
+
+// RequestFocus queues a focus transfer handled on the router's own loop.
+func (r *Router) RequestFocus(winID layout.WindowID, clientID, surfaceID uint32) {
+	select {
+	case r.focusReq <- focusTarget{winID: winID, clientID: clientID, surfaceID: surfaceID}:
+	default:
+		// A pending focus request supersedes this one (drop stale).
 	}
 }
 
