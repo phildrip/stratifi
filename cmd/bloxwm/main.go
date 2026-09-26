@@ -9,8 +9,8 @@ import (
 
 	"bloxwm/internal/backend/nested"
 	"bloxwm/internal/input"
+	"bloxwm/internal/compositor"
 	"bloxwm/internal/layout"
-	"bloxwm/internal/render"
 	"bloxwm/internal/server"
 	"golang.org/x/sys/unix"
 	"time"
@@ -57,94 +57,70 @@ func main() {
 
 	var backend *nested.Backend
 	var srv *server.Server
+	var frameLoop *compositor.FrameLoop
 
-	// Renderer goroutine: single owner of the framebuffer. Renders from a
-	// snapshot of the window list taken under mu, so no framebuffer access
-	// ever races teardown or commit paths (bloxwm-aos race fix; the o2x
-	// frame-loop shape in miniature). Scratch is renderer-local: grown once
-	// per surface size change, no steady-state allocation.
-	renderCh := make(chan struct{}, 1)
-	go func() {
-		var scratch []byte
-		for range renderCh {
-			// Snapshot the window list under mu; render lock-free.
-			mu.Lock()
-			winList := make([]WindowMapping, 0, len(windows))
-			for _, m := range windows {
-				winList = append(winList, *m)
-			}
-			active := activeWin
-			mu.Unlock()
-
-			if backend == nil {
-				continue
-			}
-			pixels := backend.Pixels()
-			stride := backend.Stride()
-
-			// Background: Charcoal 0xFF181825
-			render.Clear(pixels, 0xFF181825)
-
-			for i := range winList {
-				m := &winList[i]
-				client := srv.GetClient(m.ClientID)
-				if client == nil {
-					continue
-				}
-
-				rect := m.Rect
-				borderCol := uint32(0xFF45475A) // Dim gray border for inactive
-				if m.WinID == active {
-					borderCol = uint32(0xFF89B4FA) // Cyan/Blue border for active
-				}
-
-				// 1. Draw window container background
-				render.FillRect(pixels, stride, rect.X, rect.Y, rect.W, rect.H, outputW, outputH, 0xFF1E1E2E)
-
-				// 2. Draw border
-				render.DrawBorder(pixels, stride, rect.X, rect.Y, rect.W, rect.H, engine.Config.BorderWidth, outputW, outputH, borderCol)
-
-				// 3. Draw titlebar
-				titlebarH := engine.Config.TitlebarHeight
-				titlebarCol := uint32(0xFF313244)
-				if m.WinID == active {
-					titlebarCol = uint32(0xFF45475A)
-				}
-				render.FillRect(pixels, stride, rect.X+engine.Config.BorderWidth, rect.Y+engine.Config.BorderWidth, rect.W-2*engine.Config.BorderWidth, titlebarH, outputW, outputH, titlebarCol)
-
-				// 4. Blit client pixels beneath titlebar. The snapshot
-				// copies under the client mutex so the pool's munmap on
-				// teardown can never race the read.
-				bodyX := rect.X + engine.Config.BorderWidth
-				bodyY := rect.Y + titlebarH + engine.Config.BorderWidth
-				bodyW := rect.W - 2*engine.Config.BorderWidth
-				bodyH := rect.H - titlebarH - 2*engine.Config.BorderWidth
-
-				if _, sH, sStride, infoOK := client.SurfaceBufferInfo(m.SurfaceID); infoOK {
-					if need := int(sStride) * int(sH); need > len(scratch) {
-						scratch = make([]byte, need)
-					}
-				}
-				n, cW, cH, cStride, ok := client.SnapshotSurfaceBuffer(m.SurfaceID, scratch)
-				if ok && n > 0 {
-					render.Blit(pixels, stride, bodyX, bodyY, outputW, outputH, scratch[:n], cStride, cW, cH)
-				} else {
-					// Empty placeholder if not yet committed
-					render.FillRect(pixels, stride, bodyX, bodyY, bodyW, bodyH, outputW, outputH, 0xFF11111B)
-				}
-			}
-
-			backend.Damage(0, 0, outputW, outputH)
-			_ = backend.Present()
+	// Frame loop (internal/compositor): the nested backend is the Output;
+	// scene and snapshots come from the server state. One renderer
+	// goroutine owns the framebuffer; requests coalesce (drop stale).
+	sceneFn := func(dst []compositor.SceneWindow) []compositor.SceneWindow {
+		mu.Lock()
+		for _, m := range windows {
+			dst = append(dst, compositor.SceneWindow{
+				SurfaceID: m.SurfaceID,
+				Rect: compositor.Rect{
+					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
+				},
+				Active: m.WinID == activeWin,
+			})
 		}
-	}()
+		mu.Unlock()
+		return dst
+	}
+	snapshotFn := func(surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+		if srv == nil {
+			return 0, 0, 0, 0, false
+		}
+		mu.Lock()
+		winID, ok := surfaceToWin[surfaceID]
+		if !ok {
+			mu.Unlock()
+			return 0, 0, 0, 0, false
+		}
+		clientID := windows[winID].ClientID
+		mu.Unlock()
+		client := srv.GetClient(clientID)
+		if client == nil {
+			return 0, 0, 0, 0, false
+		}
+		return client.SnapshotSurfaceBuffer(surfaceID, dst)
+	}
+	infoFn := func(surfaceID uint32) (int32, int32, int32, bool) {
+		if srv == nil {
+			return 0, 0, 0, false
+		}
+		mu.Lock()
+		winID, ok := surfaceToWin[surfaceID]
+		if !ok {
+			mu.Unlock()
+			return 0, 0, 0, false
+		}
+		clientID := windows[winID].ClientID
+		mu.Unlock()
+		client := srv.GetClient(clientID)
+		if client == nil {
+			return 0, 0, 0, false
+		}
+		return client.SurfaceBufferInfo(surfaceID)
+	}
+	// frameLoop is created after the nested backend exists (below); the
+	// closures capture the shared state.
 	requestRedraw := func() {
-		select {
-		case renderCh <- struct{}{}:
-		default:
-			// A render is already queued: coalesce (drop stale frames).
+		if frameLoop != nil {
+			frameLoop.Request()
 		}
 	}
+	// redrawAll is aliased below once the frame loop exists; before that
+	// it is a no-op (nothing to render without an output).
 	redrawAll := requestRedraw
 
 	// 2. Initialize zero-allocation Input RingBuffer and Router
@@ -224,6 +200,13 @@ func main() {
 		os.Exit(1)
 	}
 	defer backend.Close()
+
+	frameLoop = compositor.NewFrameLoopWithInfo(backend, sceneFn, snapshotFn, infoFn)
+	frameLoop.SetConfig(compositor.FrameConfig{
+		BorderWidth:    engine.Config.BorderWidth,
+		TitlebarHeight: engine.Config.TitlebarHeight,
+	})
+	go frameLoop.Run()
 
 	go backend.RunEventLoop()
 

@@ -217,3 +217,6 @@ func (fl *FrameLoop) snapInto(surfaceID uint32) (ok bool, w, h, stride int32) {
 	}
 	return false, 0, 0, 0
 }
+
+// SetConfig overrides the chrome metrics. Must be called before Run.
+func (fl *FrameLoop) SetConfig(cfg FrameConfig) { fl.cfg = cfg }
