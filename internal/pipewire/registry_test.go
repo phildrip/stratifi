@@ -61,14 +61,14 @@ func TestNextResIDSequential(t *testing.T) {
 func TestParseCoreInfo(t *testing.T) {
 	var b spa.Builder
 	b.BeginStruct()
-	b.Int(0)              // id
-	b.Int(1304448578)     // cookie
+	b.Int(0)          // id
+	b.Int(1304448578) // cookie
 	b.String("phil")
 	b.String("phil-desktop")
 	b.String("1.6.2")
 	b.String("pipewire-0")
-	b.Long(3)             // change mask
-	b.BeginStruct()       // dict
+	b.Long(3)       // change mask
+	b.BeginStruct() // dict
 	b.Int(0)
 	b.End()
 	b.End()
