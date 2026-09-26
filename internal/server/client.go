@@ -860,6 +860,7 @@ func (c *Client) SendKeyboardEnter(surfaceID uint32, keys []byte) {
 	if c.keyboardID == 0 {
 		return
 	}
+	fmt.Printf("[KBD] client=%d ENTER surface=%d\n", c.id, surfaceID)
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	_ = wayland.SendWlKeyboardEnter(w, c.keyboardID, serial, surfaceID, keys)
@@ -873,6 +874,7 @@ func (c *Client) SendKeyboardLeave(surfaceID uint32) {
 	if c.keyboardID == 0 {
 		return
 	}
+	fmt.Printf("[KBD] client=%d LEAVE surface=%d\n", c.id, surfaceID)
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	_ = wayland.SendWlKeyboardLeave(w, c.keyboardID, serial, surfaceID)
@@ -886,6 +888,7 @@ func (c *Client) SendKeyboardKey(timeMs uint32, key uint32, state uint32) {
 	if c.keyboardID == 0 {
 		return
 	}
+	fmt.Printf("[KBD] client=%d KEY key=%d state=%d\n", c.id, key, state)
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	_ = wayland.SendWlKeyboardKey(w, c.keyboardID, serial, timeMs, key, state)

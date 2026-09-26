@@ -14,6 +14,7 @@ type Quad struct {
 // Blit is one client-surface blit: destination rect plus the surface to
 // resolve through the executor's source hooks.
 type Blit struct {
+	ClientID     uint32 // object ids are per-client: (client, surface) keys
 	SurfaceID    uint32
 	DstX, DstY   int32
 	DstW, DstH   int32
@@ -83,6 +84,7 @@ func (dl *DrawList) Build(scene []SceneWindow, cfg FrameConfig, outW, outH int32
 
 		// Client blit beneath the titlebar.
 		dl.Blits = append(dl.Blits, Blit{
+			ClientID:  w.ClientID,
 			SurfaceID: w.SurfaceID,
 			DstX:      r.X + bw,
 			DstY:      r.Y + bw + th,
@@ -94,11 +96,11 @@ func (dl *DrawList) Build(scene []SceneWindow, cfg FrameConfig, outW, outH int32
 
 // AvailFn reports a surface's client buffer geometry (w, h, stride, ok).
 // Stride MUST come from the source: client buffers may be padded, so
-// stride is not derivable from width.
-type AvailFn func(surfaceID uint32) (w, h, stride int32, ok bool)
+// stride is not derivable from width. The key is (clientID, surfaceID).
+type AvailFn func(clientID, surfaceID uint32) (w, h, stride int32, ok bool)
 
 // CopyFn copies a surface's pixels into dst under the source's lock.
-type CopyFn func(surfaceID uint32, dst []byte) (n int, ok bool)
+type CopyFn func(clientID, surfaceID uint32, dst []byte) (n int, ok bool)
 
 // CPUExecutor materializes a DrawList onto a CPU pixel Output using the
 // blitter package. Owned by the frame loop's renderer goroutine.
@@ -135,7 +137,7 @@ func (e *CPUExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 
 	for i := range dl.Blits {
 		b := &dl.Blits[i]
-		sw, sh, sStride, ok := avail(b.SurfaceID)
+		sw, sh, sStride, ok := avail(b.ClientID, b.SurfaceID)
 		if !ok || sw <= 0 || sh <= 0 || sStride <= 0 {
 			render.FillRect(pixels, stride, b.DstX, b.DstY, b.DstW, b.DstH, outW, outH, PlaceholderColor)
 			continue
@@ -143,7 +145,7 @@ func (e *CPUExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 		if need := int(sStride) * int(sh); need > len(e.scratch) {
 			e.scratch = make([]byte, need)
 		}
-		n, ok := copyFn(b.SurfaceID, e.scratch)
+		n, ok := copyFn(b.ClientID, b.SurfaceID, e.scratch)
 		if !ok || n <= 0 {
 			render.FillRect(pixels, stride, b.DstX, b.DstY, b.DstW, b.DstH, outW, outH, PlaceholderColor)
 			continue

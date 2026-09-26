@@ -38,7 +38,10 @@ func main() {
 
 	var mu sync.Mutex
 	windows := make(map[layout.WindowID]*WindowMapping)
-	surfaceToWin := make(map[uint32]layout.WindowID)
+	// (clientID, objectID) keys: Wayland object ids are per-client — two
+	// clients both have surface id 3, so unscoped maps silently collide.
+	type objRef struct{ clientID, objID uint32 }
+	surfaceToWin := make(map[objRef]layout.WindowID)
 	var activeWin layout.WindowID
 
 	// 1. Initialize DOD Layout Engine
@@ -68,6 +71,7 @@ func main() {
 		mu.Lock()
 		for _, m := range windows {
 			dst = append(dst, compositor.SceneWindow{
+				ClientID:  m.ClientID,
 				SurfaceID: m.SurfaceID,
 				Rect: compositor.Rect{
 					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
@@ -78,36 +82,20 @@ func main() {
 		mu.Unlock()
 		return dst
 	}
-	snapshotFn := func(surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+	snapshotFn := func(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
 		if srv == nil {
 			return 0, 0, 0, 0, false
 		}
-		mu.Lock()
-		winID, ok := surfaceToWin[surfaceID]
-		if !ok {
-			mu.Unlock()
-			return 0, 0, 0, 0, false
-		}
-		clientID := windows[winID].ClientID
-		mu.Unlock()
 		client := srv.GetClient(clientID)
 		if client == nil {
 			return 0, 0, 0, 0, false
 		}
 		return client.SnapshotSurfaceBuffer(surfaceID, dst)
 	}
-	infoFn := func(surfaceID uint32) (int32, int32, int32, bool) {
+	infoFn := func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
 		if srv == nil {
 			return 0, 0, 0, false
 		}
-		mu.Lock()
-		winID, ok := surfaceToWin[surfaceID]
-		if !ok {
-			mu.Unlock()
-			return 0, 0, 0, false
-		}
-		clientID := windows[winID].ClientID
-		mu.Unlock()
 		client := srv.GetClient(clientID)
 		if client == nil {
 			return 0, 0, 0, false
@@ -294,8 +282,8 @@ func main() {
 			Rect:         assignedRect,
 		}
 		windows[winID] = mapping
-		surfaceToWin[surfaceID] = winID
-		surfaceToWin[xdgSurfaceID] = winID
+		surfaceToWin[objRef{c.ID(), surfaceID}] = winID
+		surfaceToWin[objRef{c.ID(), xdgSurfaceID}] = winID
 		activeWin = winID
 
 		bodyW := assignedRect.W - 2*engine.Config.BorderWidth
@@ -307,7 +295,7 @@ func main() {
 	// Handle surface commit
 	srv.SetOnCommit(func(s *server.Surface) {
 		mu.Lock()
-		if winID, ok := surfaceToWin[s.ID]; ok {
+		if winID, ok := surfaceToWin[objRef{s.ClientID, s.ID}]; ok {
 			if m, exists := windows[winID]; exists {
 				m.SurfaceID = s.ID
 			}
@@ -324,8 +312,8 @@ func main() {
 		for winID, m := range windows {
 			if m.ClientID == clientID {
 				delete(windows, winID)
-				delete(surfaceToWin, m.SurfaceID)
-				delete(surfaceToWin, m.XdgSurfaceID)
+				delete(surfaceToWin, objRef{m.ClientID, m.SurfaceID})
+				delete(surfaceToWin, objRef{m.ClientID, m.XdgSurfaceID})
 				_ = engine.RemoveWindow(winID)
 				if activeWin == winID {
 					activeWin = 0

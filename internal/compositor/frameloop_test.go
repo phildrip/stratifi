@@ -58,7 +58,7 @@ type fakeSource struct {
 	pix          []byte
 }
 
-func (s *fakeSource) Snapshot(surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+func (s *fakeSource) Snapshot(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
 	full := int(s.stride) * int(s.h)
 	if len(dst) < full {
 		return 0, 0, 0, 0, false
@@ -75,8 +75,8 @@ func TestFrameLoopRendersScene(t *testing.T) {
 	}
 
 	fl := NewFrameLoopWithInfo(out, func(dst []SceneWindow) []SceneWindow {
-		return append(dst, SceneWindow{SurfaceID: 1, Rect: Rect{X: 10, Y: 10, W: 104, H: 100}, Active: true})
-	}, src.Snapshot, func(surfaceID uint32) (int32, int32, int32, bool) {
+		return append(dst, SceneWindow{ClientID: 1, SurfaceID: 1, Rect: Rect{X: 10, Y: 10, W: 104, H: 100}, Active: true})
+	}, src.Snapshot, func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
 		return src.w, src.h, src.stride, src.h > 0
 	})
 
@@ -102,8 +102,8 @@ func TestFrameLoopBackgroundAndTitlebar(t *testing.T) {
 	src := &fakeSource{w: 50, h: 40, stride: 50 * 4, pix: solidPixels(50, 40, 0xFF00FF00)}
 
 	fl := NewFrameLoopWithInfo(out, func(dst []SceneWindow) []SceneWindow {
-		return append(dst, SceneWindow{SurfaceID: 1, Rect: Rect{X: 0, Y: 0, W: 100, H: 100}, Active: false})
-	}, src.Snapshot, func(surfaceID uint32) (int32, int32, int32, bool) {
+		return append(dst, SceneWindow{ClientID: 1, SurfaceID: 1, Rect: Rect{X: 0, Y: 0, W: 100, H: 100}, Active: false})
+	}, src.Snapshot, func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
 		return src.w, src.h, src.stride, src.h > 0
 	})
 
@@ -126,7 +126,7 @@ func TestFrameLoopCoalescing(t *testing.T) {
 	out := newFakeOutput(320, 200)
 	fl := NewFrameLoop(out, func(dst []SceneWindow) []SceneWindow {
 		return dst
-	}, func(surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+	}, func(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
 		return 0, 0, 0, 0, false
 	})
 
@@ -156,7 +156,7 @@ func TestFrameLoopSourceTeardown(t *testing.T) {
 	src := &fakeSource{w: 50, h: 40, stride: 50 * 4, pix: solidPixels(50, 40, 0xFFFFFFFF)}
 
 	fl := NewFrameLoop(out, func(dst []SceneWindow) []SceneWindow {
-		return append(dst, SceneWindow{SurfaceID: 1, Rect: Rect{X: 0, Y: 0, W: 100, H: 100}, Active: true})
+		return append(dst, SceneWindow{ClientID: 1, SurfaceID: 1, Rect: Rect{X: 0, Y: 0, W: 100, H: 100}, Active: true})
 	}, src.Snapshot)
 
 	fl.RenderOnce()

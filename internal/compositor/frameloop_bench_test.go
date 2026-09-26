@@ -17,13 +17,13 @@ func BenchmarkFrameLoopTwoWindows(b *testing.B) {
 	fl := NewFrameLoopWithInfo(out,
 		func(dst []SceneWindow) []SceneWindow {
 			return append(dst,
-				SceneWindow{SurfaceID: 1, Rect: Rect{X: 4, Y: 4, W: 956, H: 1068}, Active: true},
-				SceneWindow{SurfaceID: 2, Rect: Rect{X: 964, Y: 4, W: 952, H: 1068}, Active: false})
+				SceneWindow{ClientID: 1, SurfaceID: 1, Rect: Rect{X: 4, Y: 4, W: 956, H: 1068}, Active: true},
+				SceneWindow{ClientID: 2, SurfaceID: 2, Rect: Rect{X: 964, Y: 4, W: 952, H: 1068}, Active: false})
 		},
-		func(surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
-			return srcs[surfaceID].Snapshot(surfaceID, dst)
+		func(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+			return srcs[surfaceID].Snapshot(clientID, surfaceID, dst)
 		},
-		func(surfaceID uint32) (int32, int32, int32, bool) {
+		func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
 			s := srcs[surfaceID]
 			return s.w, s.h, s.stride, true
 		},

@@ -24,6 +24,7 @@ type Rect struct {
 // SceneWindow is one window's render state, snapshotted as plain data
 // (DOD: value copies, no pointers crossing into the frame loop).
 type SceneWindow struct {
+	ClientID  uint32 // surface ids are per-client: (ClientID, SurfaceID) is the key
 	SurfaceID uint32
 	Rect      Rect
 	Active    bool
@@ -64,12 +65,13 @@ type Output interface {
 }
 
 // SnapshotFn copies a surface's pixels into dst under the source's own
-// locking, returning the buffer geometry (see server.Client.SnapshotSurfaceBuffer).
-type SnapshotFn func(surfaceID uint32, dst []byte) (n int, w, h, stride int32, ok bool)
+// locking, returning the buffer geometry. The key is (clientID, surfaceID):
+// object ids are per-client, so the client scope is mandatory.
+type SnapshotFn func(clientID, surfaceID uint32, dst []byte) (n int, w, h, stride int32, ok bool)
 
 // SurfaceInfoFn reports a surface's buffer geometry without touching pixels
 // (scratch sizing); server.Client.SurfaceBufferInfo implements it.
-type SurfaceInfoFn func(surfaceID uint32) (w, h, stride int32, ok bool)
+type SurfaceInfoFn func(clientID, surfaceID uint32) (w, h, stride int32, ok bool)
 
 // SceneFn snapshots the current window list into dst (append semantics;
 // nil entries none) and returns the used prefix. Called on the frame-loop
@@ -104,15 +106,15 @@ func NewFrameLoop(out Output, scene SceneFn, snap SnapshotFn) *FrameLoop {
 // NewFrameLoopWithInfo adds an optional geometry probe for scratch sizing.
 // Without it, the loop grows the scratch based on snapshot results only.
 func NewFrameLoopWithInfo(out Output, scene SceneFn, snap SnapshotFn, info SurfaceInfoFn) *FrameLoop {
-	avail := func(surfaceID uint32) (int32, int32, int32, bool) {
+	avail := func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
 		if info == nil {
 			return 0, 0, 0, false
 		}
-		w, h, stride, ok := info(surfaceID)
+		w, h, stride, ok := info(clientID, surfaceID)
 		return w, h, stride, ok
 	}
-	copyFn := func(surfaceID uint32, dst []byte) (int, bool) {
-		n, _, _, _, ok := snap(surfaceID, dst)
+	copyFn := func(clientID, surfaceID uint32, dst []byte) (int, bool) {
+		n, _, _, _, ok := snap(clientID, surfaceID, dst)
 		return n, ok
 	}
 	return &FrameLoop{

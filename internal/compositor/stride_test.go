@@ -28,9 +28,9 @@ func TestBlitUsesSourceStride(t *testing.T) {
 
 	exe := NewCPUExecutor(out)
 	exe.Execute(dl,
-		func(surfaceID uint32) (int32, int32, int32, bool) { return src.w, src.h, src.stride, true },
-		func(surfaceID uint32, dst []byte) (int, bool) {
-			n, _, _, _, ok := src.Snapshot(surfaceID, dst)
+		func(clientID, surfaceID uint32) (int32, int32, int32, bool) { return src.w, src.h, src.stride, true },
+		func(clientID, surfaceID uint32, dst []byte) (int, bool) {
+			n, _, _, _, ok := src.Snapshot(clientID, surfaceID, dst)
 			return n, ok
 		},
 	)
