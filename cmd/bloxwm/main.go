@@ -59,6 +59,8 @@ func main() {
 	var srv *server.Server
 	var frameLoop *compositor.FrameLoop
 
+	exitCh := make(chan struct{}, 1) // closed-state signal for graceful shutdown
+
 	// Frame loop (internal/compositor): the nested backend is the Output;
 	// scene and snapshots come from the server state. One renderer
 	// goroutine owns the framebuffer; requests coalesce (drop stale).
@@ -188,8 +190,14 @@ func main() {
 			router.HandleKeyboardModifiers(depressed, latched, locked, group)
 		},
 		OnClose: func() {
-			fmt.Println("[*] Parent window closed. Exiting.")
-			os.Exit(0)
+			// Graceful: signal the main loop so deferred cleanup runs
+			// (server Close flushes client sockets instead of vanishing
+			// mid-message, nested backend unmaps cleanly).
+			fmt.Println("[*] Parent window closed. Shutting down.")
+			select {
+			case exitCh <- struct{}{}:
+			default:
+			}
 		},
 	}
 
@@ -339,6 +347,17 @@ func main() {
 				}
 			}
 		}
+
+		// Focus falls to the first remaining window: without this, the
+		// router holds a dangling focus and keyboard goes nowhere until
+		// the next click.
+		if len(winIDs) > 0 {
+			focusID := winIDs[0]
+			if fm, ok := windows[focusID]; ok {
+				activeWin = focusID
+				router.SetFocus(focusID, fm.ClientID, fm.SurfaceID)
+			}
+		}
 		requestRedraw()
 	})
 
@@ -354,6 +373,9 @@ func main() {
 		}
 	}()
 
-	<-sigCh
+	select {
+	case <-sigCh:
+	case <-exitCh:
+	}
 	fmt.Println("[*] Shutting down bloxwm...")
 }
