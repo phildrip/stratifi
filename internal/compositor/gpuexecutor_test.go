@@ -31,11 +31,76 @@ func TestVulkanExecutorChrome(t *testing.T) {
 	if !ok {
 		t.Skip("readback unsupported")
 	}
-	for _, y := range []int32{2, 5, 12, 20, 30, 45, 55} {
-		t.Logf("CHROMEROW y=%d: % x", y, data[y*128+0:y*128+40])
+	// Classified row map with sRGB-aware matching.
+	for _, y := range []int32{40, 50, 64, 80, 100, 120} {
+		row := ""
+		for x := int32(0); x < 128; x += 8 {
+			off := y*512 + x*4
+			g, r := data[off+1], data[off+2]
+			switch {
+			case r == 0x8e:
+				row += "T"
+			case r == 0x89:
+				row += "B"
+			case r == 0x56:
+				row += "."
+			default:
+				row += "?"
+			}
+			_ = g
+		}
+		t.Logf("ROWMAP y=%03d %s", y, row)
+	}
+	// Scan exact bounds of the non-background region.
+	minX, maxX, minY, maxY := int32(999), int32(-1), int32(999), int32(-1)
+	for y := int32(0); y < 128; y++ {
+		for x := int32(0); x < 128; x++ {
+			off := y*512 + x*4
+			if !(data[off] == 0x6a && data[off+1] == 0x56 && data[off+2] == 0x56) {
+				if x < minX {
+					minX = x
+				}
+				if x > maxX {
+					maxX = x
+				}
+				if y < minY {
+					minY = y
+				}
+				if y > maxY {
+					maxY = y
+				}
+			}
+		}
+	}
+	t.Logf("BOUNDS non-background: x=%d..%d y=%d..%d (scene window: x=10..70 y=10..50)", minX, maxX, minY, maxY)
+	// Actual pixel values in the rendered region.
+	for _, pt := range [][2]int32{{16, 42}, {16, 64}, {16, 100}, {16, 124}, {40, 64}, {64, 64}} {
+		off := pt[1]*512 + pt[0]*4
+		t.Logf("PIX (%d,%d) = % x (B G R A)", pt[0], pt[1], data[off:off+4])
+	}
+	// Coarse ASCII map: classify each 4x4 block by its first pixel.
+	for y := int32(0); y < 128; y += 4 {
+		row := ""
+		for x := int32(0); x < 128; x += 4 {
+			off := y*512 + x*4
+			b, g, r := data[off], data[off+1], data[off+2]
+			switch {
+			case b == 0x6a && g == 0x56:
+				row += "." // background
+			case b == 0x71:
+				row += "C" // container
+			case r == 0x89:
+				row += "B" // active border
+			case b == 0x44:
+				row += "T" // titlebar
+			default:
+				row += "?"
+			}
+		}
+		t.Logf("MAP y=%02d %s", y, row)
 	}
 	// pixel at (50,30): inside the window body (below titlebar 16+2, inside border) → body placeholder is not drawn (no blit), container fill expected.
-	px := readPixel(data, 128, 30, 40)
+	px := readPixel(data, 512, 30, 40)
 	if px == 0 {
 		t.Fatal("readback returned transparent pixel")
 	}
@@ -85,9 +150,9 @@ func TestVulkanExecutorBlit(t *testing.T) {
 	}
 	// Dump a row across the body to find where the green went.
 	for _, y := range []int32{30, 50, 70} {
-		t.Logf("row y=%d: % x", y, data[y*128+0:y*128+60])
+		t.Logf("row y=%d: % x", y, data[y*512+0:y*512+60])
 	}
-	px := readPixel(data, 128, 54, 50)
+	px := readPixel(data, 512, 54, 50)
 	t.Logf("client pixel = %08x", px)
 	if px != 0xFF00FF00 {
 		t.Errorf("client pixel = %08x, want FF00FF00", px)
