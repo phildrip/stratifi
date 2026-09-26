@@ -391,3 +391,99 @@ func TestCaptureSessionStopped(t *testing.T) {
 
 // ensure the capture grabber type is registered on the server side.
 var _ FrameGrabber = fakeFrameGrabber{}
+
+// TestOutputGeometryIsSingleSource pins that wl_output advertisement and
+// capture session buffer_size both derive from Server.SetOutput.
+func TestOutputGeometryIsSingleSource(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "bloxwm-outgeom-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	sockPath := filepath.Join(tempDir, "wayland-outgeom-0")
+	srv, err := NewServer(sockPath)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+
+	srv.SetOutput(Output{Width: 1280, Height: 720, RefreshHz: 144})
+	go func() { _ = srv.Run() }()
+	time.Sleep(20 * time.Millisecond)
+
+	cc := newCaptureTestClient(t, sockPath)
+
+	// get_registry + bind wl_output
+	start := cc.w.BeginMessage(1, 1)
+	_ = cc.w.WriteUint32(2)
+	_ = cc.w.EndMessage(start, 1, 1)
+
+	start = cc.w.BeginMessage(2, 0)
+	_ = cc.w.WriteUint32(GlobalOutput)
+	_ = cc.w.WriteString("wl_output")
+	_ = cc.w.WriteUint32(2)
+	_ = cc.w.WriteUint32(6)
+	_ = cc.w.EndMessage(start, 2, 0)
+
+	// capture session (needs the capture managers bound)
+	start = cc.w.BeginMessage(2, 0)
+	_ = cc.w.WriteUint32(GlobalOutputImageCaptureSourceManager)
+	_ = cc.w.WriteString("ext_output_image_capture_source_manager_v1")
+	_ = cc.w.WriteUint32(1)
+	_ = cc.w.WriteUint32(4)
+	_ = cc.w.EndMessage(start, 2, 0)
+
+	start = cc.w.BeginMessage(2, 0)
+	_ = cc.w.WriteUint32(GlobalImageCopyCaptureManager)
+	_ = cc.w.WriteString("ext_image_copy_capture_manager_v1")
+	_ = cc.w.WriteUint32(1)
+	_ = cc.w.WriteUint32(5)
+	_ = cc.w.EndMessage(start, 2, 0)
+	cc.send()
+
+	start = cc.w.BeginMessage(4, 0) // create_source
+	_ = cc.w.WriteUint32(10)
+	_ = cc.w.WriteUint32(GlobalOutput)
+	_ = cc.w.EndMessage(start, 4, 0)
+
+	start = cc.w.BeginMessage(5, 0) // create_session
+	_ = cc.w.WriteUint32(11)
+	_ = cc.w.WriteUint32(10)
+	_ = cc.w.WriteUint32(0)
+	_ = cc.w.EndMessage(start, 5, 0)
+	cc.send()
+
+	cc.recvAll(1000)
+
+	var modeW, modeH, modeRefresh int32
+	var bufW, bufH uint32
+	for cc.r.Remaining() >= wire.HeaderSize {
+		hdr, err := cc.r.ReadHeader()
+		if err != nil {
+			t.Fatalf("ReadHeader: %v", err)
+		}
+		switch {
+		case hdr.ObjectID == 6 && hdr.Opcode == 1: // wl_output.mode
+			modeRefresh, _ = cc.r.ReadInt32() // flags precede? nop: mode = (flags, w, h, refresh)
+			modeW, _ = cc.r.ReadInt32()
+			modeH, _ = cc.r.ReadInt32()
+			_, _ = cc.r.ReadInt32()
+		case hdr.ObjectID == 11 && hdr.Opcode == 0: // session.buffer_size
+			bufW, _ = cc.r.ReadUint32()
+			bufH, _ = cc.r.ReadUint32()
+		default:
+			payloadLen := int(hdr.Size) - wire.HeaderSize
+			for i := 0; i < payloadLen; i += 4 {
+				_, _ = cc.r.ReadUint32()
+			}
+		}
+	}
+	if bufW != 1280 || bufH != 720 {
+		t.Errorf("session buffer_size = %dx%d, want 1280x720", bufW, bufH)
+	}
+	if modeW != 1280 || modeH != 720 {
+		t.Errorf("wl_output mode = %dx%d, want 1280x720", modeW, modeH)
+	}
+	_ = modeRefresh
+}

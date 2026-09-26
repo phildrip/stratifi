@@ -59,12 +59,11 @@ func (s *Server) SetFrameGrabber(g FrameGrabber) {
 	s.captureGrabber = g
 }
 
-// outputResolution looks up the compositor's output dimensions for a source.
-// The compositor reports one virtual output at GlobalOutput with fixed
-// geometry; keep that in sync with HandleWlRegistryBind.
+// outputResolution reads the compositor's virtual output geometry — the
+// same source wl_output advertisement uses (Server.Output()).
 func (s *Server) outputResolution() (uint32, uint32) {
-	// Matches the mode advertised via wl_output (960x640 @ 60Hz).
-	return 960, 640
+	o := s.Output()
+	return o.Width, o.Height
 }
 
 // --- ext_output_image_capture_source_manager_v1 ---

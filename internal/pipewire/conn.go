@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
+	"path/filepath"
 	"sync"
 
 	"bloxwm/internal/pipewire/spa"
@@ -105,27 +107,82 @@ const (
 	ClientMethodUpdateProperties uint32 = 2
 )
 
+// ClientIdentity describes the compositor to the pw daemon. The access
+// module grants registry permissions when these properties are announced,
+// so they must reflect the running process, not hardcoded strings.
+type ClientIdentity struct {
+	ApplicationName string
+	Binary          string
+	User            string
+	Host            string
+	Language        string
+	CoreName        string
+}
+
+// identityFromEnv derives the client identity from process state.
+func identityFromEnv() ClientIdentity {
+	userName := "unknown"
+	if u, err := user.Current(); err == nil {
+		userName = u.Username
+	}
+	host := "unknown"
+	var uts unix.Utsname
+	if err := unix.Uname(&uts); err == nil {
+		host = nulString(uts.Nodename[:])
+	}
+	lang := os.Getenv("LANG")
+	if lang == "" {
+		lang = "C"
+	}
+	return ClientIdentity{
+		ApplicationName: "bloxwm",
+		Binary:          filepath.Base(os.Args[0]),
+		User:            userName,
+		Host:            host,
+		Language:        lang,
+		CoreName:        "pipewire-0",
+	}
+}
+
+// nulString trims a NUL-terminated fixed byte array.
+func nulString(b []byte) string {
+	for i, c := range b {
+		if c == 0 {
+			return string(b[:i])
+		}
+	}
+	return string(b)
+}
+
 // UpdateClientProperties announces the compositor's identity on the client
 // proxy (PW_ID_CLIENT=1). The access module grants registry permissions on
 // this update — without it get_registry returns zero globals.
 func (c *Conn) UpdateClientProperties() error {
+	return c.UpdateClientPropertiesWith(identityFromEnv())
+}
+
+// UpdateClientPropertiesWith sends the given identity; the dict n_items is
+// derived from the encoded pairs so the count can never drift.
+func (c *Conn) UpdateClientPropertiesWith(id ClientIdentity) error {
+	type kv struct{ k, v string }
+	pairs := []kv{
+		{"application.name", id.ApplicationName},
+		{"application.process.binary", id.Binary},
+		{"application.process.user", id.User},
+		{"application.process.host", id.Host},
+		{"application.language", id.Language},
+		{"core.name", id.CoreName},
+	}
+
 	var b spa.Builder
-	b.Reserve(256)
+	b.Reserve(512)
 	b.BeginStruct() // outer struct {dict}
 	b.BeginStruct() // dict
-	b.Int(6)        // n_items
-	b.String("application.name")
-	b.String("bloxwm")
-	b.String("application.process.binary")
-	b.String("bloxwm")
-	b.String("application.process.user")
-	b.String("phil")
-	b.String("application.process.host")
-	b.String("bloxwm-desktop")
-	b.String("application.language")
-	b.String("en_GB.UTF-8")
-	b.String("core.name")
-	b.String("pipewire-0")
+	b.Int(int32(len(pairs)))
+	for _, p := range pairs {
+		b.String(p.k)
+		b.String(p.v)
+	}
 	b.End()
 	b.End()
 

@@ -293,7 +293,9 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		w := c.conn.WriterRef()
 		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "bloxwm", "bloxwm-display", 0)
 		_ = wayland.SendWlOutputScale(w, id, 1)
-		_ = wayland.SendWlOutputMode(w, id, 0x3, 960, 640, 60000)
+		out := c.server.Output()
+		_ = wayland.SendWlOutputMode(w, id, 0x3,
+			int32(out.Width), int32(out.Height), int32(out.RefreshHz*1000))
 		_ = wayland.SendWlOutputDone(w, id)
 	case GlobalSeat:
 		c.registerObject(id, ObjSeat)

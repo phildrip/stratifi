@@ -24,6 +24,29 @@ type Server struct {
 	keymapSize uint32
 
 	captureGrabber FrameGrabber
+
+	output Output
+}
+
+// Output is the compositor's virtual output geometry. Single source of
+// truth: wl_output advertisement and capture buffer sizing both read it.
+type Output struct {
+	// Width/Height are logical pixels; RefreshHz is the advertised rate.
+	Width, Height uint32
+	RefreshHz     uint32
+}
+
+// SetOutput configures the virtual output geometry.
+func (s *Server) SetOutput(o Output) { s.output = o }
+
+// Output returns the configured virtual output geometry. Zero values
+// default to the historical 960x640@60 demo geometry so existing callers
+// keep working until the compositor core (bloxwm-o2x) owns real outputs.
+func (s *Server) Output() Output {
+	if s.output.Width == 0 || s.output.Height == 0 {
+		return Output{Width: 960, Height: 640, RefreshHz: 60}
+	}
+	return s.output
 }
 
 // NewServer creates a new Wayland server listening on the specified socket name.
