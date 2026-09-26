@@ -56,13 +56,13 @@ func main() {
 	displayID := allocID() // 1
 
 	// 2. Get registry
-	registryID := allocID() // 2
+	registryID := allocID()               // 2
 	start := w.BeginMessage(displayID, 1) // wl_display.get_registry
 	_ = w.WriteUint32(registryID)
 	_ = w.EndMessage(start, displayID, 1)
 
 	// 3. Sync
-	syncID := allocID() // 3
+	syncID := allocID()                  // 3
 	start = w.BeginMessage(displayID, 0) // wl_display.sync
 	_ = w.WriteUint32(syncID)
 	_ = w.EndMessage(start, displayID, 0)
@@ -153,20 +153,20 @@ func main() {
 	_ = w.EndMessage(start, registryID, 0)
 
 	// 7. Create wl_surface (id = 7)
-	surfaceID := allocID() // 7
+	surfaceID := allocID()            // 7
 	start = w.BeginMessage(compID, 0) // wl_compositor.create_surface
 	_ = w.WriteUint32(surfaceID)
 	_ = w.EndMessage(start, compID, 0)
 
 	// 8. Create xdg_surface (id = 8)
-	xdgSurfaceID := allocID() // 8
+	xdgSurfaceID := allocID()              // 8
 	start = w.BeginMessage(xdgWmBaseID, 2) // xdg_wm_base.get_xdg_surface
 	_ = w.WriteUint32(xdgSurfaceID)
 	_ = w.WriteUint32(surfaceID)
 	_ = w.EndMessage(start, xdgWmBaseID, 2)
 
 	// 9. Create xdg_toplevel (id = 9)
-	xdgToplevelID := allocID() // 9
+	xdgToplevelID := allocID()              // 9
 	start = w.BeginMessage(xdgSurfaceID, 1) // xdg_surface.get_toplevel
 	_ = w.WriteUint32(xdgToplevelID)
 	_ = w.EndMessage(start, xdgSurfaceID, 1)
@@ -317,14 +317,14 @@ func main() {
 	_ = w.EndMessage(start, xdgSurfaceID, 4)
 
 	// 10. Create shm pool (id = 10)
-	poolID := allocID() // 10
+	poolID := allocID()              // 10
 	start = w.BeginMessage(shmID, 0) // wl_shm.create_pool
 	_ = w.WriteUint32(poolID)
 	_ = w.WriteInt32(int32(poolSize))
 	_ = w.EndMessage(start, shmID, 0)
 
 	// 11. Create buffer (id = 11)
-	bufferID := allocID() // 11
+	bufferID := allocID()             // 11
 	start = w.BeginMessage(poolID, 0) // wl_shm_pool.create_buffer
 	_ = w.WriteUint32(bufferID)
 	_ = w.WriteInt32(0) // offset

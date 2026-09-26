@@ -152,9 +152,9 @@ func (r *Reader) Remaining() int {
 
 // Writer formats Wayland wire messages into a contiguous buffer with zero heap allocations.
 type Writer struct {
-	buf    []byte
-	offset int
-	fds    []int
+	buf     []byte
+	offset  int
+	fds     []int
 	fdCount int
 }
 

@@ -102,35 +102,35 @@ import (
 // DRM_IOCTL_VERSION: _IOWR('d', 0x00, struct drm_version)
 // DRM_IOCTL_MODE_GETRESOURCES: _IOWR('d', 0xA0, struct drm_mode_card_res)
 const (
-	drmIoctlVersion       = 0xc0406400
+	drmIoctlVersion      = 0xc0406400
 	drmIoctlGetResources = 0xc04064a0
 )
 
 type drmVersion struct {
-	versionMajor    int32
-	versionMinor    int32
+	versionMajor      int32
+	versionMinor      int32
 	versionPatchlevel int32
-	nameLen         uint64
-	name            uint64
-	dateLen         uint64
-	date            uint64
-	descLen         uint64
-	desc            uint64
+	nameLen           uint64
+	name              uint64
+	dateLen           uint64
+	date              uint64
+	descLen           uint64
+	desc              uint64
 }
 
 type drmCardRes struct {
-	fbIdPtr        uint64
-	crtcIdPtr      uint64
-	connectorIdPtr uint64
-	encoderIdPtr   uint64
-	countFbs       uint32
-	countCrtcs     uint32
+	fbIdPtr         uint64
+	crtcIdPtr       uint64
+	connectorIdPtr  uint64
+	encoderIdPtr    uint64
+	countFbs        uint32
+	countCrtcs      uint32
 	countConnectors uint32
-	countEncoders  uint32
-	minWidth       uint32
-	maxWidth       uint32
-	minHeight      uint32
-	maxHeight      uint32
+	countEncoders   uint32
+	minWidth        uint32
+	maxWidth        uint32
+	minHeight       uint32
+	maxHeight       uint32
 }
 
 func probeDRM(cardPath string) error {

@@ -64,7 +64,7 @@ func (c *Conn) Sync(id uint32, seq uint32) error {
 
 // GetRegistry binds the registry object and returns its proxy id.
 func (c *Conn) GetRegistry() (uint32, error) {
-	proxyID := c.nextResID.next()
+	proxyID := nextProxyID(&c.nextResID)
 
 	var b spa.Builder
 	b.Reserve(64)
@@ -141,7 +141,7 @@ func parseGlobal(body []byte) (*Global, error) {
 
 // Bind registers a proxy for a global and sends the bind request.
 func (c *Conn) Bind(globalID uint32, typ string, version uint32) (uint32, error) {
-	proxyID := c.nextResID.next()
+	proxyID := nextProxyID(&c.nextResID)
 
 	var b spa.Builder
 	b.Reserve(96)

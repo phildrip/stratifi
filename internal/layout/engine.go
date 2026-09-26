@@ -36,8 +36,8 @@ type Column struct {
 
 // LayoutConfig configures margins and borders.
 type LayoutConfig struct {
-	Gap           int32 // Pixel gap between windows
-	BorderWidth   int32 // Window border width
+	Gap            int32 // Pixel gap between windows
+	BorderWidth    int32 // Window border width
 	TitlebarHeight int32 // Height of titlebar for mouse grabbing
 }
 

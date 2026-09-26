@@ -49,10 +49,10 @@ func TestParseGlobalTruncated(t *testing.T) {
 // rejects gaps with ENOSPC.
 func TestNextResIDSequential(t *testing.T) {
 	var c Conn
-	if id := c.nextResID.next(); id != 2 {
+	if id := nextProxyID(&c.nextResID); id != 2 {
 		t.Errorf("first proxy id = %d, want 2", id)
 	}
-	if id := c.nextResID.next(); id != 3 {
+	if id := nextProxyID(&c.nextResID); id != 3 {
 		t.Errorf("second proxy id = %d, want 3", id)
 	}
 }

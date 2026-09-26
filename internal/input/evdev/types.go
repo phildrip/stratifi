@@ -123,26 +123,26 @@ const (
 
 // Common Keyboard Keys (KEY_*)
 const (
-	KEY_RESERVED   uint16 = 0
-	KEY_ESC        uint16 = 1
-	KEY_1          uint16 = 2
-	KEY_2          uint16 = 3
-	KEY_TAB        uint16 = 15
-	KEY_Q          uint16 = 16
-	KEY_W          uint16 = 17
-	KEY_E          uint16 = 18
-	KEY_R          uint16 = 19
-	KEY_ENTER      uint16 = 28
-	KEY_LEFTCTRL   uint16 = 29
-	KEY_A          uint16 = 30
-	KEY_S          uint16 = 31
-	KEY_D          uint16 = 32
-	KEY_LEFTSHIFT  uint16 = 42
-	KEY_SPACE      uint16 = 57
-	KEY_CAPSLOCK   uint16 = 58
-	KEY_LEFTALT    uint16 = 56
-	KEY_LEFTMETA   uint16 = 125
-	KEY_RIGHTMETA  uint16 = 126
+	KEY_RESERVED  uint16 = 0
+	KEY_ESC       uint16 = 1
+	KEY_1         uint16 = 2
+	KEY_2         uint16 = 3
+	KEY_TAB       uint16 = 15
+	KEY_Q         uint16 = 16
+	KEY_W         uint16 = 17
+	KEY_E         uint16 = 18
+	KEY_R         uint16 = 19
+	KEY_ENTER     uint16 = 28
+	KEY_LEFTCTRL  uint16 = 29
+	KEY_A         uint16 = 30
+	KEY_S         uint16 = 31
+	KEY_D         uint16 = 32
+	KEY_LEFTSHIFT uint16 = 42
+	KEY_SPACE     uint16 = 57
+	KEY_CAPSLOCK  uint16 = 58
+	KEY_LEFTALT   uint16 = 56
+	KEY_LEFTMETA  uint16 = 125
+	KEY_RIGHTMETA uint16 = 126
 )
 
 // Linux evdev ioctl constants (64-bit Linux x86_64)

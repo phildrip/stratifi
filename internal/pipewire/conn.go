@@ -7,6 +7,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"bloxwm/internal/pipewire/spa"
 	"golang.org/x/sys/unix"
@@ -22,7 +23,7 @@ type Conn struct {
 	msgFDs    []int  // fds received but not yet consumed by a message
 	nextSeq   uint32
 	recvFDs   []int
-	nextResID atomicUint32
+	nextResID atomic.Uint32
 
 	CoreID     uint32 // core proxy id (0 for the first core)
 	Version    string
@@ -30,23 +31,17 @@ type Conn struct {
 	registryID uint32 // bound registry proxy id
 }
 
-// atomicUint32 is a minimal atomic counter without importing sync/atomic
-// here (keeps the framing path dependency-light).
-type atomicUint32 struct {
-	mu sync.Mutex
-	v  uint32
-}
-
-func (a *atomicUint32) next() uint32 {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	// Proxy id 1 is reserved for the server's client resource (it carries
-	// client_info events); client-allocated proxies start at 2.
-	a.v++
-	if a.v < 2 {
-		a.v = 2
+// nextProxyID allocates the next sequential client proxy id. Proxy id 1 is
+// reserved for the server's client resource (it carries client_info events);
+// client-allocated proxies start at 2. The daemon's object map is a
+// sequential array — ids must never skip (pw_map_insert_at rejects gaps
+// with -ENOSPC).
+func nextProxyID(seq *atomic.Uint32) uint32 {
+	v := seq.Add(1)
+	if v < 2 {
+		return seq.Add(1) // consume slot 1, return 2
 	}
-	return a.v
+	return v
 }
 
 // DefaultSocketPath is the user PipeWire daemon socket.
@@ -294,12 +289,6 @@ func parseCoreInfo(body []byte) (*CoreInfo, error) {
 		return nil, err
 	}
 	return info, nil
-}
-
-func (c *Conn) closeFDs(fds []int) {
-	for _, fd := range fds {
-		_ = unix.Close(fd)
-	}
 }
 
 // recvMsg reads one complete pw message from the stream socket, using a

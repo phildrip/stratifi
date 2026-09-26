@@ -12,14 +12,14 @@ type MouseGestureEngine struct {
 	TriggerButton uint32  // Button that starts gesture recording (default: BTN_RIGHT = 0x111)
 	MinStrokeDist float64 // Minimum displacement to register a stroke direction (default: 25.0)
 
-	isRecording  bool
-	startX       float64
-	startY       float64
-	lastX        float64
-	lastY        float64
-	strokeSeq    []byte // sequence of 'L', 'R', 'U', 'D'
-	buttonMask   uint32 // currently held buttons
-	rockerFired  bool
+	isRecording bool
+	startX      float64
+	startY      float64
+	lastX       float64
+	lastY       float64
+	strokeSeq   []byte // sequence of 'L', 'R', 'U', 'D'
+	buttonMask  uint32 // currently held buttons
+	rockerFired bool
 
 	strokeBindings map[string]MouseAction
 	rockerBindings map[uint64]MouseAction // key = (uint64(btn1) << 32) | uint64(btn2)

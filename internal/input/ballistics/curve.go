@@ -18,12 +18,12 @@ const (
 
 // Config defines pointer acceleration parameters.
 type Config struct {
-	Profile    CurveProfile
-	Speed      float64 // Overall sensitivity multiplier (1.0 = normal)
-	Threshold  float64 // Speed threshold (px/ms) where acceleration begins
-	MaxAccel   float64 // Maximum acceleration factor ceiling
-	Exponent   float64 // Power exponent for custom curve
-	Smoothing  float64 // Low-pass filter weight (0.0 to 1.0, 0.7 = recommended)
+	Profile   CurveProfile
+	Speed     float64 // Overall sensitivity multiplier (1.0 = normal)
+	Threshold float64 // Speed threshold (px/ms) where acceleration begins
+	MaxAccel  float64 // Maximum acceleration factor ceiling
+	Exponent  float64 // Power exponent for custom curve
+	Smoothing float64 // Low-pass filter weight (0.0 to 1.0, 0.7 = recommended)
 }
 
 // DefaultConfig provides ergonomic desktop defaults.
@@ -31,8 +31,8 @@ func DefaultConfig() Config {
 	return Config{
 		Profile:   ProfileAdaptiveSigmoid,
 		Speed:     1.0,
-		Threshold: 0.4,  // 0.4 px/ms (~400 px/sec)
-		MaxAccel:  3.5,  // 3.5x max speed boost
+		Threshold: 0.4, // 0.4 px/ms (~400 px/sec)
+		MaxAccel:  3.5, // 3.5x max speed boost
 		Exponent:  2.0,
 		Smoothing: 0.65,
 	}
