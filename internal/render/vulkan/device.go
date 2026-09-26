@@ -18,10 +18,17 @@ static int init_vulkan_context(VkContext* ctx) {
         .apiVersion = VK_API_VERSION_1_3,
     };
 
+    // Optional validation (BLOXWM_VK_VALIDATION=1): catches layout and
+    // sync bugs the silent paths hide.
+    const char* validationLayer = "VK_LAYER_KHRONOS_validation";
     VkInstanceCreateInfo instInfo = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &appInfo,
     };
+    if (getenv("BLOXWM_VK_VALIDATION") != NULL) {
+        instInfo.enabledLayerCount = 1;
+        instInfo.ppEnabledLayerNames = &validationLayer;
+    }
 
     VkResult res = vkCreateInstance(&instInfo, NULL, &ctx->instance);
     if (res != VK_SUCCESS) return (int)res;
@@ -32,13 +39,18 @@ static int init_vulkan_context(VkContext* ctx) {
         vkDestroyInstance(ctx->instance, NULL);
         return -1;
     }
-    VkPhysicalDevice devices[devCount];
+    VkPhysicalDevice devices[16];
+    if (devCount > 16) devCount = 16;
     res = vkEnumeratePhysicalDevices(ctx->instance, &devCount, devices);
     if (res != VK_SUCCESS || devCount == 0) {
         vkDestroyInstance(ctx->instance, NULL);
         return -1;
     }
-    ctx->pdev = devices[0];
+    int devIdx = 0;
+    const char* sel = getenv("BLOXWM_VK_DEVICE");
+    if (sel) devIdx = atoi(sel);
+    if (devIdx < 0 || devIdx >= (int)devCount) devIdx = 0;
+    ctx->pdev = devices[devIdx];
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(ctx->pdev, &props);

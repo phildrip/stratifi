@@ -30,10 +30,13 @@ typedef struct {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingMemory;
     void* mapped;
     uint32_t width;
     uint32_t height;
     uint32_t stride;
+    VkDeviceSize rowPitch; // mapped layout pitch (alignment-padded)
 } VkUploadTexture;
 
 #endif // VK_COMMON_H

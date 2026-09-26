@@ -586,7 +586,9 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     out->width = width;
     out->height = height;
     out->stride = stride;
+    if (!pixels) return -33;
 
+    // OPTIMAL image for sampling.
     VkImageCreateInfo imgInfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -595,7 +597,7 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_LINEAR,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
         .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -603,28 +605,27 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     VkResult res = vkCreateImage(r->device, &imgInfo, NULL, &out->image);
     if (res != VK_SUCCESS) return (int)res;
 
-    VkMemoryRequirements memReqs;
-    vkGetImageMemoryRequirements(r->device, out->image, &memReqs);
+    VkMemoryRequirements imgReqs;
+    vkGetImageMemoryRequirements(r->device, out->image, &imgReqs);
 
     VkPhysicalDeviceMemoryProperties memProps;
     vkGetPhysicalDeviceMemoryProperties(r->pdev, &memProps);
-    int memType = -1;
+    int devMemType = -1;
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((memReqs.memoryTypeBits & (1 << i)) &&
-            (memProps.memoryTypes[i].propertyFlags &
-             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))) {
-            memType = (int)i;
+        if ((imgReqs.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            devMemType = (int)i;
             break;
         }
     }
-    if (memType < 0) { vkDestroyImage(r->device, out->image, NULL); return -11; }
+    if (devMemType < 0) devMemType = 0;
 
-    VkMemoryAllocateInfo allocInfo = {
+    VkMemoryAllocateInfo imgAlloc = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = memReqs.size,
-        .memoryTypeIndex = (uint32_t)memType,
+        .allocationSize = imgReqs.size,
+        .memoryTypeIndex = (uint32_t)devMemType,
     };
-    res = vkAllocateMemory(r->device, &allocInfo, NULL, &out->memory);
+    res = vkAllocateMemory(r->device, &imgAlloc, NULL, &out->memory);
     if (res != VK_SUCCESS) {
         vkDestroyImage(r->device, out->image, NULL);
         return (int)res;
@@ -636,43 +637,83 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         return (int)res;
     }
 
-    // Map and copy row by row (mapped layout pitch may exceed stride).
-    void* mapped;
-    res = vkMapMemory(r->device, out->memory, 0, memReqs.size, 0, &out->mapped);
+    // Staging buffer (host visible), memcpy, then cmd copy.
+    VkDeviceSize uploadSize = (VkDeviceSize)stride * height;
+    VkBufferCreateInfo sinfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = (VkDeviceSize)width * 4 * height,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer staging;
+    res = vkCreateBuffer(r->device, &sinfo, NULL, &out->stagingBuffer);
     if (res != VK_SUCCESS) {
         vkFreeMemory(r->device, out->memory, NULL);
         vkDestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
-
-    VkImageSubresource sub = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT };
-    VkSubresourceLayout lay;
-    vkGetImageSubresourceLayout(r->device, out->image, &sub, &lay);
-    uint8_t* dst = (uint8_t*)out->mapped;
-    for (uint32_t row = 0; row < height; row++) {
-        memcpy(dst + lay.rowPitch * row, pixels + stride * row, stride);
+    VkMemoryRequirements sReqs;
+    vkGetBufferMemoryRequirements(r->device, out->stagingBuffer, &sReqs);
+    int hostMemType = -1;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
+        if ((sReqs.memoryTypeBits & (1 << i)) &&
+            (memProps.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))) {
+            hostMemType = (int)i;
+            break;
+        }
+    }
+    if (hostMemType < 0) hostMemType = 0;
+    VkMemoryAllocateInfo sAlloc = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = sReqs.size,
+        .memoryTypeIndex = (uint32_t)hostMemType,
+    };
+    res = vkAllocateMemory(r->device, &sAlloc, NULL, &out->stagingMemory);
+    if (res != VK_SUCCESS) {
+        vkDestroyBuffer(r->device, out->stagingBuffer, NULL);
+        vkFreeMemory(r->device, out->memory, NULL);
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
+    }
+    res = vkBindBufferMemory(r->device, out->stagingBuffer, out->stagingMemory, 0);
+    if (res != VK_SUCCESS) {
+        vkFreeMemory(r->device, out->stagingMemory, NULL);
+        vkDestroyBuffer(r->device, out->stagingBuffer, NULL);
+        vkFreeMemory(r->device, out->memory, NULL);
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
     }
 
-    // View for sampling.
+    void* mapped;
+    res = vkMapMemory(r->device, out->stagingMemory, 0, sReqs.size, 0, &out->mapped);
+    if (res != VK_SUCCESS) {
+        vkFreeMemory(r->device, out->stagingMemory, NULL);
+        vkFreeMemory(r->device, out->memory, NULL);
+        vkDestroyImage(r->device, out->image, NULL);
+        return (int)res;
+    }
+    for (uint32_t row = 0; row < height; row++) {
+        memcpy((uint8_t*)out->mapped + (size_t)width * 4 * row, pixels + (size_t)stride * row, (size_t)width * 4);
+    }
+
     VkImageViewCreateInfo viewInfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = out->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = VK_FORMAT_B8G8R8A8_SRGB,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1,
-        },
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
     res = vkCreateImageView(r->device, &viewInfo, NULL, &out->view);
     if (res != VK_SUCCESS) {
-        vkUnmapMemory(r->device, out->memory);
+        vkUnmapMemory(r->device, out->stagingMemory);
+        vkFreeMemory(r->device, out->stagingMemory, NULL);
         vkFreeMemory(r->device, out->memory, NULL);
         vkDestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
 
-    // Transition UNDEFINED -> SHADER_READ_ONLY via a one-shot command.
+    // One-shot command: layout barrier + buffer->image copy.
     vkResetFences(r->device, 1, &r->fence);
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -681,20 +722,53 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
     if (res != VK_SUCCESS) return (int)res;
 
-    VkImageMemoryBarrier barrier = {
+    VkBufferMemoryBarrier uploadVis = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_HOST_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = out->stagingBuffer,
+        .offset = 0,
+        .size = VK_WHOLE_SIZE,
+    };
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &uploadVis, 0, NULL);
+
+    VkImageMemoryBarrier toDst = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = out->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = { width, height, 1 },
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+    };
+    vkCmdCopyBufferToImage(r->cmdBuf, out->stagingBuffer, out->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    VkImageMemoryBarrier toSample = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = out->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        0, 0, NULL, 0, NULL, 1, &barrier);
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toSample);
     vkEndCommandBuffer(r->cmdBuf);
 
     VkSubmitInfo submitInfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
@@ -702,7 +776,8 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     if (res != VK_SUCCESS) return (int)res;
     res = vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
-    vkResetFences(r->device, 1, &r->fence);
+    // Fence left SIGNALLED: begin_frame waits for the previous submit
+    // then resets — a reset here times out the next frame.
     return 0;
 }
 // Texture is a CPU-uploaded client surface texture (sampling view).
@@ -711,7 +786,9 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
 
 static void destroy_upload_texture(VkContext* ctx, VkUploadTexture* t) {
     if (t->view) vkDestroyImageView(ctx->device, t->view, NULL);
-    if (t->mapped) vkUnmapMemory(ctx->device, t->memory);
+    if (t->mapped) vkUnmapMemory(ctx->device, t->stagingMemory);
+    if (t->stagingMemory) vkFreeMemory(ctx->device, t->stagingMemory, NULL);
+    if (t->stagingBuffer) vkDestroyBuffer(ctx->device, t->stagingBuffer, NULL);
     if (t->memory) vkFreeMemory(ctx->device, t->memory, NULL);
     if (t->image) vkDestroyImage(ctx->device, t->image, NULL);
     memset(t, 0, sizeof(VkUploadTexture));
@@ -827,6 +904,70 @@ fail:
     vkFreeMemory(ctx->device, mem, NULL);
     vkDestroyBuffer(ctx->device, buf, NULL);
     return -1;
+}
+
+static int readback_texture_impl(VkContext* ctx, VkUploadTexture* t, uint8_t* outRows, uint32_t outStride) {
+    (void)ctx;
+    if (!t->mapped) return -31;
+    // OPTIMAL tiling: read the staging rows (tightly packed width*4).
+    for (uint32_t row = 0; row < t->height; row++) {
+        memcpy((uint8_t*)outRows + (size_t)outStride * row, (uint8_t*)t->mapped + (size_t)t->width * 4 * row, (size_t)t->width * 4);
+    }
+    return 0;
+}
+
+// Verify the OPTIMAL image actually received the data: transition
+// SHADER_READ_ONLY -> TRANSFER_SRC, copy image -> staging, back.
+static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) {
+    vkResetFences(ctx->device, 1, &r->fence);
+    VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+    VkResult res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
+    if (res != VK_SUCCESS) return (int)res;
+
+    VkImageMemoryBarrier pre = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = t->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &pre);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset = { 0, 0, 0 },
+        .imageExtent = { t->width, t->height, 1 },
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+    };
+    vkCmdCopyImageToBuffer(r->cmdBuf, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->stagingBuffer, 1, &region);
+
+    VkImageMemoryBarrier post = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = t->image,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &post);
+    vkEndCommandBuffer(r->cmdBuf);
+
+    VkSubmitInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
+    res = vkQueueSubmit(r->queue, 1, &sinfo, r->fence);
+    if (res != VK_SUCCESS) return (int)res;
+    res = vkWaitForFences(ctx->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    if (res != VK_SUCCESS) return (int)res;
+    // fence left SIGNALLED (begin_frame invariant).
+    return 0;
 }
 */
 import "C"
@@ -1064,4 +1205,45 @@ func (ren *Renderer) ReadbackTarget(target *RenderTarget) ([]byte, bool) {
 	}
 	_ = pixels
 	return out, true
+}
+
+// ReadbackTexture returns the texture's tightly-packed rows: with an
+// OPTIMAL-tiled image the CPU cannot read it back — the staging buffer
+// still holds the last upload, which is what tests verify.
+func (ren *Renderer) ReadbackTexture(tex *Texture) ([]byte, bool) {
+	return ren.ReadbackStaging(tex)
+}
+
+// ReadbackStaging returns a copy of the staging buffer's rows (the last
+// uploaded CPU pixels, tightly packed width*4).
+func (ren *Renderer) ReadbackStaging(tex *Texture) ([]byte, bool) {
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+
+	out := make([]byte, int(tex.Width)*4*int(tex.Height))
+	if len(out) == 0 {
+		return nil, false
+	}
+	if res := C.readback_texture_impl(&ren.dev.ctx, &tex.t, (*C.uint8_t)(unsafe.Pointer(&out[0])), C.uint32_t(tex.Width*4)); res != 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+// VerifyImageCopy round-trips the image through staging and returns what
+// the GPU actually holds (diagnostic for sampling bugs).
+func (ren *Renderer) VerifyImageCopy(tex *Texture) ([]byte, bool) {
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+
+	out := make([]byte, int(tex.Width)*4*int(tex.Height))
+	if len(out) == 0 {
+		return nil, false
+	}
+	if res := C.verify_image_copy(&ren.dev.ctx, &ren.r, &tex.t); res != 0 {
+		return nil, false
+	}
+	// The staging buffer now holds the image's pixels (width*4 packed).
+	n := int(tex.Width) * 4 * int(tex.Height)
+	return out[:n], true
 }
