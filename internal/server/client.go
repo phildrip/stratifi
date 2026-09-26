@@ -34,7 +34,7 @@ type Client struct {
 	server *Server
 
 	mu           sync.Mutex
-	objects      []ObjectSlot
+	objects      objectTable
 	pools        []ShmPool
 	buffers      []ShmBuffer
 	surfaces     []Surface
@@ -52,10 +52,10 @@ type Client struct {
 
 func newClient(id uint32, conn *wire.Conn, s *Server) *Client {
 	c := &Client{
-		id:           id,
-		conn:         conn,
-		server:       s,
-		objects:      make([]ObjectSlot, 0, 64),
+		id:     id,
+		conn:   conn,
+		server: s,
+
 		pools:        make([]ShmPool, 0, 16),
 		buffers:      make([]ShmBuffer, 0, 32),
 		surfaces:     make([]Surface, 0, 16),
@@ -79,29 +79,11 @@ func (c *Client) NextSerial() uint32 {
 }
 
 func (c *Client) registerObject(id uint32, t ObjectType) {
-	for i := range c.objects {
-		if c.objects[i].ID == id {
-			c.objects[i].Type = t
-			c.objects[i].Active = true
-			return
-		}
-	}
-	for i := range c.objects {
-		if !c.objects[i].Active {
-			c.objects[i] = ObjectSlot{ID: id, Type: t, Active: true}
-			return
-		}
-	}
-	c.objects = append(c.objects, ObjectSlot{ID: id, Type: t, Active: true})
+	c.objects.register(id, t)
 }
 
 func (c *Client) unregisterObject(id uint32) {
-	for i := range c.objects {
-		if c.objects[i].ID == id {
-			c.objects[i].Active = false
-			return
-		}
-	}
+	c.objects.unregister(id)
 }
 
 func (c *Client) findBuffer(id uint32) (ShmBuffer, bool) {
@@ -123,12 +105,7 @@ func (c *Client) findPool(id uint32) (*ShmPool, bool) {
 }
 
 func (c *Client) findObject(id uint32) (ObjectType, bool) {
-	for i := range c.objects {
-		if c.objects[i].Active && c.objects[i].ID == id {
-			return c.objects[i].Type, true
-		}
-	}
-	return ObjNone, false
+	return c.objects.lookup(id)
 }
 
 // Run executes the message reading and dispatch loop for this client.
@@ -163,6 +140,59 @@ func (c *Client) Run() error {
 }
 
 // dispatch routes incoming messages based on the registered object type.
+// dispatchTable routes object types to their protocol decoders. Table-driven
+// so a missing entry is caught by TestDispatchTableComplete at test time
+// instead of surfacing as a runtime "no dispatcher" error mid-session.
+var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) error{
+	ObjDisplay:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlDisplay(r, h, c) },
+	ObjRegistry:      func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlRegistry(r, h, c) },
+	ObjCompositor:    func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlCompositor(r, h, c) },
+	ObjShm:           func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlShm(r, h, c) },
+	ObjShmPool:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlShmPool(r, h, c) },
+	ObjSurface:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSurface(r, h, c) },
+	ObjBuffer:        func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlBuffer(r, h, c) },
+	ObjXdgWmBase:     func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgWmBase(r, h, c) },
+	ObjXdgSurface:    func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgSurface(r, h, c) },
+	ObjXdgToplevel:   func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgToplevel(r, h, c) },
+	ObjOutput:        func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlOutput(r, h, c) },
+	ObjSeat:          func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSeat(r, h, c) },
+	ObjPointer:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlPointer(r, h, c) },
+	ObjKeyboard:      func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlKeyboard(r, h, c) },
+	ObjSubcompositor: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubcompositor(r, h, c) },
+	ObjSubsurface:    func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubsurface(r, h, c) },
+	ObjDataDeviceManager: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return wayland.DispatchWlDataDeviceManager(r, h, c)
+	},
+	ObjDataDevice: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlDataDevice(r, h, c) },
+	ObjDataOffer:  func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlDataOffer(r, h, c) },
+	ObjDataSource: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlDataSource(r, h, c) },
+	ObjRegion:     func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlRegion(r, h, c) },
+	ObjCaptureSourceManagerOutput: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return capture.DispatchExtOutputImageCaptureSourceManagerV1(r, h, c)
+	},
+	ObjImageCopyCaptureManager: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return capture.DispatchExtImageCopyCaptureManagerV1(r, h, c)
+	},
+	ObjCaptureSourceManagerToplevel: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return capture.DispatchExtForeignToplevelImageCaptureSourceManagerV1(r, h, c)
+	},
+	ObjCaptureSource: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return capture.DispatchExtImageCaptureSourceV1(r, h, c)
+	},
+	ObjCaptureSession: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return capture.DispatchExtImageCopyCaptureSessionV1(r, h, c)
+	},
+	ObjCaptureFrame: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return capture.DispatchExtImageCopyCaptureFrameV1(r, h, c)
+	},
+	ObjCallback: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return fmt.Errorf("callback objects receive events only")
+	},
+	ObjCaptureCursorSession: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return fmt.Errorf("pointer cursor capture not supported")
+	},
+}
+
 func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 	c.mu.Lock()
 	objType, found := c.findObject(hdr.ObjectID)
@@ -171,64 +201,15 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 	if !found {
 		return fmt.Errorf("unknown object ID %d (opcode %d)", hdr.ObjectID, hdr.Opcode)
 	}
-	fmt.Printf("[SERVER DISPATCH] obj=%d op=%d (type=%d)\n", hdr.ObjectID, hdr.Opcode, objType)
+	if objType == ObjCallback {
+		return nil // callbacks receive events, never requests
+	}
 
-	switch objType {
-	case ObjDisplay:
-		return wayland.DispatchWlDisplay(r, hdr, c)
-	case ObjRegistry:
-		return wayland.DispatchWlRegistry(r, hdr, c)
-	case ObjCompositor:
-		return wayland.DispatchWlCompositor(r, hdr, c)
-	case ObjShm:
-		return wayland.DispatchWlShm(r, hdr, c)
-	case ObjShmPool:
-		return wayland.DispatchWlShmPool(r, hdr, c)
-	case ObjSurface:
-		return wayland.DispatchWlSurface(r, hdr, c)
-	case ObjBuffer:
-		return wayland.DispatchWlBuffer(r, hdr, c)
-	case ObjXdgWmBase:
-		return xdgshell.DispatchXdgWmBase(r, hdr, c)
-	case ObjXdgSurface:
-		return xdgshell.DispatchXdgSurface(r, hdr, c)
-	case ObjXdgToplevel:
-		return xdgshell.DispatchXdgToplevel(r, hdr, c)
-	case ObjOutput:
-		return wayland.DispatchWlOutput(r, hdr, c)
-	case ObjSeat:
-		return wayland.DispatchWlSeat(r, hdr, c)
-	case ObjPointer:
-		return wayland.DispatchWlPointer(r, hdr, c)
-	case ObjKeyboard:
-		return wayland.DispatchWlKeyboard(r, hdr, c)
-	case ObjSubcompositor:
-		return wayland.DispatchWlSubcompositor(r, hdr, c)
-	case ObjSubsurface:
-		return wayland.DispatchWlSubsurface(r, hdr, c)
-	case ObjDataDeviceManager:
-		return wayland.DispatchWlDataDeviceManager(r, hdr, c)
-	case ObjDataDevice:
-		return wayland.DispatchWlDataDevice(r, hdr, c)
-	case ObjDataSource:
-		return wayland.DispatchWlDataSource(r, hdr, c)
-	case ObjRegion:
-		return wayland.DispatchWlRegion(r, hdr, c)
-	case ObjCaptureSourceManagerOutput:
-		return capture.DispatchExtOutputImageCaptureSourceManagerV1(r, hdr, c)
-	case ObjImageCopyCaptureManager:
-		return capture.DispatchExtImageCopyCaptureManagerV1(r, hdr, c)
-	case ObjCaptureSourceManagerToplevel:
-		return capture.DispatchExtForeignToplevelImageCaptureSourceManagerV1(r, hdr, c)
-	case ObjCaptureSource:
-		return capture.DispatchExtImageCaptureSourceV1(r, hdr, c)
-	case ObjCaptureSession:
-		return capture.DispatchExtImageCopyCaptureSessionV1(r, hdr, c)
-	case ObjCaptureFrame:
-		return capture.DispatchExtImageCopyCaptureFrameV1(r, hdr, c)
-	default:
+	dispatcher, ok := dispatchTable[objType]
+	if !ok {
 		return fmt.Errorf("no dispatcher for object type %d (id %d)", objType, hdr.ObjectID)
 	}
+	return dispatcher(c, r, hdr)
 }
 
 // --- WlDisplayHandler ---
@@ -1171,4 +1152,35 @@ func (c *Client) Close() error {
 	}
 	c.pools = nil
 	return c.conn.Close()
+}
+
+// --- WlDataOfferHandler ---
+
+func (c *Client) HandleWlDataOfferAccept(senderID uint32, serial uint32, mimeType string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleWlDataOfferReceive(senderID uint32, mimeType string, fd int) error {
+	// The compositor does not source selection data yet; close the offered
+	// fd so the client is not left hanging on a receive.
+	_ = unix.Close(fd)
+	return nil
+}
+
+func (c *Client) HandleWlDataOfferDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleWlDataOfferFinish(senderID uint32) error {
+	return nil
+}
+
+func (c *Client) HandleWlDataOfferSetActions(senderID uint32, dndActions uint32, preferredAction uint32) error {
+	return nil
 }

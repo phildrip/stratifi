@@ -220,9 +220,8 @@ func TestServerClientRoundTrip(t *testing.T) {
 // TestObjectSlotRecycling verifies that recycling an object ID (such as after delete_id)
 // updates the existing slot and prevents returning obsolete interface types from dispatch.
 func TestObjectSlotRecycling(t *testing.T) {
-	c := &Client{
-		objects: make([]ObjectSlot, 0, 16),
-	}
+	c := &Client{}
+	c.objects.init()
 
 	// 1. Initial registration (e.g. temporary wl_callback)
 	c.registerObject(49, ObjCallback)
@@ -238,15 +237,10 @@ func TestObjectSlotRecycling(t *testing.T) {
 		t.Fatalf("expected ObjShmPool after recycling, got %v (found=%v)", objType, found)
 	}
 
-	// Verify no duplicate active slots exist for ID 49
-	activeCount := 0
-	for _, slot := range c.objects {
-		if slot.Active && slot.ID == 49 {
-			activeCount++
-		}
-	}
-	if activeCount != 1 {
-		t.Fatalf("expected exactly 1 active slot for ID 49, found %d", activeCount)
+	// Dense table: registration is idempotent, exactly one binding exists.
+	objType, found = c.findObject(49)
+	if !found || objType != ObjShmPool {
+		t.Fatalf("expected stable single binding for ID 49, got %v (found=%v)", objType, found)
 	}
 
 	// 3. Unregister

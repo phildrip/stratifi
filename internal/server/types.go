@@ -40,6 +40,9 @@ const (
 	ObjCaptureFrame
 	ObjCaptureCursorSession
 	ObjImageCopyCaptureManager
+
+	// objTypeMax marks the end of the enum for table-driven dispatch.
+	objTypeMax
 )
 
 // ObjectSlot represents an entry in the client's object lookup table.
