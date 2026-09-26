@@ -229,3 +229,9 @@ func (r *Router) HandleKeyboardModifiers(depressed, latched, locked, group uint3
 		}
 	}
 }
+
+// Focus returns the current keyboard focus target for diagnostics and
+// tests: (windowID, clientID, surfaceID).
+func (r *Router) Focus() (layout.WindowID, uint32, uint32) {
+	return r.focusWinID, r.focusClientID, r.focusSurfaceID
+}

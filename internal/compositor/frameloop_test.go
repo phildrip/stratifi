@@ -8,11 +8,11 @@ import (
 // FakeOutput is an in-memory render target for headless tests: the output
 // interface without Wayland. Deterministic pixel assertions run against it.
 type fakeOutput struct {
-	mu     sync.Mutex
-	width  int32
-	height int32
-	stride int32
-	pix    []byte
+	mu        sync.Mutex
+	width     int32
+	height    int32
+	stride    int32
+	pix       []byte
 	presented int
 }
 
@@ -26,10 +26,10 @@ func newFakeOutput(w, h int32) *fakeOutput {
 	}
 }
 
-func (o *fakeOutput) Width() int32    { return o.width }
-func (o *fakeOutput) Height() int32   { return o.height }
-func (o *fakeOutput) Stride() int32   { return o.stride }
-func (o *fakeOutput) Pixels() []byte  { return o.pix }
+func (o *fakeOutput) Width() int32   { return o.width }
+func (o *fakeOutput) Height() int32  { return o.height }
+func (o *fakeOutput) Stride() int32  { return o.stride }
+func (o *fakeOutput) Pixels() []byte { return o.pix }
 
 func (o *fakeOutput) Damage(x, y, w, h int32) {}
 
@@ -181,4 +181,47 @@ func solidPixels(w, h int32, color uint32) []byte {
 		pix[i+3] = byte(color >> 24)
 	}
 	return pix
+}
+
+// TestFrameLoopLateHooks is the regression test for the late-binding bug:
+// hooks installed AFTER construction (the actor model's boot order) must
+// take effect — constructor-time closures captured nils and every client
+// blit silently fell to the placeholder path.
+func TestFrameLoopLateHooks(t *testing.T) {
+	out := newFakeOutput(320, 200)
+	src := &fakeSource{w: 100, h: 80, stride: 100 * 4, pix: solidPixels(100, 80, 0xFF0000FF)}
+
+	fl := NewFrameLoopWithInfo(out, nil, nil, nil) // hooks nil at construction
+
+	// Actor boot: install hooks after construction.
+	fl.SetScene(func(dst []SceneWindow) []SceneWindow {
+		return append(dst, SceneWindow{ClientID: 1, SurfaceID: 1, Rect: Rect{X: 10, Y: 10, W: 104, H: 100}, Active: true})
+	})
+	fl.SetSnapshot(src.Snapshot)
+	fl.SetInfo(func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
+		return src.w, src.h, src.stride, true
+	})
+
+	fl.RenderOnce()
+
+	if px := out.pixel(50, 60); px != 0xFF0000FF {
+		t.Errorf("client pixel = %08x, want FF0000FF (late hooks not honored?)", px)
+	}
+	if px := out.pixel(50, 120); px == 0xFF11111B {
+		t.Error("placeholder fill still present — snapshot hook not resolved")
+	}
+}
+
+// TestFrameLoopNilSnapshotFallsBack covers the nil-hook guard: with no
+// snapshot installed the render must use the placeholder, not fault.
+func TestFrameLoopNilSnapshotFallsBack(t *testing.T) {
+	out := newFakeOutput(320, 200)
+	fl := NewFrameLoop(out, func(dst []SceneWindow) []SceneWindow {
+		return append(dst, SceneWindow{ClientID: 1, SurfaceID: 1, Rect: Rect{X: 0, Y: 0, W: 100, H: 100}, Active: true})
+	}, nil)
+
+	fl.RenderOnce() // must not panic
+	if px := out.pixel(50, 60); px != PlaceholderColor {
+		t.Errorf("placeholder pixel = %08x, want %08x", px, PlaceholderColor)
+	}
 }

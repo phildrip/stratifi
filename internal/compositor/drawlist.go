@@ -14,10 +14,10 @@ type Quad struct {
 // Blit is one client-surface blit: destination rect plus the surface to
 // resolve through the executor's source hooks.
 type Blit struct {
-	ClientID     uint32 // object ids are per-client: (client, surface) keys
-	SurfaceID    uint32
-	DstX, DstY   int32
-	DstW, DstH   int32
+	ClientID   uint32 // object ids are per-client: (client, surface) keys
+	SurfaceID  uint32
+	DstX, DstY int32
+	DstW, DstH int32
 }
 
 // DrawList is the backend-agnostic frame record. The frame loop builds it
@@ -69,9 +69,9 @@ func (dl *DrawList) Build(scene []SceneWindow, cfg FrameConfig, outW, outH int32
 		// Border: 4 strips.
 		bw := cfg.BorderWidth
 		r := w.Rect
-		dl.Quads = append(dl.Quads, Quad{r.X, r.Y, r.W, bw, borderCol})                     // top
-		dl.Quads = append(dl.Quads, Quad{r.X, r.Y + r.H - bw, r.W, bw, borderCol})          // bottom
-		dl.Quads = append(dl.Quads, Quad{r.X, r.Y + bw, bw, r.H - 2*bw, borderCol})         // left
+		dl.Quads = append(dl.Quads, Quad{r.X, r.Y, r.W, bw, borderCol})                        // top
+		dl.Quads = append(dl.Quads, Quad{r.X, r.Y + r.H - bw, r.W, bw, borderCol})             // bottom
+		dl.Quads = append(dl.Quads, Quad{r.X, r.Y + bw, bw, r.H - 2*bw, borderCol})            // left
 		dl.Quads = append(dl.Quads, Quad{r.X + r.W - bw, r.Y + bw, bw, r.H - 2*bw, borderCol}) // right
 
 		// Titlebar fill (inside border).

@@ -85,14 +85,16 @@ type FrameLoop struct {
 	scene  SceneFn
 	snap   SnapshotFn
 	info   SurfaceInfoFn
+	avail  AvailFn
+	copyFn CopyFn
 	cfg    FrameConfig
 
 	renderCh chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
 	sceneBuf []SceneWindow // renderer-owned scene snapshot backing array
-	drawList DrawList    // renderer-owned flat frame record
-	executor Executor    // defaults to CPU blitter; Vulkan swaps in later
+	drawList DrawList      // renderer-owned flat frame record
+	executor Executor      // defaults to CPU blitter; Vulkan swaps in later
 }
 
 // NewFrameLoop builds a frame loop for the given output using the CPU
@@ -104,7 +106,7 @@ func NewFrameLoop(out Output, scene SceneFn, snap SnapshotFn) *FrameLoop {
 // NewFrameLoopWithInfo adds an optional geometry probe for scratch sizing.
 // Without it, the loop grows the scratch based on snapshot results only.
 func NewFrameLoopWithInfo(out Output, scene SceneFn, snap SnapshotFn, info SurfaceInfoFn) *FrameLoop {
-	return &FrameLoop{
+	fl := &FrameLoop{
 		out:      out,
 		scene:    scene,
 		snap:     snap,
@@ -114,6 +116,11 @@ func NewFrameLoopWithInfo(out Output, scene SceneFn, snap SnapshotFn, info Surfa
 		done:     make(chan struct{}),
 		executor: NewCPUExecutor(out),
 	}
+	// Cache the hook adapters once: they resolve fl.info/fl.snap at call
+	// time without per-frame method-value allocation.
+	fl.avail = fl.availHook
+	fl.copyFn = fl.copyHook
+	return fl
 }
 
 // Request schedules a render. Coalescing: at most one pending request —
@@ -160,10 +167,11 @@ func (fl *FrameLoop) RenderOnce() {
 	scene := fl.sceneBuf
 
 	fl.drawList.Build(scene, fl.cfg, fl.out.Width(), fl.out.Height(), 0)
-	// Method values resolve fl.info/fl.snap at CALL time, so SetInfo/
-	// SetSnapshot after construction take effect (constructor-time
-	// closures captured nils once — the "only decoration renders" bug).
-	fl.executor.Execute(&fl.drawList, fl.availHook, fl.copyHook)
+	// The cached method values resolve fl.info/fl.snap at CALL time (so
+	// SetInfo/SetSnapshot after construction take effect) without
+	// allocating per render — a fresh method value each call cost
+	// 2 allocs/op and tripped the zero-alloc gate.
+	fl.executor.Execute(&fl.drawList, fl.avail, fl.copyFn)
 }
 
 // availHook/copyHook adapt the optional info/snapshot hooks for the
@@ -196,7 +204,6 @@ func (fl *FrameLoop) SetConfig(cfg FrameConfig) { fl.cfg = cfg }
 // SetScene/SetSnapshot/SetInfo install the actor's data hooks. Must be
 // called before Run/RenderOnce; the hooks then run on the calling
 // goroutine (the actor), which owns the scene state — no locking.
-func (fl *FrameLoop) SetScene(fn SceneFn)           { fl.scene = fn }
-func (fl *FrameLoop) SetSnapshot(fn SnapshotFn)     { fl.snap = fn }
-func (fl *FrameLoop) SetInfo(fn SurfaceInfoFn)      { fl.info = fn }
-
+func (fl *FrameLoop) SetScene(fn SceneFn)       { fl.scene = fn }
+func (fl *FrameLoop) SetSnapshot(fn SnapshotFn) { fl.snap = fn }
+func (fl *FrameLoop) SetInfo(fn SurfaceInfoFn)  { fl.info = fn }
