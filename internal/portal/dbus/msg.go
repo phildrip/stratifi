@@ -345,6 +345,23 @@ func (r *Reader) ReadSignature() (string, error) {
 // fixedHeaderLen is the byte offset where fields array content begins.
 const fixedHeaderLen = 16
 
+// MessageTotalSpan returns the full byte length of a complete message from
+// its fixed header: header(12) + fields array (len + content) + body.
+// Used by the connection's rolling accumulator to frame exact messages.
+func MessageTotalSpan(buf []byte) (int, error) {
+	if len(buf) < fixedHeaderLen {
+		return 0, fmt.Errorf("dbus: message too short (%d bytes)", len(buf))
+	}
+	bodyLen := int(binary.LittleEndian.Uint32(buf[4:8]))
+	fieldsLen := int(binary.LittleEndian.Uint32(buf[12:16]))
+	fieldsEnd := fixedHeaderLen + fieldsLen
+	bodyStart := fieldsEnd
+	for bodyStart%8 != 0 {
+		bodyStart++
+	}
+	return bodyStart + bodyLen, nil
+}
+
 // DecodeHeader parses the header + field array into m. m.Body is the
 // body sub-slice; callers drive typed reads from it with a Reader.
 func DecodeHeader(buf []byte) (*Msg, error) {

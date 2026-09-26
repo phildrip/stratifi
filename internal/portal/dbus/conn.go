@@ -120,31 +120,44 @@ func (c *Conn) send(m *Msg) error {
 
 // recvReply reads messages until the method return for the given serial
 // arrives; error returns are surfaced as errors.
+// recvReply reads messages until the method return for the given serial
+// arrives. A rolling accumulator frames exact message boundaries so a reply
+// split across reads (or interleaved with other messages) is parsed
+// correctly; non-matching messages are consumed and discarded.
 func (c *Conn) recvReply(serial uint32) (*Msg, error) {
-	var acc [4096]byte
-	accBuf := make([]byte, 0, 4096)
 	deadline := time.Now().Add(5 * time.Second)
+	var buf [4096]byte
+	var pending []byte
 	for {
+		// Frame one complete message from the accumulator.
+		if len(pending) >= fixedHeaderLen {
+			span, serr := MessageTotalSpan(pending)
+			if serr == nil && len(pending) >= span {
+				m, derr := DecodeHeader(pending[:span])
+				if derr != nil {
+					return nil, fmt.Errorf("dbus: decode: %w", derr)
+				}
+				pending = pending[span:]
+				if m.ReplySerial == serial {
+					if m.Type == TypeError {
+						return nil, fmt.Errorf("dbus: remote error %s", m.ErrorName)
+					}
+					if m.Type == TypeMethodReturn {
+						return m, nil
+					}
+				}
+				continue // unrelated signal/return: skip, keep remainder
+			}
+		}
+
 		if err := c.nc.SetReadDeadline(deadline); err != nil {
 			return nil, err
 		}
-		n, err := c.nc.Read(acc[:])
+		n, err := c.nc.Read(buf[:])
 		if err != nil {
 			return nil, fmt.Errorf("dbus: recv: %w", err)
 		}
-		accBuf = append(accBuf, acc[:n]...)
-
-		// Parse greedily; message boundaries are self-describing enough for
-		// the single pending reply this minimal client tracks.
-		m, derr := DecodeHeader(accBuf)
-		if derr == nil && m.ReplySerial == serial {
-			if m.Type == TypeError {
-				return nil, fmt.Errorf("dbus: remote error %s", m.ErrorName)
-			}
-			if m.Type == TypeMethodReturn {
-				return m, nil
-			}
-		}
+		pending = append(pending, buf[:n]...)
 	}
 }
 
