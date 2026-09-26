@@ -14,8 +14,6 @@ package compositor
 
 import (
 	"sync"
-
-	"bloxwm/internal/render"
 )
 
 // Rect is a window rectangle in output coordinates.
@@ -85,16 +83,20 @@ type FrameLoop struct {
 	scene  SceneFn
 	snap   SnapshotFn
 	info   SurfaceInfoFn
+	avail  AvailFn
+	copyFn CopyFn
 	cfg    FrameConfig
 
 	renderCh chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
-	scratch  []byte       // renderer-owned; grows on larger surface sizes only
 	sceneBuf []SceneWindow // renderer-owned scene snapshot backing array
+	drawList DrawList    // renderer-owned flat frame record
+	executor Executor    // defaults to CPU blitter; Vulkan swaps in later
 }
 
-// NewFrameLoop builds a frame loop for the given output.
+// NewFrameLoop builds a frame loop for the given output using the CPU
+// blitter executor.
 func NewFrameLoop(out Output, scene SceneFn, snap SnapshotFn) *FrameLoop {
 	return NewFrameLoopWithInfo(out, scene, snap, nil)
 }
@@ -102,14 +104,28 @@ func NewFrameLoop(out Output, scene SceneFn, snap SnapshotFn) *FrameLoop {
 // NewFrameLoopWithInfo adds an optional geometry probe for scratch sizing.
 // Without it, the loop grows the scratch based on snapshot results only.
 func NewFrameLoopWithInfo(out Output, scene SceneFn, snap SnapshotFn, info SurfaceInfoFn) *FrameLoop {
+	avail := func(surfaceID uint32) (int32, int32, bool) {
+		if info == nil {
+			return 0, 0, false
+		}
+		w, h, _, ok := info(surfaceID)
+		return w, h, ok
+	}
+	copyFn := func(surfaceID uint32, dst []byte) (int, bool) {
+		n, _, _, _, ok := snap(surfaceID, dst)
+		return n, ok
+	}
 	return &FrameLoop{
 		out:      out,
 		scene:    scene,
 		snap:     snap,
 		info:     info,
+		avail:    avail,
+		copyFn:   copyFn,
 		cfg:      DefaultConfig,
 		renderCh: make(chan struct{}, 1),
 		done:     make(chan struct{}),
+		executor: NewCPUExecutor(out),
 	}
 }
 
@@ -156,66 +172,15 @@ func (fl *FrameLoop) RenderOnce() {
 	fl.sceneBuf = fl.scene(fl.sceneBuf[:0])
 	scene := fl.sceneBuf
 
-	pixels := fl.out.Pixels()
-	stride := fl.out.Stride()
-	outW := fl.out.Width()
-	outH := fl.out.Height()
-
-	render.Clear(pixels, BackgroundColor)
-
-	for i := range scene {
-		w := &scene[i]
-		borderCol := uint32(BorderColorInactive)
-		if w.Active {
-			borderCol = uint32(BorderColorActive)
-		}
-
-		render.FillRect(pixels, stride, w.Rect.X, w.Rect.Y, w.Rect.W, w.Rect.H, outW, outH, ContainerColor)
-		render.DrawBorder(pixels, stride, w.Rect.X, w.Rect.Y, w.Rect.W, w.Rect.H, fl.cfg.BorderWidth, outW, outH, borderCol)
-
-		titlebarH := fl.cfg.TitlebarHeight
-		titleCol := uint32(TitlebarColorIdle)
-		if w.Active {
-			titleCol = uint32(TitlebarColor)
-		}
-		render.FillRect(pixels, stride, w.Rect.X+fl.cfg.BorderWidth, w.Rect.Y+fl.cfg.BorderWidth, w.Rect.W-2*fl.cfg.BorderWidth, titlebarH, outW, outH, titleCol)
-
-		bodyX := w.Rect.X + fl.cfg.BorderWidth
-		bodyY := w.Rect.Y + titlebarH + fl.cfg.BorderWidth
-		bodyW := w.Rect.W - 2*fl.cfg.BorderWidth
-		bodyH := w.Rect.H - titlebarH - 2*fl.cfg.BorderWidth
-
-		// Blit client pixels beneath the titlebar. The snapshot copies
-		// under the source's lock; the source mapping cannot disappear
-		// mid-copy (pool teardown takes the same lock).
-		if ok, sw, sh, sStride := fl.snapInto(w.SurfaceID); ok && sw > 0 && sh > 0 {
-			render.Blit(pixels, stride, bodyX, bodyY, outW, outH, fl.scratch, sStride, sw, sh)
-		} else {
-			render.FillRect(pixels, stride, bodyX, bodyY, bodyW, bodyH, outW, outH, PlaceholderColor)
-		}
-	}
-
-	fl.out.Damage(0, 0, outW, outH)
-	_ = fl.out.Present()
+	fl.drawList.Build(scene, fl.cfg, fl.out.Width(), fl.out.Height(), 0)
+	fl.executor.Execute(&fl.drawList, fl.avail, fl.copyFn)
 }
 
-// snapInto snapshots the surface into the renderer-owned scratch buffer,
-// growing it when the surface is larger than the current allocation.
-// Returns the decoded geometry; scratch holds exactly stride*height bytes
-// on success.
-func (fl *FrameLoop) snapInto(surfaceID uint32) (ok bool, w, h, stride int32) {
-	if fl.info != nil {
-		if _, sH, sStride, infoOK := fl.info(surfaceID); infoOK {
-			if need := int(sStride) * int(sH); need > len(fl.scratch) {
-				fl.scratch = make([]byte, need)
-			}
-		}
-	}
-	n, w, h, stride, ok := fl.snap(surfaceID, fl.scratch)
-	if ok && n > 0 {
-		return true, w, h, stride
-	}
-	return false, 0, 0, 0
+// Executor materializes a DrawList onto the frame loop's output. The CPU
+// blitter is the shm fallback; the Vulkan executor (bloxwm-o2x phase 3)
+// consumes the same flat records as draw calls.
+type Executor interface {
+	Execute(dl *DrawList, avail AvailFn, copyFn CopyFn)
 }
 
 // SetConfig overrides the chrome metrics. Must be called before Run.
