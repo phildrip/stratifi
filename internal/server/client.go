@@ -1116,3 +1116,57 @@ func (c *Client) HandleWlDataOfferFinish(senderID uint32) error {
 func (c *Client) HandleWlDataOfferSetActions(senderID uint32, dndActions uint32, preferredAction uint32) error {
 	return nil
 }
+
+// SnapshotSurfaceBuffer copies the surface's currently attached shm buffer
+// contents into dst under the client mutex, returning the buffer geometry.
+//
+// The copy happens under c.mu so the source mapping cannot be unmapped
+// (pool destroy / client teardown) mid-copy: goroutines outside the client's
+// dispatch loop — the compositor blit path — must use this instead of the
+// raw GetSurfaceBuffer slice, whose backing map is only valid while the
+// caller holds c.mu.
+func (c *Client) SnapshotSurfaceBuffer(surfaceID uint32, dst []byte) (copied int, width, height, stride int32, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	surf, found := c.surfaces.get(surfaceID)
+	if !found || !surf.Active || surf.Current.AttachedBufferID == 0 {
+		return 0, 0, 0, 0, false
+	}
+	buf, found := c.buffers.get(surf.Current.AttachedBufferID)
+	if !found {
+		return 0, 0, 0, 0, false
+	}
+	pool, found := c.pools.get(buf.PoolID)
+	if !found {
+		return 0, 0, 0, 0, false
+	}
+	start := int(buf.Offset)
+	end := start + int(buf.Stride*buf.Height)
+	if start < 0 || end > len(pool.Data) {
+		return 0, 0, 0, 0, false
+	}
+	src := pool.Data[start:end]
+	n := copy(dst, src)
+	return n, buf.Width, buf.Height, buf.Stride, true
+}
+
+// SurfaceBufferInfo reports the geometry of the surface's attached shm
+// buffer without touching pixel data (for sizing a snapshot scratch buffer).
+func (c *Client) SurfaceBufferInfo(surfaceID uint32) (width, height, stride int32, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	surf, found := c.surfaces.get(surfaceID)
+	if !found || !surf.Active || surf.Current.AttachedBufferID == 0 {
+		return 0, 0, 0, false
+	}
+	buf, found := c.buffers.get(surf.Current.AttachedBufferID)
+	if !found {
+		return 0, 0, 0, false
+	}
+	if _, found := c.pools.get(buf.PoolID); !found {
+		return 0, 0, 0, false
+	}
+	return buf.Width, buf.Height, buf.Stride, true
+}

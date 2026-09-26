@@ -441,10 +441,23 @@ func (b *Backend) RunEventLoop() {
 
 	for !b.closed.Load() {
 		n, _, _, _, err := unix.Recvmsg(b.rawFD, inBuf[:], oobBuf[:], 0)
-		if err != nil || n == 0 {
+		if err != nil {
+			// Transient interrupts must not kill the input path: the loop
+			// exits only when closed or the peer disconnects.
 			if b.closed.Load() {
 				return
 			}
+			if err == unix.EINTR || err == unix.EAGAIN {
+				continue
+			}
+			fmt.Printf("[-] nested: parent socket read failed (%v); input loop exiting\n", err)
+			return
+		}
+		if n == 0 {
+			if b.closed.Load() {
+				return
+			}
+			fmt.Println("[-] nested: parent compositor closed the connection")
 			return
 		}
 

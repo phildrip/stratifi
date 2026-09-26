@@ -58,70 +58,94 @@ func main() {
 	var backend *nested.Backend
 	var srv *server.Server
 
-	redrawLocked := func() {
-		if backend == nil {
-			return
-		}
+	// Renderer goroutine: single owner of the framebuffer. Renders from a
+	// snapshot of the window list taken under mu, so no framebuffer access
+	// ever races teardown or commit paths (bloxwm-aos race fix; the o2x
+	// frame-loop shape in miniature). Scratch is renderer-local: grown once
+	// per surface size change, no steady-state allocation.
+	renderCh := make(chan struct{}, 1)
+	go func() {
+		var scratch []byte
+		for range renderCh {
+			// Snapshot the window list under mu; render lock-free.
+			mu.Lock()
+			winList := make([]WindowMapping, 0, len(windows))
+			for _, m := range windows {
+				winList = append(winList, *m)
+			}
+			active := activeWin
+			mu.Unlock()
 
-		pixels := backend.Pixels()
-		stride := backend.Stride()
-
-		// Background: Charcoal 0xFF181825
-		render.Clear(pixels, 0xFF181825)
-
-		// Draw each window
-		for _, m := range windows {
-			client := srv.GetClient(m.ClientID)
-			if client == nil {
+			if backend == nil {
 				continue
 			}
+			pixels := backend.Pixels()
+			stride := backend.Stride()
 
-			rect := m.Rect
-			borderCol := uint32(0xFF45475A) // Dim gray border for inactive
-			if m.WinID == activeWin {
-				borderCol = uint32(0xFF89B4FA) // Cyan/Blue border for active
+			// Background: Charcoal 0xFF181825
+			render.Clear(pixels, 0xFF181825)
+
+			for i := range winList {
+				m := &winList[i]
+				client := srv.GetClient(m.ClientID)
+				if client == nil {
+					continue
+				}
+
+				rect := m.Rect
+				borderCol := uint32(0xFF45475A) // Dim gray border for inactive
+				if m.WinID == active {
+					borderCol = uint32(0xFF89B4FA) // Cyan/Blue border for active
+				}
+
+				// 1. Draw window container background
+				render.FillRect(pixels, stride, rect.X, rect.Y, rect.W, rect.H, outputW, outputH, 0xFF1E1E2E)
+
+				// 2. Draw border
+				render.DrawBorder(pixels, stride, rect.X, rect.Y, rect.W, rect.H, engine.Config.BorderWidth, outputW, outputH, borderCol)
+
+				// 3. Draw titlebar
+				titlebarH := engine.Config.TitlebarHeight
+				titlebarCol := uint32(0xFF313244)
+				if m.WinID == active {
+					titlebarCol = uint32(0xFF45475A)
+				}
+				render.FillRect(pixels, stride, rect.X+engine.Config.BorderWidth, rect.Y+engine.Config.BorderWidth, rect.W-2*engine.Config.BorderWidth, titlebarH, outputW, outputH, titlebarCol)
+
+				// 4. Blit client pixels beneath titlebar. The snapshot
+				// copies under the client mutex so the pool's munmap on
+				// teardown can never race the read.
+				bodyX := rect.X + engine.Config.BorderWidth
+				bodyY := rect.Y + titlebarH + engine.Config.BorderWidth
+				bodyW := rect.W - 2*engine.Config.BorderWidth
+				bodyH := rect.H - titlebarH - 2*engine.Config.BorderWidth
+
+				if _, sH, sStride, infoOK := client.SurfaceBufferInfo(m.SurfaceID); infoOK {
+					if need := int(sStride) * int(sH); need > len(scratch) {
+						scratch = make([]byte, need)
+					}
+				}
+				n, cW, cH, cStride, ok := client.SnapshotSurfaceBuffer(m.SurfaceID, scratch)
+				if ok && n > 0 {
+					render.Blit(pixels, stride, bodyX, bodyY, outputW, outputH, scratch[:n], cStride, cW, cH)
+				} else {
+					// Empty placeholder if not yet committed
+					render.FillRect(pixels, stride, bodyX, bodyY, bodyW, bodyH, outputW, outputH, 0xFF11111B)
+				}
 			}
 
-			// 1. Draw window container background
-			render.FillRect(pixels, stride, rect.X, rect.Y, rect.W, rect.H, outputW, outputH, 0xFF1E1E2E)
-
-			// 2. Draw border
-			render.DrawBorder(pixels, stride, rect.X, rect.Y, rect.W, rect.H, engine.Config.BorderWidth, outputW, outputH, borderCol)
-
-			// 3. Draw titlebar
-			titlebarH := engine.Config.TitlebarHeight
-			titlebarCol := uint32(0xFF313244)
-			if m.WinID == activeWin {
-				titlebarCol = uint32(0xFF45475A)
-			}
-			render.FillRect(pixels, stride, rect.X+engine.Config.BorderWidth, rect.Y+engine.Config.BorderWidth, rect.W-2*engine.Config.BorderWidth, titlebarH, outputW, outputH, titlebarCol)
-
-			// 4. Blit client pixels beneath titlebar
-			bodyX := rect.X + engine.Config.BorderWidth
-			bodyY := rect.Y + titlebarH + engine.Config.BorderWidth
-			bodyW := rect.W - 2*engine.Config.BorderWidth
-			bodyH := rect.H - titlebarH - 2*engine.Config.BorderWidth
-
-			// Retrieve surface buffer
-			cBuf, cW, cH, cStride, ok := client.GetSurfaceBuffer(m.SurfaceID)
-			if ok && len(cBuf) > 0 {
-				fmt.Printf("[+] Blitting client surface: %dx%d (stride=%d) to (%d, %d)\n", cW, cH, cStride, bodyX, bodyY)
-				render.Blit(pixels, stride, bodyX, bodyY, outputW, outputH, cBuf, cStride, cW, cH)
-			} else {
-				// Empty placeholder if not yet committed
-				render.FillRect(pixels, stride, bodyX, bodyY, bodyW, bodyH, outputW, outputH, 0xFF11111B)
-			}
+			backend.Damage(0, 0, outputW, outputH)
+			_ = backend.Present()
 		}
-
-		backend.Damage(0, 0, outputW, outputH)
-		_ = backend.Present()
+	}()
+	requestRedraw := func() {
+		select {
+		case renderCh <- struct{}{}:
+		default:
+			// A render is already queued: coalesce (drop stale frames).
+		}
 	}
-
-	redrawAll := func() {
-		mu.Lock()
-		redrawLocked()
-		mu.Unlock()
-	}
+	redrawAll := requestRedraw
 
 	// 2. Initialize zero-allocation Input RingBuffer and Router
 	ringBuf := input.NewRingBuffer(2048)
@@ -297,7 +321,7 @@ func main() {
 				m.SurfaceID = s.ID
 			}
 		}
-		redrawLocked()
+		requestRedraw()
 		mu.Unlock()
 	})
 
@@ -332,7 +356,7 @@ func main() {
 				}
 			}
 		}
-		redrawLocked()
+		requestRedraw()
 	})
 
 	fmt.Printf("[+] bloxwm is active on socket: %s\n", srv.SocketPath())
