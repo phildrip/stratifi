@@ -85,8 +85,6 @@ type FrameLoop struct {
 	scene  SceneFn
 	snap   SnapshotFn
 	info   SurfaceInfoFn
-	avail  AvailFn
-	copyFn CopyFn
 	cfg    FrameConfig
 
 	renderCh chan struct{}
@@ -106,24 +104,11 @@ func NewFrameLoop(out Output, scene SceneFn, snap SnapshotFn) *FrameLoop {
 // NewFrameLoopWithInfo adds an optional geometry probe for scratch sizing.
 // Without it, the loop grows the scratch based on snapshot results only.
 func NewFrameLoopWithInfo(out Output, scene SceneFn, snap SnapshotFn, info SurfaceInfoFn) *FrameLoop {
-	avail := func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
-		if info == nil {
-			return 0, 0, 0, false
-		}
-		w, h, stride, ok := info(clientID, surfaceID)
-		return w, h, stride, ok
-	}
-	copyFn := func(clientID, surfaceID uint32, dst []byte) (int, bool) {
-		n, _, _, _, ok := snap(clientID, surfaceID, dst)
-		return n, ok
-	}
 	return &FrameLoop{
 		out:      out,
 		scene:    scene,
 		snap:     snap,
 		info:     info,
-		avail:    avail,
-		copyFn:   copyFn,
 		cfg:      DefaultConfig,
 		renderCh: make(chan struct{}, 1),
 		done:     make(chan struct{}),
@@ -175,7 +160,27 @@ func (fl *FrameLoop) RenderOnce() {
 	scene := fl.sceneBuf
 
 	fl.drawList.Build(scene, fl.cfg, fl.out.Width(), fl.out.Height(), 0)
-	fl.executor.Execute(&fl.drawList, fl.avail, fl.copyFn)
+	// Method values resolve fl.info/fl.snap at CALL time, so SetInfo/
+	// SetSnapshot after construction take effect (constructor-time
+	// closures captured nils once — the "only decoration renders" bug).
+	fl.executor.Execute(&fl.drawList, fl.availHook, fl.copyHook)
+}
+
+// availHook/copyHook adapt the optional info/snapshot hooks for the
+// executor, resolving the current fields on every call.
+func (fl *FrameLoop) availHook(clientID, surfaceID uint32) (w, h, stride int32, ok bool) {
+	if fl.info == nil {
+		return 0, 0, 0, false
+	}
+	return fl.info(clientID, surfaceID)
+}
+
+func (fl *FrameLoop) copyHook(clientID, surfaceID uint32, dst []byte) (n int, ok bool) {
+	if fl.snap == nil {
+		return 0, false
+	}
+	n, _, _, _, ok = fl.snap(clientID, surfaceID, dst)
+	return n, ok
 }
 
 // Executor materializes a DrawList onto the frame loop's output. The CPU
@@ -194,3 +199,4 @@ func (fl *FrameLoop) SetConfig(cfg FrameConfig) { fl.cfg = cfg }
 func (fl *FrameLoop) SetScene(fn SceneFn)           { fl.scene = fn }
 func (fl *FrameLoop) SetSnapshot(fn SnapshotFn)     { fl.snap = fn }
 func (fl *FrameLoop) SetInfo(fn SurfaceInfoFn)      { fl.info = fn }
+
