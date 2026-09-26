@@ -92,9 +92,10 @@ func (dl *DrawList) Build(scene []SceneWindow, cfg FrameConfig, outW, outH int32
 	}
 }
 
-// AvailFn reports a surface's client buffer geometry (w, h, ok) for blit
-// clamping.
-type AvailFn func(surfaceID uint32) (w, h int32, ok bool)
+// AvailFn reports a surface's client buffer geometry (w, h, stride, ok).
+// Stride MUST come from the source: client buffers may be padded, so
+// stride is not derivable from width.
+type AvailFn func(surfaceID uint32) (w, h, stride int32, ok bool)
 
 // CopyFn copies a surface's pixels into dst under the source's lock.
 type CopyFn func(surfaceID uint32, dst []byte) (n int, ok bool)
@@ -134,12 +135,12 @@ func (e *CPUExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 
 	for i := range dl.Blits {
 		b := &dl.Blits[i]
-		sw, sh, ok := avail(b.SurfaceID)
-		if !ok || sw <= 0 || sh <= 0 {
+		sw, sh, sStride, ok := avail(b.SurfaceID)
+		if !ok || sw <= 0 || sh <= 0 || sStride <= 0 {
 			render.FillRect(pixels, stride, b.DstX, b.DstY, b.DstW, b.DstH, outW, outH, PlaceholderColor)
 			continue
 		}
-		if need := int(sw) * 4 * int(sh); need > len(e.scratch) {
+		if need := int(sStride) * int(sh); need > len(e.scratch) {
 			e.scratch = make([]byte, need)
 		}
 		n, ok := copyFn(b.SurfaceID, e.scratch)
@@ -147,7 +148,7 @@ func (e *CPUExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 			render.FillRect(pixels, stride, b.DstX, b.DstY, b.DstW, b.DstH, outW, outH, PlaceholderColor)
 			continue
 		}
-		render.Blit(pixels, stride, b.DstX, b.DstY, outW, outH, e.scratch[:n], sw*4, sw, sh)
+		render.Blit(pixels, stride, b.DstX, b.DstY, outW, outH, e.scratch[:n], sStride, sw, sh)
 	}
 
 	e.out.Damage(0, 0, outW, outH)

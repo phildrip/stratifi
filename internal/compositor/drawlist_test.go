@@ -75,7 +75,7 @@ func TestCPUExecutorPixels(t *testing.T) {
 	}()
 
 	exe := NewCPUExecutor(out)
-	avail := func(surfaceID uint32) (int32, int32, bool) { return src.w, src.h, true }
+	avail := func(surfaceID uint32) (int32, int32, int32, bool) { return src.w, src.h, src.stride, true }
 	copyFn := func(surfaceID uint32, dst []byte) (int, bool) {
 		copy(dst, src.pix)
 		return len(src.pix), true

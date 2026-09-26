@@ -104,12 +104,12 @@ func NewFrameLoop(out Output, scene SceneFn, snap SnapshotFn) *FrameLoop {
 // NewFrameLoopWithInfo adds an optional geometry probe for scratch sizing.
 // Without it, the loop grows the scratch based on snapshot results only.
 func NewFrameLoopWithInfo(out Output, scene SceneFn, snap SnapshotFn, info SurfaceInfoFn) *FrameLoop {
-	avail := func(surfaceID uint32) (int32, int32, bool) {
+	avail := func(surfaceID uint32) (int32, int32, int32, bool) {
 		if info == nil {
-			return 0, 0, false
+			return 0, 0, 0, false
 		}
-		w, h, _, ok := info(surfaceID)
-		return w, h, ok
+		w, h, stride, ok := info(surfaceID)
+		return w, h, stride, ok
 	}
 	copyFn := func(surfaceID uint32, dst []byte) (int, bool) {
 		n, _, _, _, ok := snap(surfaceID, dst)
