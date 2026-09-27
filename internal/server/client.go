@@ -97,12 +97,10 @@ func (c *Client) Run() error {
 	defer c.Close()
 
 	for {
-		fmt.Printf("[CLIENT %d] waiting for next ReadMsg...\n", c.id)
 		reader, err := c.conn.ReadMsg()
 		if err != nil {
 			return err
 		}
-		fmt.Printf("[CLIENT %d] ReadMsg got %d bytes\n", c.id, reader.Remaining())
 
 		// A single read may contain multiple back-to-back Wayland messages
 		for reader.Remaining() >= wire.HeaderSize {
@@ -199,7 +197,6 @@ func (c *Client) dispatch(r *wire.Reader, hdr wire.Header) error {
 // --- WlDisplayHandler ---
 
 func (c *Client) HandleWlDisplaySync(senderID uint32, callback uint32) error {
-	fmt.Printf("[+] HandleWlDisplaySync: callback=%d\n", callback)
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	if err := wayland.SendWlCallbackDone(w, callback, serial); err != nil {

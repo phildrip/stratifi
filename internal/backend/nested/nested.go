@@ -20,6 +20,11 @@ type Callbacks struct {
 	OnKey           func(key uint32, state uint32)
 	OnModifiers     func(depressed, latched, locked, group uint32)
 	OnClose         func()
+
+	// OnDisconnect fires when the parent connection ends without a close
+	// request (socket EOF or read error). The compositor cannot run
+	// without its parent, so this must trigger shutdown.
+	OnDisconnect func()
 }
 
 // Backend represents a nested compositor output window running inside a parent Wayland compositor.
@@ -295,7 +300,6 @@ func (b *Backend) initProtocol() error {
 			if err != nil {
 				break
 			}
-			fmt.Printf("[NESTED EVENT] obj=%d op=%d size=%d\n", hdr.ObjectID, hdr.Opcode, hdr.Size)
 			if hdr.ObjectID == b.displayID && hdr.Opcode == 0 { // wl_display.error
 				objID, _ := r.ReadUint32()
 				code, _ := r.ReadUint32()
@@ -450,14 +454,14 @@ func (b *Backend) RunEventLoop() {
 			if err == unix.EINTR || err == unix.EAGAIN {
 				continue
 			}
-			fmt.Printf("[-] nested: parent socket read failed (%v); input loop exiting\n", err)
+			b.notifyDisconnect()
 			return
 		}
 		if n == 0 {
 			if b.closed.Load() {
 				return
 			}
-			fmt.Println("[-] nested: parent compositor closed the connection")
+			b.notifyDisconnect()
 			return
 		}
 
@@ -467,7 +471,6 @@ func (b *Backend) RunEventLoop() {
 			if err != nil {
 				break
 			}
-			fmt.Printf("[RUN LOOP EVENT] obj=%d op=%d size=%d\n", hdr.ObjectID, hdr.Opcode, hdr.Size)
 			if hdr.ObjectID == b.displayID && hdr.Opcode == 0 {
 				objID, _ := r.ReadUint32()
 				code, _ := r.ReadUint32()
@@ -534,6 +537,14 @@ func (b *Backend) RunEventLoop() {
 				}
 			}
 		}
+	}
+}
+
+// notifyDisconnect tells the caller the parent connection is gone. It runs
+// on the event-loop goroutine, which then exits.
+func (b *Backend) notifyDisconnect() {
+	if b.callbacks.OnDisconnect != nil {
+		b.callbacks.OnDisconnect()
 	}
 }
 

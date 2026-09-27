@@ -164,6 +164,16 @@ func main() {
 			default:
 			}
 		},
+		OnDisconnect: func() {
+			// The parent vanished (socket EOF/error) without a close
+			// request. A nested compositor has nothing to present to, so
+			// shut down rather than linger with a dead connection.
+			fmt.Println("[-] Parent compositor disconnected. Shutting down.")
+			select {
+			case exitCh <- struct{}{}:
+			default:
+			}
+		},
 	}
 
 	var backend *nested.Backend
