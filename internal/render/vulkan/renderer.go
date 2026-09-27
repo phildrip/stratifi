@@ -35,6 +35,9 @@ typedef struct {
     // Command execution
     VkCommandBuffer cmdBuf;
     VkFence fence;
+    // Readback uses its own fence: reusing the frame fence would leave it
+    // unsignalled and stall the next begin_frame's wait.
+    VkFence readbackFence;
 
     // Current frame state
     float screenW;
@@ -328,6 +331,8 @@ static int init_vk_renderer(VkContext* ctx,
     };
     res = vkCreateFence(ctx->device, &fenceInfo, NULL, &r->fence);
     if (res != VK_SUCCESS) return (int)res;
+    res = vkCreateFence(ctx->device, &fenceInfo, NULL, &r->readbackFence);
+    if (res != VK_SUCCESS) return (int)res;
 
     return 0;
 }
@@ -339,6 +344,7 @@ static void destroy_vk_renderer(VkRenderer* r) {
     vkDeviceWaitIdle(dev);
 
     if (r->fence) vkDestroyFence(dev, r->fence, NULL);
+    if (r->readbackFence) vkDestroyFence(dev, r->readbackFence, NULL);
     if (r->texPipeline) vkDestroyPipeline(dev, r->texPipeline, NULL);
     if (r->texLayout) vkDestroyPipelineLayout(dev, r->texLayout, NULL);
     if (r->texDescLayout) vkDestroyDescriptorSetLayout(dev, r->texDescLayout, NULL);
@@ -833,7 +839,7 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
     res = vkBindBufferMemory(ctx->device, buf, mem, 0);
     if (res != VK_SUCCESS) { vkFreeMemory(ctx->device, mem, NULL); vkDestroyBuffer(ctx->device, buf, NULL); return (int)res; }
 
-    vkResetFences(ctx->device, 1, &r->fence);
+    vkResetFences(ctx->device, 1, &r->readbackFence);
     VkCommandBufferBeginInfo binfo2 = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     res = vkBeginCommandBuffer(r->cmdBuf, &binfo2);
     if (res != VK_SUCCESS) goto fail;
@@ -878,11 +884,11 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
     vkEndCommandBuffer(r->cmdBuf);
 
     VkSubmitInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
-    res = vkQueueSubmit(r->queue, 1, &sinfo, r->fence);
+    res = vkQueueSubmit(r->queue, 1, &sinfo, r->readbackFence);
     if (res != VK_SUCCESS) goto fail;
-    res = vkWaitForFences(ctx->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    res = vkWaitForFences(ctx->device, 1, &r->readbackFence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) goto fail;
-    vkResetFences(ctx->device, 1, &r->fence);
+    vkResetFences(ctx->device, 1, &r->readbackFence);
 
     // Copy out row by row.
     {
@@ -899,7 +905,7 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
         return 0;
     }
 fail:
-    vkResetFences(ctx->device, 1, &r->fence);
+    vkResetFences(ctx->device, 1, &r->readbackFence);
     vkFreeMemory(ctx->device, mem, NULL);
     vkDestroyBuffer(ctx->device, buf, NULL);
     return -1;
@@ -918,7 +924,7 @@ static int readback_texture_impl(VkContext* ctx, VkUploadTexture* t, uint8_t* ou
 // Verify the OPTIMAL image actually received the data: transition
 // SHADER_READ_ONLY -> TRANSFER_SRC, copy image -> staging, back.
 static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) {
-    vkResetFences(ctx->device, 1, &r->fence);
+    vkResetFences(ctx->device, 1, &r->readbackFence);
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     VkResult res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
     if (res != VK_SUCCESS) return (int)res;
@@ -961,11 +967,11 @@ static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) 
     vkEndCommandBuffer(r->cmdBuf);
 
     VkSubmitInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
-    res = vkQueueSubmit(r->queue, 1, &sinfo, r->fence);
+    res = vkQueueSubmit(r->queue, 1, &sinfo, r->readbackFence);
     if (res != VK_SUCCESS) return (int)res;
-    res = vkWaitForFences(ctx->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    res = vkWaitForFences(ctx->device, 1, &r->readbackFence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
-    // fence left SIGNALLED (begin_frame invariant).
+    // readbackFence left SIGNALLED; the frame fence is never touched here.
     return 0;
 }
 */
