@@ -132,34 +132,6 @@ func colorToFloats(c uint32) (r, g, b, a float32) {
 	return
 }
 
-// createDumbDmaBuf allocates a DRM dumb buffer and exports it to PRIME
-// (same ioctls the vulkan package's tests exercise on live hardware).
-func createDumbDmaBuf(drmFD int, width, height uint32) (fd int, pitch uint32, err error) {
-	type drmModeCreateDumb struct {
-		height, width, bpp, flags uint32
-		handle, pitch             uint32
-		size                      uint64
-	}
-	type drmPrimeHandle struct {
-		handle, flags uint32
-		fd            int32
-	}
-	const (
-		ioctlCreateDumb = 0xc02064b2
-		ioctlPrimeToFd  = 0xc00c642d
-	)
-
-	cd := drmModeCreateDumb{width: width, height: height, bpp: 32}
-	if err := ioctl(drmFD, ioctlCreateDumb, unsafePtr(&cd)); err != nil {
-		return -1, 0, err
-	}
-	pr := drmPrimeHandle{handle: cd.handle, fd: -1}
-	if err := ioctl(drmFD, ioctlPrimeToFd, unsafePtr(&pr)); err != nil {
-		return -1, 0, err
-	}
-	return int(pr.fd), pitch, nil
-}
-
 // uploadSurface mirrors fresh client content into a dumb buffer and
 // imports it (or reuses the existing import at the same size).
 // surfaceEntry returns the (client, surface) backing entry, creating the

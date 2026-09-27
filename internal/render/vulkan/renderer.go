@@ -30,7 +30,14 @@ typedef struct {
     VkDescriptorSetLayout texDescLayout;
     VkPipelineLayout texLayout;
     VkPipeline texPipeline;
-    VkDescriptorSet texDescSet;
+    // One descriptor set per textured draw in a frame. Updates are host
+    // operations: binding one set everywhere would make every quad sample
+    // the last-updated image.
+    #define TEX_DESC_SETS 64
+    VkDescriptorSet texDescSets[TEX_DESC_SETS];
+    uint32_t texDescCount;
+    uint32_t texDescNext;
+    int texDescOverflowed;
 
     // Command execution
     VkCommandBuffer cmdBuf;
@@ -127,12 +134,12 @@ static int init_vk_renderer(VkContext* ctx,
     // 3. Descriptor Pool
     VkDescriptorPoolSize poolSize = {
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 16,
+        .descriptorCount = TEX_DESC_SETS,
     };
     VkDescriptorPoolCreateInfo poolInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = 16,
+        .maxSets = TEX_DESC_SETS,
         .poolSizeCount = 1,
         .pPoolSizes = &poolSize,
     };
@@ -252,14 +259,17 @@ static int init_vk_renderer(VkContext* ctx,
     res = vkCreateDescriptorSetLayout(ctx->device, &descLayoutInfo, NULL, &r->texDescLayout);
     if (res != VK_SUCCESS) return (int)res;
 
-    VkDescriptorSetAllocateInfo dsAlloc = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = r->descPool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &r->texDescLayout,
-    };
-    res = vkAllocateDescriptorSets(ctx->device, &dsAlloc, &r->texDescSet);
-    if (res != VK_SUCCESS) return (int)res;
+    for (uint32_t i = 0; i < TEX_DESC_SETS; i++) {
+        VkDescriptorSetAllocateInfo dsAlloc = {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool = r->descPool,
+            .descriptorSetCount = 1,
+            .pSetLayouts = &r->texDescLayout,
+        };
+        res = vkAllocateDescriptorSets(ctx->device, &dsAlloc, &r->texDescSets[i]);
+        if (res != VK_SUCCESS) return (int)res;
+    }
+    r->texDescCount = TEX_DESC_SETS;
 
     VkPushConstantRange texPush = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
@@ -458,6 +468,7 @@ static int begin_frame(VkRenderer* r, VkTarget* target, float clearR, float clea
     VkResult res = vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
     vkResetFences(r->device, 1, &r->fence);
+    r->texDescNext = 0;
 
     vkResetCommandBuffer(r->cmdBuf, 0);
 
@@ -527,7 +538,18 @@ static void draw_texture_quad(VkRenderer* r, VkImageView view,
 
     if (!r->inPass || !view) return;
 
-    // Update descriptor set image view
+    // Each draw needs its own set: descriptor writes are host-side, so a
+    // shared set would resolve to whichever image was written last.
+    uint32_t idx = r->texDescNext++;
+    if (idx >= r->texDescCount) {
+        if (!r->texDescOverflowed) {
+            r->texDescOverflowed = 1;
+            fprintf(stderr, "[-] vulkan: more than %u textured draws in a frame; extra quads share a descriptor set\n", r->texDescCount);
+        }
+        idx = r->texDescCount - 1;
+    }
+    VkDescriptorSet descSet = r->texDescSets[idx];
+
     VkDescriptorImageInfo imgInfo = {
         .sampler = r->sampler,
         .imageView = view,
@@ -535,7 +557,7 @@ static void draw_texture_quad(VkRenderer* r, VkImageView view,
     };
     VkWriteDescriptorSet write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = r->texDescSet,
+        .dstSet = descSet,
         .dstBinding = 0,
         .dstArrayElement = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -545,7 +567,7 @@ static void draw_texture_quad(VkRenderer* r, VkImageView view,
     vkUpdateDescriptorSets(r->device, 1, &write, 0, NULL);
 
     vkCmdBindPipeline(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texPipeline);
-    vkCmdBindDescriptorSets(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texLayout, 0, 1, &r->texDescSet, 0, NULL);
+    vkCmdBindDescriptorSets(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texLayout, 0, 1, &descSet, 0, NULL);
 
     float pc[11] = {
         dstX, dstY, dstW, dstH,

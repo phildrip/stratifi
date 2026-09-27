@@ -133,8 +133,8 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.activeWin = winID
 
 		s.configure(mapping)
-		fmt.Printf("[+] New window registered: WinID=%d Title=%q AppID=%q (size: %dx%d)\n",
-			winID, ev.title, ev.appID,
+		fmt.Printf("[+] New window registered: WinID=%d client=%d surface=%d Title=%q AppID=%q (size: %dx%d)\n",
+			winID, ev.clientID, surfaceID, ev.title, ev.appID,
 			assignedRect.W-2*s.engine.Config.BorderWidth,
 			assignedRect.H-s.engine.Config.TitlebarHeight-2*s.engine.Config.BorderWidth)
 
