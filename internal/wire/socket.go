@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -96,6 +97,7 @@ func (s *Server) Accept() (*Conn, error) {
 		unixConn: unixConn,
 		rawConn:  rawConn,
 		fd:       rawFD,
+		pending:  make([]byte, 0, 8192),
 	}
 	conn.Writer.Init(conn.sendBuf[:], conn.sendFdBuf[:])
 	return conn, nil
@@ -110,7 +112,15 @@ type Conn struct {
 	// Pre-allocated I/O buffers (avoiding heap allocations)
 	recvBuf [8192]byte
 	oobBuf  [256]byte
-	fdBuf   [8]int
+
+	// Framing across reads. A stream socket preserves no message
+	// boundaries: one recv may deliver a partial message or several
+	// messages at once. pending carries unparsed bytes between calls, and
+	// inFDs carries received descriptors that keep FIFO order with them.
+	pending []byte
+	inFDs   [8]int
+	fdStart int // first unconsumed descriptor
+	fdEnd   int // one past the last received descriptor
 
 	sendBuf    [8192]byte
 	sendOobBuf [256]byte
@@ -120,9 +130,9 @@ type Conn struct {
 	Writer Writer
 }
 
-// ReadMsg reads raw bytes and ancillary file descriptors from the client socket.
-// It initializes c.Reader ready to decode incoming messages.
-func (c *Conn) ReadMsg() (*Reader, error) {
+// recvMore performs one recvmsg, appending payload bytes and any descriptors
+// to the framing buffers.
+func (c *Conn) recvMore() error {
 	var (
 		n, oobn int
 		recvErr error
@@ -136,39 +146,92 @@ func (c *Conn) ReadMsg() (*Reader, error) {
 		return true // Completed
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if recvErr != nil {
-		return nil, recvErr
+		return recvErr
 	}
 	if n == 0 {
-		return nil, fmt.Errorf("client closed connection")
+		return fmt.Errorf("client closed connection")
 	}
 
-	numFDs := 0
 	if oobn > 0 {
 		cmsgs, err := unix.ParseSocketControlMessage(c.oobBuf[:oobn])
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse socket control message: %w", err)
+			return fmt.Errorf("failed to parse socket control message: %w", err)
 		}
 		for _, cmsg := range cmsgs {
 			if cmsg.Header.Level == unix.SOL_SOCKET && cmsg.Header.Type == unix.SCM_RIGHTS {
 				fds, err := unix.ParseUnixRights(&cmsg)
 				if err != nil {
-					return nil, fmt.Errorf("failed to parse SCM_RIGHTS: %w", err)
+					return fmt.Errorf("failed to parse SCM_RIGHTS: %w", err)
 				}
 				for _, fd := range fds {
-					if numFDs < len(c.fdBuf) {
-						c.fdBuf[numFDs] = fd
-						numFDs++
+					if c.fdEnd == len(c.inFDs) {
+						// Reclaim consumed slots before dropping any fd.
+						copy(c.inFDs[:], c.inFDs[c.fdStart:c.fdEnd])
+						c.fdEnd -= c.fdStart
+						c.fdStart = 0
+					}
+					if c.fdEnd < len(c.inFDs) {
+						c.inFDs[c.fdEnd] = fd
+						c.fdEnd++
+					} else {
+						_ = unix.Close(fd) // overflow: close rather than leak
 					}
 				}
 			}
 		}
 	}
 
-	c.Reader.Init(c.recvBuf[:n], c.fdBuf[:numFDs])
+	c.pending = append(c.pending, c.recvBuf[:n]...)
+	return nil
+}
+
+// ReadMsg returns a Reader positioned over exactly one complete Wayland
+// message, carrying bytes and descriptors across reads as needed. The caller
+// must finish decoding before the next call (the Reader aliases c.pending).
+func (c *Conn) ReadMsg() (*Reader, error) {
+	// Account for descriptors taken while the caller decoded the previous
+	// message (Reader.fdIdx is reset per message by Init).
+	c.fdStart += c.Reader.fdIdx
+	if c.fdStart >= c.fdEnd {
+		c.fdStart, c.fdEnd = 0, 0
+	}
+
+	for len(c.pending) < HeaderSize {
+		if err := c.recvMore(); err != nil {
+			return nil, err
+		}
+	}
+	// size covers the whole message including the header, multiple of 4.
+	size := int(binary.LittleEndian.Uint32(c.pending[4:8]) >> 16)
+	if size < HeaderSize || size%4 != 0 {
+		return nil, fmt.Errorf("invalid Wayland message size %d", size)
+	}
+	for len(c.pending) < size {
+		if err := c.recvMore(); err != nil {
+			return nil, err
+		}
+	}
+
+	msg := c.pending[:size]
+	c.Reader.Init(msg, c.inFDs[c.fdStart:c.fdEnd])
+	// Advance past the message without moving bytes: msg stays valid until
+	// the next ReadMsg overwrites the region.
+	c.pending = c.pending[size:]
 	return &c.Reader, nil
+}
+
+// HasPendingMessage reports whether another complete message is already
+// buffered, so a caller can drain a batch of requests before flushing.
+// It never blocks.
+func (c *Conn) HasPendingMessage() bool {
+	if len(c.pending) < HeaderSize {
+		return false
+	}
+	size := int(binary.LittleEndian.Uint32(c.pending[4:8]) >> 16)
+	return size >= HeaderSize && size%4 == 0 && len(c.pending) >= size
 }
 
 // WriterRef returns the active Writer for appending events to this client.

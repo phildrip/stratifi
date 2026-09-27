@@ -97,20 +97,26 @@ func (c *Client) Run() error {
 	defer c.Close()
 
 	for {
-		reader, err := c.conn.ReadMsg()
+		reader, err := c.conn.ReadMsg() // blocks for one complete message
 		if err != nil {
 			return err
 		}
 
-		// A single read may contain multiple back-to-back Wayland messages
-		for reader.Remaining() >= wire.HeaderSize {
+		// Drain every request already buffered before replying, so a batch
+		// costs one flush (framing guarantees the bytes are whole messages).
+		for {
 			hdr, err := reader.ReadHeader()
 			if err != nil {
 				return fmt.Errorf("error reading header: %w", err)
 			}
-
 			if err := c.dispatch(reader, hdr); err != nil {
 				return fmt.Errorf("dispatch error for obj %d, op %d: %w", hdr.ObjectID, hdr.Opcode, err)
+			}
+			if !c.conn.HasPendingMessage() {
+				break
+			}
+			if reader, err = c.conn.ReadMsg(); err != nil {
+				return err
 			}
 		}
 
