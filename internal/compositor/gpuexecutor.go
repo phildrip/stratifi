@@ -26,6 +26,7 @@ type vulkanExecutor struct {
 	outH int32
 
 	entries map[texKey]*texEntry
+	scratch []byte // actor-owned pixel fetch buffer, grown on demand
 }
 
 type texKey struct {
@@ -159,17 +160,19 @@ func createDumbDmaBuf(drmFD int, width, height uint32) (fd int, pitch uint32, er
 
 // uploadSurface mirrors fresh client content into a dumb buffer and
 // imports it (or reuses the existing import at the same size).
-func (e *vulkanExecutor) uploadSurface(clientID, surfaceID uint32, w, h uint32, copyFn CopyFn) *vulkan.ImportedBuffer {
+// surfaceEntry returns the (client, surface) backing entry, creating the
+// dumb buffer + import when absent or resized. Content is written by the
+// caller per frame via entry.sb.write.
+func (e *vulkanExecutor) surfaceEntry(clientID, surfaceID uint32, w, h uint32) (*texEntry, error) {
 	key := texKey{clientID, surfaceID}
 	if entry, ok := e.entries[key]; ok {
 		if entry.w == w && entry.h == h {
-			return entry.imported
+			return entry, nil
 		}
 		e.drop(key)
 	}
 	if e.drmFD < 0 {
-		fmt.Printf("[-] gpu upload: no DRM fd\n")
-		return nil
+		return nil, fmt.Errorf("no DRM device for GPU client blits")
 	}
 
 	// Dumb buffer: the kernel maps this as GPU-backed scanout memory.
@@ -179,45 +182,32 @@ func (e *vulkanExecutor) uploadSurface(clientID, surfaceID uint32, w, h uint32, 
 		size                      uint64
 	}{height: h, width: w, bpp: 32}
 	if err := ioctl(e.drmFD, 0xc02064b2, unsafePtr(&cd)); err != nil {
-		fmt.Printf("[-] gpu upload: dumb alloc failed: %v\n", err)
-		return nil
+		return nil, err
 	}
 	pr := struct {
 		handle, flags uint32
 		fd            int32
 	}{handle: cd.handle, flags: uint32(unix.O_RDWR | unix.O_CLOEXEC), fd: -1}
 	if err := ioctl(e.drmFD, 0xc00c642d, unsafePtr(&pr)); err != nil {
-		fmt.Printf("[-] gpu upload: prime export failed: %v\n", err)
-		return nil
+		return nil, err
 	}
 
 	fd := int(pr.fd)
 	data, err := unix.Mmap(fd, 0, int(cd.pitch)*int(h), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
-		fmt.Printf("[-] gpu upload: mmap failed: %v\n", err)
 		_ = unix.Close(fd)
-		return nil
+		return nil, err
 	}
 	sb := &SurfaceDmaBuf{drmFD: e.drmFD, fd: fd, data: data, Width: w, Height: h, Stride: cd.pitch}
 
-	// Fetch fresh client pixels (client-stride layout) and convert.
-	scratch := make([]byte, int(cd.pitch)*int(h))
-	if n, ok := copyFn(clientID, surfaceID, scratch); !ok || n <= 0 {
-		fmt.Printf("[-] gpu upload: no client pixels (n=%d ok=%v)\n", n, ok)
-		sb.Close()
-		return nil
-	}
-	sb.write(scratch, int32(cd.pitch))
-
 	imported, err := e.dev.ImportDmaBuf(sb.fd, w, h, sb.Stride, 0)
 	if err != nil {
-		fmt.Printf("[-] gpu upload: import failed: %v\n", err)
 		sb.Close()
-		return nil
+		return nil, err
 	}
 	entry := &texEntry{imported: imported, sb: sb, w: w, h: h}
 	e.entries[key] = entry
-	return imported
+	return entry, nil
 }
 
 func (e *vulkanExecutor) drop(key texKey) {
@@ -228,17 +218,33 @@ func (e *vulkanExecutor) drop(key texKey) {
 	}
 }
 
-// Execute renders the list on the GPU.
+// Execute renders the list on the GPU. Client surfaces are backed by
+// dumb buffers whose mapping is REWRITTEN with fresh pixels every frame —
+// the import references the same GEM object, so content updates are just
+// the row copy (no re-import, no re-upload command).
 func (e *vulkanExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 	uploads := make([]*vulkan.ImportedBuffer, len(dl.Blits))
+	scratch := e.scratch
 	for i := range dl.Blits {
 		b := &dl.Blits[i]
-		sw, sh, _, ok := avail(b.ClientID, b.SurfaceID)
-		if !ok || sw <= 0 || sh <= 0 {
+		sw, sh, sStride, ok := avail(b.ClientID, b.SurfaceID)
+		if !ok || sw <= 0 || sh <= 0 || sStride <= 0 {
 			continue
 		}
-		uploads[i] = e.uploadSurface(b.ClientID, b.SurfaceID, uint32(sw), uint32(sh), copyFn)
+		if need := int(sStride) * int(sh); need > len(scratch) {
+			scratch = make([]byte, need)
+		}
+		if n, ok := copyFn(b.ClientID, b.SurfaceID, scratch); !ok || n <= 0 {
+			continue
+		}
+		entry, err := e.surfaceEntry(b.ClientID, b.SurfaceID, uint32(sw), uint32(sh))
+		if err != nil {
+			continue
+		}
+		entry.sb.write(scratch, sStride)
+		uploads[i] = entry.imported
 	}
+	e.scratch = scratch
 
 	e.ren.BeginFrame(e.target, 0.09, 0.09, 0.11, 1.0)
 
