@@ -253,52 +253,38 @@ func main() {
 
 	// ACTOR GOROUTINE: owns all scene state (windows, surfaceToWin,
 	// activeWin) and renders. No other goroutine touches these.
-	var (
-		windows      = make(map[layout.WindowID]*WindowMapping)
-		surfaceToWin = make(map[objRef]layout.WindowID)
-		activeWin    layout.WindowID
-	)
-
 	renderTick := make(chan struct{}, 1) // coalescing render requests
 
-	// focusActive points keyboard focus at the active window. The router
-	// owns focus state, so this queues a request (applied on the input
-	// consumer goroutine). Called when a window appears and again once its
-	// surface is mapped, so the client has a keyboard to receive events on.
-	focusActive := func() {
-		m, ok := windows[activeWin]
-		if !ok || m.SurfaceID == 0 {
-			return
-		}
-		router.RequestFocus(activeWin, m.ClientID, m.SurfaceID)
-	}
-
-	// publishScene pushes a lock-free WindowInfo list for the router's
-	// hit-testing (atomic.Pointer swap: readers never block).
-	publishScene := func() {
-		list := make([]input.WindowInfo, 0, len(windows))
-		for _, m := range windows {
-			list = append(list, input.WindowInfo{
-				WinID:     m.WinID,
-				ClientID:  m.ClientID,
-				SurfaceID: m.SurfaceID,
-				Rect:      m.Rect,
-			})
-		}
-		sceneInfo.Store(&list)
-	}
+	// The actor's scene state. It owns windows/surfaceToWin/activeWin;
+	// client lookup and focus requests are injected so the shell is
+	// testable without a live server (see shell_test.go).
+	shell := newShellState(
+		engine, outputBounds, &sceneInfo,
+		func(clientID uint32) shellClient {
+			if srv == nil {
+				return nil
+			}
+			if c := srv.GetClient(clientID); c != nil {
+				return c
+			}
+			return nil
+		},
+		func(winID layout.WindowID, clientID, surfaceID uint32) {
+			router.RequestFocus(winID, clientID, surfaceID)
+		},
+	)
 
 	// The frame loop renders from closures that run ON the actor
 	// goroutine — single-owner discipline, no locks needed.
 	frameLoop.SetScene(func(dst []compositor.SceneWindow) []compositor.SceneWindow {
-		for _, m := range windows {
+		for _, m := range shell.windows {
 			dst = append(dst, compositor.SceneWindow{
 				ClientID:  m.ClientID,
 				SurfaceID: m.SurfaceID,
 				Rect: compositor.Rect{
 					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
 				},
-				Active: m.WinID == activeWin,
+				Active: m.WinID == shell.activeWin,
 			})
 		}
 		return dst
@@ -328,110 +314,8 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	// The actor: drains events (state mutations), renders on request.
-	applyEvent := func(ev shellEvent) {
-		switch ev.kind {
-		case evWindowAdded:
-			winID := engine.SlotMap.Allocate()
-			_ = engine.AddWindow(winID)
-
-			winIDs, rects := engine.Compute(outputBounds)
-			for i, id := range winIDs {
-				if m, ok := windows[id]; ok {
-					m.Rect = rects[i]
-					if targetClient := srv.GetClient(m.ClientID); targetClient != nil {
-						bodyW := m.Rect.W - 2*engine.Config.BorderWidth
-						bodyH := m.Rect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
-						targetClient.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
-					}
-				}
-			}
-
-			surfaceID := srv.GetClient(ev.clientID).GetSurfaceIDForXdgSurface(ev.xdgSurfaceID)
-			assignedRect := layout.Rect{}
-			for i, id := range winIDs {
-				if id == winID {
-					assignedRect = rects[i]
-					break
-				}
-			}
-			mapping := &WindowMapping{
-				WinID:        winID,
-				ClientID:     ev.clientID,
-				SurfaceID:    surfaceID,
-				XdgSurfaceID: ev.xdgSurfaceID,
-				ToplevelID:   ev.toplevelID,
-				Title:        ev.title,
-				AppID:        ev.appID,
-				Rect:         assignedRect,
-			}
-			windows[winID] = mapping
-			surfaceToWin[objRef{ev.clientID, surfaceID}] = winID
-			surfaceToWin[objRef{ev.clientID, ev.xdgSurfaceID}] = winID
-			activeWin = winID
-
-			bodyW := assignedRect.W - 2*engine.Config.BorderWidth
-			bodyH := assignedRect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
-			if targetClient := srv.GetClient(ev.clientID); targetClient != nil {
-				targetClient.ConfigureToplevel(ev.xdgSurfaceID, ev.toplevelID, bodyW, bodyH, nil)
-			}
-			fmt.Printf("[+] New window registered: WinID=%d Title=%q AppID=%q (size: %dx%d)\n",
-				winID, ev.title, ev.appID, bodyW, bodyH)
-			focusActive()
-
-		case evCommitted:
-			if winID, ok := surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
-				if m, exists := windows[winID]; exists {
-					m.SurfaceID = ev.surfaceID
-					// Re-assert focus once the surface is mapped: the
-					// initial focus request may precede the client's
-					// wl_keyboard, and SetFocus is a no-op if unchanged.
-					if winID == activeWin {
-						focusActive()
-					}
-				}
-			}
-
-		case evClientGone:
-			for winID, m := range windows {
-				if m.ClientID == ev.clientID {
-					delete(windows, winID)
-					delete(surfaceToWin, objRef{m.ClientID, m.SurfaceID})
-					delete(surfaceToWin, objRef{m.ClientID, m.XdgSurfaceID})
-					_ = engine.RemoveWindow(winID)
-					if activeWin == winID {
-						activeWin = 0
-					}
-					fmt.Printf("[-] Window closed: WinID=%d ClientID=%d\n", winID, ev.clientID)
-				}
-			}
-
-			// Recompute layout for the survivors and reconfigure them.
-			winIDs, rects := engine.Compute(outputBounds)
-			for i, id := range winIDs {
-				if m, ok := windows[id]; ok {
-					m.Rect = rects[i]
-					if targetClient := srv.GetClient(m.ClientID); targetClient != nil {
-						bodyW := m.Rect.W - 2*engine.Config.BorderWidth
-						bodyH := m.Rect.H - engine.Config.TitlebarHeight - 2*engine.Config.BorderWidth
-						targetClient.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
-					}
-				}
-			}
-
-			// Focus falls to the first remaining window: a plain channel
-			// command the router applies on its own loop — no cross-
-			// goroutine method calls, no lock-order contracts.
-			if len(winIDs) > 0 {
-				if m, ok := windows[winIDs[0]]; ok {
-					activeWin = winIDs[0]
-					router.RequestFocus(winIDs[0], m.ClientID, m.SurfaceID)
-				}
-			}
-
-			publishScene()
-		}
-	}
+	publishScene := shell.publishScene
+	applyEvent := shell.applyEvent
 
 	publishScene()
 
