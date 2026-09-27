@@ -261,6 +261,18 @@ func main() {
 
 	renderTick := make(chan struct{}, 1) // coalescing render requests
 
+	// focusActive points keyboard focus at the active window. The router
+	// owns focus state, so this queues a request (applied on the input
+	// consumer goroutine). Called when a window appears and again once its
+	// surface is mapped, so the client has a keyboard to receive events on.
+	focusActive := func() {
+		m, ok := windows[activeWin]
+		if !ok || m.SurfaceID == 0 {
+			return
+		}
+		router.RequestFocus(activeWin, m.ClientID, m.SurfaceID)
+	}
+
 	// publishScene pushes a lock-free WindowInfo list for the router's
 	// hit-testing (atomic.Pointer swap: readers never block).
 	publishScene := func() {
@@ -365,11 +377,18 @@ func main() {
 			}
 			fmt.Printf("[+] New window registered: WinID=%d Title=%q AppID=%q (size: %dx%d)\n",
 				winID, ev.title, ev.appID, bodyW, bodyH)
+			focusActive()
 
 		case evCommitted:
 			if winID, ok := surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
 				if m, exists := windows[winID]; exists {
 					m.SurfaceID = ev.surfaceID
+					// Re-assert focus once the surface is mapped: the
+					// initial focus request may precede the client's
+					// wl_keyboard, and SetFocus is a no-op if unchanged.
+					if winID == activeWin {
+						focusActive()
+					}
 				}
 			}
 
