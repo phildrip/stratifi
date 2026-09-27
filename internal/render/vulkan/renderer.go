@@ -1099,7 +1099,11 @@ func (ren *Renderer) DrawColorQuad(x, y, w, h float32, r, g, b, a float32) {
 }
 
 // DrawTextureQuad renders an imported DMA-BUF texture quad onto the target surface.
-// Zero-allocation hot path.
+// Zero-allocation hot path. Each draw in a frame samples its own image: the
+// renderer owns a descriptor ring, so callers may draw any number of
+// different textures without per-draw bookkeeping. Do NOT hand this path a
+// shared descriptor set — descriptor writes are host-side and a shared set
+// resolves to the last image written (all quads identical).
 func (ren *Renderer) DrawTextureQuad(buf *ImportedBuffer, dstX, dstY, dstW, dstH float32, srcU, srcV, srcW, srcH float32, alpha float32) {
 	if buf == nil {
 		return
@@ -1194,7 +1198,8 @@ func (ren *Renderer) BeginFrameOn(target *RenderTarget, r, g, b, a float32) erro
 	return ren.BeginFrame(target, r, g, b, a)
 }
 
-// DrawTextureView renders a CPU-uploaded texture quad (view-based).
+// DrawTextureView renders a CPU-uploaded texture quad (view-based). Shares
+// the same descriptor-per-draw discipline as DrawTextureQuad; see there.
 func (ren *Renderer) DrawTextureView(tex *Texture, dstX, dstY, dstW, dstH float32, alpha float32) {
 	if tex == nil {
 		return
