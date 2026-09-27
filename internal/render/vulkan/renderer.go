@@ -598,7 +598,7 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -642,7 +642,7 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     VkBufferCreateInfo sinfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = (VkDeviceSize)width * 4 * height,
-        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     VkBuffer staging;
@@ -771,17 +771,16 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toSample);
     vkEndCommandBuffer(r->cmdBuf);
 
+
     VkSubmitInfo submitInfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
     res = vkQueueSubmit(r->queue, 1, &submitInfo, r->fence);
     if (res != VK_SUCCESS) return (int)res;
     res = vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
-    // Fence left SIGNALLED: begin_frame waits for the previous submit
-    // then resets — a reset here times out the next frame.
+    // Fence left SIGNALLED: begin_frame waits for the previous
+    // submit then resets — a reset here times out the next frame.
     return 0;
 }
-// Texture is a CPU-uploaded client surface texture (sampling view).
-// The GPU executor caches one per surface and replaces it on commit.
 
 
 static void destroy_upload_texture(VkContext* ctx, VkUploadTexture* t) {
@@ -1240,10 +1239,13 @@ func (ren *Renderer) VerifyImageCopy(tex *Texture) ([]byte, bool) {
 	if len(out) == 0 {
 		return nil, false
 	}
+	// Copies the image into the staging buffer; then read the staging.
 	if res := C.verify_image_copy(&ren.dev.ctx, &ren.r, &tex.t); res != 0 {
 		return nil, false
 	}
-	// The staging buffer now holds the image's pixels (width*4 packed).
-	n := int(tex.Width) * 4 * int(tex.Height)
-	return out[:n], true
+	if res := C.readback_texture_impl(&ren.dev.ctx, &tex.t,
+		(*C.uint8_t)(unsafe.Pointer(&out[0])), C.uint32_t(tex.Width*4)); res != 0 {
+		return nil, false
+	}
+	return out, true
 }

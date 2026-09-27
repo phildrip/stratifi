@@ -18,8 +18,8 @@ static int init_vulkan_context(VkContext* ctx) {
         .apiVersion = VK_API_VERSION_1_3,
     };
 
-    // Optional validation (BLOXWM_VK_VALIDATION=1): catches layout and
-    // sync bugs the silent paths hide.
+    // Optional validation (BLOXWM_VK_VALIDATION=1 + VK_LAYER_PATH): catches
+    // layout and sync bugs the silent paths hide.
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
     VkInstanceCreateInfo instInfo = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,

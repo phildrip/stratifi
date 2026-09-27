@@ -25,8 +25,9 @@ type vulkanExecutor struct {
 	outW int32
 	outH int32
 
-	entries map[texKey]*texEntry
-	scratch []byte // actor-owned pixel fetch buffer, grown on demand
+	entries  map[texKey]*texEntry
+	scratch  []byte // actor-owned pixel fetch buffer, grown on demand
+	debugged map[string]bool
 }
 
 type texKey struct {
@@ -110,13 +111,14 @@ func NewVulkanExecutor(outW, outH int32) (*vulkanExecutor, error) {
 	}
 
 	return &vulkanExecutor{
-		dev:     dev,
-		ren:     ren,
-		target:  target,
-		outW:    outW,
-		outH:    outH,
-		entries: make(map[texKey]*texEntry),
-		drmFD:   drmFD,
+		dev:      dev,
+		ren:      ren,
+		target:   target,
+		outW:     outW,
+		outH:     outH,
+		entries:  make(map[texKey]*texEntry),
+		debugged: make(map[string]bool),
+		drmFD:    drmFD,
 	}, nil
 }
 
@@ -229,16 +231,19 @@ func (e *vulkanExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 		b := &dl.Blits[i]
 		sw, sh, sStride, ok := avail(b.ClientID, b.SurfaceID)
 		if !ok || sw <= 0 || sh <= 0 || sStride <= 0 {
+			e.debugOnce("blit skip: avail failed", b.ClientID, b.SurfaceID)
 			continue
 		}
 		if need := int(sStride) * int(sh); need > len(scratch) {
 			scratch = make([]byte, need)
 		}
 		if n, ok := copyFn(b.ClientID, b.SurfaceID, scratch); !ok || n <= 0 {
+			e.debugOnce("blit skip: snapshot failed", b.ClientID, b.SurfaceID)
 			continue
 		}
 		entry, err := e.surfaceEntry(b.ClientID, b.SurfaceID, uint32(sw), uint32(sh))
 		if err != nil {
+			e.debugOnce(fmt.Sprintf("blit skip: surface entry: %v", err), b.ClientID, b.SurfaceID)
 			continue
 		}
 		entry.sb.write(scratch, sStride)
@@ -270,6 +275,17 @@ func (e *vulkanExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 		return
 	}
 	_ = e.ren.WaitFrame(1000000000)
+}
+
+// debugOnce prints a diagnostic once per unique reason (avoids log spam
+// on the per-frame hot path).
+func (e *vulkanExecutor) debugOnce(msg string, clientID, surfaceID uint32) {
+	key := msg
+	if _, done := e.debugged[key]; done {
+		return
+	}
+	e.debugged[key] = true
+	fmt.Printf("[-] gpu executor: %s (client=%d surface=%d)\n", msg, clientID, surfaceID)
 }
 
 // BridgeTo copies the GPU-composited frame into a CPU Output's pixels

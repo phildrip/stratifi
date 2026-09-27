@@ -23,7 +23,7 @@ func TestUploadRenderMinimal(t *testing.T) {
 	}
 	defer ren.DestroyTarget(target)
 
-	stride := uint32(4)
+	stride := uint32(16 * 4)
 	pix := make([]byte, stride*16)
 	for i := 0; i < len(pix); i += 4 {
 		copy(pix[i:i+4], []byte{0xFF, 0x00, 0x00, 0xFF}) // BGRA blue
@@ -53,7 +53,9 @@ func TestUploadRenderMinimal(t *testing.T) {
 	}
 	off := 9*16*4 + 9*4
 	t.Logf("center pixel = % x", out[off:off+4])
+	// The opaque-forcing shader writes alpha=1.0 regardless of the
+	// texture's alpha byte.
 	if p := out[off : off+4]; p[0] != 0xFF {
-		t.Errorf("center = % x, want blue 0xFF0000FF", p)
+		t.Errorf("center = % x, want blue (B=0xFF, A=1.0)", p)
 	}
 }

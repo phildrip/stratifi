@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 typedef struct {
     VkInstance instance;
