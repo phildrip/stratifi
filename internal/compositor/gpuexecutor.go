@@ -340,5 +340,10 @@ type BridgeExecutor struct {
 }
 
 func (b BridgeExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
+	if gpu, ok := b.Inner.(*vulkanExecutor); ok {
+		gpu.Execute(dl, avail, copyFn)
+		gpu.BridgeTo(b.Out)
+		return
+	}
 	b.Inner.Execute(dl, avail, copyFn)
 }
