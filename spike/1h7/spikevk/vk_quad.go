@@ -11,7 +11,8 @@ package spikevk
 
 /*
 #include <stdint.h>
-#include <stdint.h>
+void spike_noop(void);
+void free(void*);
 int32_t spike_vkCreateBuffer(void* f, uint64_t dev, const void* info, void* a, void* out);
 void    spike_vkDestroyBuffer(void* f, uint64_t dev, uint64_t buf, void* a);
 void    spike_vkGetBufferMemoryRequirements(void* f, uint64_t dev, uint64_t buf, void* out);
@@ -114,6 +115,29 @@ type QuadRenderer struct {
 	descPool   DescriptorPool
 	descSets   []DescriptorSet
 	descNext   uint32
+
+	// Batch scratch: one C buffer reused for every per-frame envelope
+	// (render-pass-begin, descriptor writes, submit). Written via Go
+	// stores and reset per Render — zero per-frame allocation, and the
+	// inner Go pointers stay live in the caller's frame for the call.
+	scratch    unsafe.Pointer
+	scratchLen uintptr
+	scratchOff uintptr
+	// Reused across frames; grown only when a frame needs more draws.
+	imgInfos []VkDescriptorImageInfo
+	writes   []VkWriteDescriptorSet
+	slots    []uint32
+	// Pre-allocated per-frame structs. Anything whose address crosses into
+	// C must live on the heap (C might retain it); holding these as fields
+	// pays that once instead of per frame.
+	begin    VkCommandBufferBeginInfo
+	clearVal VkClearValue
+	rpBegin  VkRenderPassBeginInfo
+	toSrc    VkImageMemoryBarrier
+	region   VkBufferImageCopy
+	submit   VkSubmitInfo
+	pc       [11]float32
+	mapped   *byte
 }
 
 // NewQuadRenderer builds the render pass, framebuffer, sampler, descriptor
@@ -121,7 +145,18 @@ type QuadRenderer struct {
 func NewQuadRenderer(frame *GpuFrame) (*QuadRenderer, error) {
 	ctx := frame.ctx
 	dev := C.uint64_t(uint64(ctx.Logical))
-	q := &QuadRenderer{ctx: ctx, frame: frame}
+	q := &QuadRenderer{
+		ctx:      ctx,
+		frame:    frame,
+		imgInfos: make([]VkDescriptorImageInfo, 0, 64),
+		writes:   make([]VkWriteDescriptorSet, 0, 64),
+		slots:    make([]uint32, 0, 64),
+	}
+	q.scratchLen = 4096
+	q.scratch = C.malloc(C.size_t(q.scratchLen))
+	if q.scratch == nil {
+		return nil, ResultError(-1, "scratch malloc")
+	}
 
 	// Render pass: one SRGB attachment, clear on load, store, UNDEFINED in.
 	attachment := VkAttachmentDescription{
@@ -471,6 +506,26 @@ func (q *QuadRenderer) UploadTexture(w, h uint32, pixels []byte) (*QuadTexture, 
 	return &QuadTexture{img: img, mem: imgMem, view: view, w: w, h: h}, nil
 }
 
+// noopCall invokes a no-op C shim: isolates cgo per-call allocation cost.
+func noopCall() { C.spike_noop() }
+
+// put copies bytes into the frame scratch and returns the C pointer.
+// The scratch is reset per Render and sized for the worst-case frame;
+// overflow is a programming error, not a runtime condition.
+func (q *QuadRenderer) put(data []byte) unsafe.Pointer {
+	if q.scratchOff+uintptr(len(data)) > q.scratchLen {
+		panic("spikevk: scratch overflow")
+	}
+	dst := unsafe.Add(q.scratch, q.scratchOff)
+	copy(unsafe.Slice((*byte)(dst), len(data)), data)
+	q.scratchOff += uintptr(len(data))
+	return dst
+}
+
+func structBytes(p unsafe.Pointer, size uintptr) []byte {
+	return unsafe.Slice((*byte)(p), size)
+}
+
 // Render records a render pass with the given textured draws, then the
 // copy-out, submit, wait and readback. descNext resets here: each draw in
 // this frame takes the next ring slot, which is the entire fix from the C
@@ -479,29 +534,50 @@ func (q *QuadRenderer) Render(clear [4]float32, draws []QuadDraw, screenW, scree
 	ctx, frame := q.ctx, q.frame
 	dev := C.uint64_t(uint64(ctx.Logical))
 	start := time.Now()
+	q.scratchOff = 0
 
 	if res := Result(C.spike_vkWaitForFences(ctx.vWaitForFences, dev, 1, unsafe.Pointer(&frame.fence), 1, 1_000_000_000)); res != 0 {
 		return nil, 0, ResultError(res, "vkWaitForFences")
 	}
 	C.spike_vkResetFences(ctx.vResetFences, dev, 1, unsafe.Pointer(&frame.fence))
 	C.spike_vkResetCommandBuffer(ctx.vResetCmdBuffer, C.uint64_t(uint64(frame.cmd)), 0)
-	begin := VkCommandBufferBeginInfo{SType: STRUCT_COMMAND_BUFFER_BEGIN_INFO, Flags: CB_USAGE_ONE_TIME_SUBMIT}
-	if res := Result(C.spike_vkBeginCommandBuffer(ctx.vBeginCmdBuffer, C.uint64_t(uint64(frame.cmd)), unsafe.Pointer(&begin))); res != 0 {
+	q.begin = VkCommandBufferBeginInfo{SType: STRUCT_COMMAND_BUFFER_BEGIN_INFO, Flags: CB_USAGE_ONE_TIME_SUBMIT}
+	if res := Result(C.spike_vkBeginCommandBuffer(ctx.vBeginCmdBuffer, C.uint64_t(uint64(frame.cmd)), unsafe.Pointer(&q.begin))); res != 0 {
 		return nil, 0, ResultError(res, "vkBeginCommandBuffer")
 	}
 
-	clearVal := VkClearValue{Color: clear}
-	rpBegin := VkRenderPassBeginInfo{
+	q.clearVal = VkClearValue{Color: clear}
+	q.rpBegin = VkRenderPassBeginInfo{
 		SType: STRUCT_RENDER_PASS_BEGIN_INFO, RenderPass: q.renderPass, Framebuffer: q.framebuf,
 		RenderArea:      VkRect2D{Extent: [2]uint32{frame.width, frame.height}},
-		ClearValueCount: 1, PClearValues: &clearVal,
+		ClearValueCount: 1, PClearValues: &q.clearVal,
 	}
-	rpPtr, freeRp := envelope(unsafe.Pointer(&rpBegin), unsafe.Sizeof(rpBegin))
-	defer freeRp()
+	rpPtr := q.put(structBytes(unsafe.Pointer(&q.rpBegin), unsafe.Sizeof(q.rpBegin)))
 	C.spike_vkCmdBeginRenderPass(ctx.vCmdBeginRenderPass, C.uint64_t(uint64(frame.cmd)), rpPtr, 0)
 
 	C.spike_vkCmdBindPipeline(ctx.vCmdBindPipeline, C.uint64_t(uint64(frame.cmd)), BIND_POINT_GRAPHICS, C.uint64_t(uint64(q.pipeline)))
 	q.descNext = 0
+
+	// Batch phase: assign ring slots and build every descriptor write, then
+	// a SINGLE UpdateDescriptorSets. Updates take effect at submit time, so
+	// recording draws that reference not-yet-updated sets is sound — and it
+	// keeps one cgo call + one scratch copy instead of N of each.
+	n := 0
+	for _, d := range draws {
+		if d.Tex == nil {
+			continue
+		}
+		n++
+	}
+	if cap(q.imgInfos) < n {
+		q.imgInfos = make([]VkDescriptorImageInfo, n)
+		q.writes = make([]VkWriteDescriptorSet, n)
+		q.slots = make([]uint32, n)
+	}
+	q.imgInfos = q.imgInfos[:n]
+	q.writes = q.writes[:n]
+	q.slots = q.slots[:0]
+	i := 0
 	for _, d := range draws {
 		if d.Tex == nil {
 			continue
@@ -511,35 +587,49 @@ func (q *QuadRenderer) Render(clear [4]float32, draws []QuadDraw, screenW, scree
 		if slot >= uint32(len(q.descSets)) {
 			slot = uint32(len(q.descSets)) - 1
 		}
-		imgInfo := VkDescriptorImageInfo{
+		q.slots = append(q.slots, slot)
+		q.imgInfos[i] = VkDescriptorImageInfo{
 			Sampler: q.sampler, ImageView: d.Tex.view, ImageLayout: 5, // SHADER_READ_ONLY_OPTIMAL
 		}
-		write := VkWriteDescriptorSet{
+		q.writes[i] = VkWriteDescriptorSet{
 			SType: STRUCT_WRITE_DESCRIPTOR_SET, DstSet: q.descSets[slot],
 			DstBinding: 0, DescriptorCount: 1, DescriptorType: DESC_COMBINED_SAMPLER,
-			PImageInfo: &imgInfo,
+			PImageInfo: &q.imgInfos[i],
 		}
-		writePtr, freeWrite := envelope(unsafe.Pointer(&write), unsafe.Sizeof(write))
-		C.spike_vkUpdateDescriptorSets(ctx.vUpdateDescSets, dev, 1, writePtr, 0, nil)
-		freeWrite()
+		i++
+	}
+	if n > 0 {
+		writesPtr := q.put(structBytes(unsafe.Pointer(&q.writes[0]), uintptr(n)*unsafe.Sizeof(q.writes[0])))
+		C.spike_vkUpdateDescriptorSets(ctx.vUpdateDescSets, dev, C.uint32_t(n), writesPtr, 0, nil)
+	}
 
+	// Draw phase stays per-draw Go calls (bind, push, draw): batching those
+	// into C would move draw logic off Go and defeat the spike. Each draw
+	// references its already-updated set.
+	j := 0
+	for _, d := range draws {
+		if d.Tex == nil {
+			continue
+		}
+		slot := q.slots[j]
+		j++
 		C.spike_vkCmdBindDescriptorSets(ctx.vCmdBindDescSets, C.uint64_t(uint64(frame.cmd)),
 			BIND_POINT_GRAPHICS, C.uint64_t(uint64(q.layout)), 0, 1, unsafe.Pointer(&q.descSets[slot]), 0, nil)
 
-		pc := [11]float32{
+		q.pc = [11]float32{
 			d.Dst[0], d.Dst[1], d.Dst[2], d.Dst[3],
 			d.Src[0], d.Src[1], d.Src[2], d.Src[3],
 			screenW, screenH, d.Alpha,
 		}
 		C.spike_vkCmdPushConstants(ctx.vCmdPushConstants, C.uint64_t(uint64(frame.cmd)),
-			C.uint64_t(uint64(q.layout)), SHADER_STAGE_VERT, 0, 44, unsafe.Pointer(&pc[0]))
+			C.uint64_t(uint64(q.layout)), SHADER_STAGE_VERT, 0, 44, unsafe.Pointer(&q.pc[0]))
 		C.spike_vkCmdDraw(ctx.vCmdDraw, C.uint64_t(uint64(frame.cmd)), 4, 1, 0, 0)
 	}
 	C.spike_vkCmdEndRenderPass(ctx.vCmdEndRenderPass, C.uint64_t(uint64(frame.cmd)))
 
 	// Target back to TRANSFER_SRC for the copy-out.
 	sub := VkImageSubresourceRange{AspectMask: ASPECT_COLOR, LevelCount: 1, LayerCount: 1}
-	toSrc := VkImageMemoryBarrier{
+	q.toSrc = VkImageMemoryBarrier{
 		SType:         STRUCT_IMAGE_MEMORY_BARRIER,
 		SrcAccessMask: ACCESS_COLOR_ATTACH_WRITE, DstAccessMask: ACCESS_TRANSFER_READ,
 		OldLayout: 2, NewLayout: LAYOUT_TRANSFER_SRC, // COLOR_ATTACHMENT_OPTIMAL
@@ -547,33 +637,31 @@ func (q *QuadRenderer) Render(clear [4]float32, draws []QuadDraw, screenW, scree
 		Image: frame.img, SubresourceRange: sub,
 	}
 	C.spike_vkCmdPipelineBarrier(ctx.vCmdPipelineBarrier, C.uint64_t(uint64(frame.cmd)),
-		STAGE_COLOR_ATTACHMENT, STAGE_TRANSFER, 0, 0, nil, 0, nil, 1, unsafe.Pointer(&toSrc))
-	region := VkBufferImageCopy{
+		STAGE_COLOR_ATTACHMENT, STAGE_TRANSFER, 0, 0, nil, 0, nil, 1, unsafe.Pointer(&q.toSrc))
+	q.region = VkBufferImageCopy{
 		ImageSubresource: VkImageSubresourceLayers{AspectMask: ASPECT_COLOR, LayerCount: 1},
 		ImageExtent:      [3]uint32{frame.width, frame.height, 1},
 	}
 	C.spike_vkCmdCopyImageToBuffer(ctx.vCmdCopyImageToBuf, C.uint64_t(uint64(frame.cmd)),
-		C.uint64_t(uint64(frame.img)), LAYOUT_TRANSFER_SRC, C.uint64_t(uint64(frame.stg)), 1, unsafe.Pointer(&region))
+		C.uint64_t(uint64(frame.img)), LAYOUT_TRANSFER_SRC, C.uint64_t(uint64(frame.stg)), 1, unsafe.Pointer(&q.region))
 
 	if res := Result(C.spike_vkEndCommandBuffer(ctx.vEndCmdBuffer, C.uint64_t(uint64(frame.cmd)))); res != 0 {
 		return nil, 0, ResultError(res, "vkEndCommandBuffer")
 	}
-	submit := VkSubmitInfo{SType: STRUCT_SUBMIT_INFO, CommandBufferCount: 1, PCommandBuffers: &frame.cmd}
-	submitPtr, freeSubmit := envelope(unsafe.Pointer(&submit), unsafe.Sizeof(submit))
+	q.submit = VkSubmitInfo{SType: STRUCT_SUBMIT_INFO, CommandBufferCount: 1, PCommandBuffers: &frame.cmd}
+	submitPtr := q.put(structBytes(unsafe.Pointer(&q.submit), unsafe.Sizeof(q.submit)))
 	if res := Result(C.spike_vkQueueSubmit(ctx.vQueueSubmit, C.uint64_t(uint64(ctx.Queue)), 1, submitPtr, C.uint64_t(uint64(frame.fence)))); res != 0 {
-		freeSubmit()
 		return nil, 0, ResultError(res, "vkQueueSubmit")
 	}
-	freeSubmit()
 	if res := Result(C.spike_vkWaitForFences(ctx.vWaitForFences, dev, 1, unsafe.Pointer(&frame.fence), 1, 1_000_000_000)); res != 0 {
 		return nil, 0, ResultError(res, "vkWaitForFences (frame)")
 	}
 
-	var mapped *byte
-	if res := Result(C.spike_vkMapMemory(ctx.vMapMemory, dev, C.uint64_t(uint64(frame.stgMem)), 0, C.uint64_t(frame.stgLen), 0, unsafe.Pointer(&mapped))); res != 0 {
+	q.mapped = nil
+	if res := Result(C.spike_vkMapMemory(ctx.vMapMemory, dev, C.uint64_t(uint64(frame.stgMem)), 0, C.uint64_t(frame.stgLen), 0, unsafe.Pointer(&q.mapped))); res != 0 {
 		return nil, 0, ResultError(res, "vkMapMemory")
 	}
-	copy(frame.out, unsafe.Slice(mapped, frame.stgLen))
+	copy(frame.out, unsafe.Slice(q.mapped, frame.stgLen))
 	C.spike_vkUnmapMemory(ctx.vUnmapMemory, dev, C.uint64_t(uint64(frame.stgMem)))
 	return frame.out, time.Since(start), nil
 }
@@ -699,5 +787,9 @@ func (q *QuadRenderer) Close() {
 	if q.renderPass != 0 {
 		C.spike_vkDestroyRenderPass(ctx.vDestroyRenderPass, dev, C.uint64_t(uint64(q.renderPass)), nil)
 		q.renderPass = 0
+	}
+	if q.scratch != nil {
+		C.free(q.scratch)
+		q.scratch = nil
 	}
 }

@@ -10,7 +10,7 @@ these into the build; they are evidence for the go/no-go.
 | bench.go | Cost of one cgo hop vs an equivalent Go call (per-call FFI tax). |
 | bench_batch.go | Per-quad cgo calls (current design) vs one batched call per frame. |
 
-Reproduce: `CGO_ENABLED=1 go run ./bench.go` etc. Measured on the author's
+Reproduce: `CGO_ENABLED=1 go run ./probes/bench` etc. (one dir per probe). Measured on the author's
 machine (AMD RENOIR, RADV, go1.25.4 linux/amd64):
 
 - dlopen-only cgo shim links **zero** vulkan (ldd), vs 1 for the current binary.
@@ -77,3 +77,21 @@ Debugging notes that become migration rules: topology must be
 has sType 0 and is invalid — pass nil; image-view swizzle `{0,0,0,0}` is
 identity, `{0,1,2,3}` is `{IDENTITY,R,G,B}` (validation caught both, plus a
 destroy-order gap now covered by `Close`).
+
+## Step 4 — batch to zero allocs (bloxwm-ewo, NOT draw batching)
+
+`BenchmarkTexturedFrame`: **15.4 ms, 0 B / 0 allocs per 1280×720 frame**
+(down from 10 allocs), pixels still exact.
+
+What changed: descriptor updates are now one `UpdateDescriptorSets`
+with N writes (built in reused Go slices, copied once into a reused C
+scratch buffer) instead of N calls; the render-pass-begin and submit infos
+go through the same scratch instead of per-frame `envelope` closures; and
+every struct whose address crosses into C (`begin`, `clearVal`, `rpBegin`,
+`toSrc`, `region`, `submit`, `pc`, `mapped`) lives as a `QuadRenderer`
+field, allocated once — escape analysis forced them heap-bound anyway, so
+holding them pays it once instead of per frame.
+
+Draw batching into C (one call looping over draws) was explicitly rejected:
+it would move draw logic off Go for no wall-time gain (FFI is <1% of the
+16 ms frame). Per-draw bind/push/draw stay separate Go calls.

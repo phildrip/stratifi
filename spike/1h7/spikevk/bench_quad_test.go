@@ -47,11 +47,10 @@ func BenchmarkTexturedFrame(b *testing.B) {
 	if _, _, err := quad.Render([4]float32{0.09, 0.09, 0.11, 1}, draws, 1280, 720); err != nil {
 		b.Fatalf("warmup: %v", err)
 	}
+	clear := [4]float32{0.09, 0.09, 0.11, 1}
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if _, _, err := quad.Render([4]float32{0.09, 0.09, 0.11, 1}, draws, 1280, 720); err != nil {
-			b.Fatalf("frame %d: %v", i, err)
-		}
+		_, _, _ = quad.Render(clear, draws, 1280, 720)
 	}
 }

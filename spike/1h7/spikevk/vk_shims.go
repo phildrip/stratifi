@@ -15,6 +15,7 @@ package spikevk
 void* spike_dlopen(const char* n)  { return dlopen(n, RTLD_NOW | RTLD_GLOBAL); }
 void* spike_dlsym(void* h, const char* n) { return dlsym(h, n); }
 int   spike_dlclose(void* h)       { return dlclose(h); }
+void spike_noop(void) {}
 void* spike_dup(const void* src, unsigned long n) {
     void* d = malloc(n);
     if (d && src) memcpy(d, src, n);
