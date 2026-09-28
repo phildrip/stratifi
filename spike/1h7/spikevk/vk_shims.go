@@ -135,5 +135,88 @@ void spike_vkCmdCopyImageToBuffer(void* f, uint64_t cb, uint64_t img, int32_t la
     ((PFN_vkCmdCopyImageToBuffer)f)((VkCommandBuffer)(uintptr_t)cb, (VkImage)(uintptr_t)img, (VkImageLayout)layout,
         (VkBuffer)(uintptr_t)buf, n, (const VkBufferImageCopy*)regions);
 }
+void spike_vkCmdCopyBufferToImage(void* f, uint64_t cb, uint64_t buf, uint64_t img, int32_t layout, uint32_t n, const void* regions) {
+    ((PFN_vkCmdCopyBufferToImage)f)((VkCommandBuffer)(uintptr_t)cb, (VkBuffer)(uintptr_t)buf, (VkImage)(uintptr_t)img, (VkImageLayout)layout,
+        n, (const VkBufferImageCopy*)regions);
+}
+int32_t spike_vkCreateImageView(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateImageView)f)((VkDevice)(uintptr_t)dev, (const VkImageViewCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkImageView*)out);
+}
+void spike_vkDestroyImageView(void* f, uint64_t dev, uint64_t view, void* a) {
+    ((PFN_vkDestroyImageView)f)((VkDevice)(uintptr_t)dev, (VkImageView)(uintptr_t)view, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateShaderModule(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateShaderModule)f)((VkDevice)(uintptr_t)dev, (const VkShaderModuleCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkShaderModule*)out);
+}
+void spike_vkDestroyShaderModule(void* f, uint64_t dev, uint64_t mod, void* a) {
+    ((PFN_vkDestroyShaderModule)f)((VkDevice)(uintptr_t)dev, (VkShaderModule)(uintptr_t)mod, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateDescriptorSetLayout(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateDescriptorSetLayout)f)((VkDevice)(uintptr_t)dev, (const VkDescriptorSetLayoutCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkDescriptorSetLayout*)out);
+}
+void spike_vkDestroyDescriptorSetLayout(void* f, uint64_t dev, uint64_t layout, void* a) {
+    ((PFN_vkDestroyDescriptorSetLayout)f)((VkDevice)(uintptr_t)dev, (VkDescriptorSetLayout)(uintptr_t)layout, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateDescriptorPool(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateDescriptorPool)f)((VkDevice)(uintptr_t)dev, (const VkDescriptorPoolCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkDescriptorPool*)out);
+}
+void spike_vkDestroyDescriptorPool(void* f, uint64_t dev, uint64_t pool, void* a) {
+    ((PFN_vkDestroyDescriptorPool)f)((VkDevice)(uintptr_t)dev, (VkDescriptorPool)(uintptr_t)pool, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkAllocateDescriptorSets(void* f, uint64_t dev, const void* info, void* out) {
+    return (int32_t)((PFN_vkAllocateDescriptorSets)f)((VkDevice)(uintptr_t)dev, (const VkDescriptorSetAllocateInfo*)info, (VkDescriptorSet*)out);
+}
+void spike_vkUpdateDescriptorSets(void* f, uint64_t dev, uint32_t nw, const void* writes, uint32_t nc, const void* copies) {
+    ((PFN_vkUpdateDescriptorSets)f)((VkDevice)(uintptr_t)dev, nw, (const VkWriteDescriptorSet*)writes, nc, (const VkCopyDescriptorSet*)copies);
+}
+int32_t spike_vkCreatePipelineLayout(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreatePipelineLayout)f)((VkDevice)(uintptr_t)dev, (const VkPipelineLayoutCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkPipelineLayout*)out);
+}
+void spike_vkDestroyPipelineLayout(void* f, uint64_t dev, uint64_t layout, void* a) {
+    ((PFN_vkDestroyPipelineLayout)f)((VkDevice)(uintptr_t)dev, (VkPipelineLayout)(uintptr_t)layout, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateGraphicsPipelines(void* f, uint64_t dev, uint64_t cache, uint32_t n, const void* infos, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateGraphicsPipelines)f)((VkDevice)(uintptr_t)dev, (VkPipelineCache)(uintptr_t)cache, n, (const VkGraphicsPipelineCreateInfo*)infos, (const VkAllocationCallbacks*)a, (VkPipeline*)out);
+}
+void spike_vkDestroyPipeline(void* f, uint64_t dev, uint64_t pipe, void* a) {
+    ((PFN_vkDestroyPipeline)f)((VkDevice)(uintptr_t)dev, (VkPipeline)(uintptr_t)pipe, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateRenderPass(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateRenderPass)f)((VkDevice)(uintptr_t)dev, (const VkRenderPassCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkRenderPass*)out);
+}
+void spike_vkDestroyRenderPass(void* f, uint64_t dev, uint64_t rp, void* a) {
+    ((PFN_vkDestroyRenderPass)f)((VkDevice)(uintptr_t)dev, (VkRenderPass)(uintptr_t)rp, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateFramebuffer(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateFramebuffer)f)((VkDevice)(uintptr_t)dev, (const VkFramebufferCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkFramebuffer*)out);
+}
+void spike_vkDestroyFramebuffer(void* f, uint64_t dev, uint64_t fb, void* a) {
+    ((PFN_vkDestroyFramebuffer)f)((VkDevice)(uintptr_t)dev, (VkFramebuffer)(uintptr_t)fb, (const VkAllocationCallbacks*)a);
+}
+int32_t spike_vkCreateSampler(void* f, uint64_t dev, const void* info, void* a, void* out) {
+    return (int32_t)((PFN_vkCreateSampler)f)((VkDevice)(uintptr_t)dev, (const VkSamplerCreateInfo*)info, (const VkAllocationCallbacks*)a, (VkSampler*)out);
+}
+void spike_vkDestroySampler(void* f, uint64_t dev, uint64_t s, void* a) {
+    ((PFN_vkDestroySampler)f)((VkDevice)(uintptr_t)dev, (VkSampler)(uintptr_t)s, (const VkAllocationCallbacks*)a);
+}
+void spike_vkCmdBeginRenderPass(void* f, uint64_t cb, const void* info, int32_t contents) {
+    ((PFN_vkCmdBeginRenderPass)f)((VkCommandBuffer)(uintptr_t)cb, (const VkRenderPassBeginInfo*)info, (VkSubpassContents)contents);
+}
+void spike_vkCmdEndRenderPass(void* f, uint64_t cb) {
+    ((PFN_vkCmdEndRenderPass)f)((VkCommandBuffer)(uintptr_t)cb);
+}
+void spike_vkCmdBindPipeline(void* f, uint64_t cb, int32_t bind, uint64_t pipe) {
+    ((PFN_vkCmdBindPipeline)f)((VkCommandBuffer)(uintptr_t)cb, (VkPipelineBindPoint)bind, (VkPipeline)(uintptr_t)pipe);
+}
+void spike_vkCmdBindDescriptorSets(void* f, uint64_t cb, int32_t bind, uint64_t layout, uint32_t first, uint32_t n, const void* sets, uint32_t ndyn, const void* dyn) {
+    ((PFN_vkCmdBindDescriptorSets)f)((VkCommandBuffer)(uintptr_t)cb, (VkPipelineBindPoint)bind, (VkPipelineLayout)(uintptr_t)layout,
+        first, n, (const VkDescriptorSet*)sets, ndyn, (const uint32_t*)dyn);
+}
+void spike_vkCmdPushConstants(void* f, uint64_t cb, uint64_t layout, uint32_t stages, uint32_t off, uint32_t size, const void* vals) {
+    ((PFN_vkCmdPushConstants)f)((VkCommandBuffer)(uintptr_t)cb, (VkPipelineLayout)(uintptr_t)layout, stages, off, size, vals);
+}
+void spike_vkCmdDraw(void* f, uint64_t cb, uint32_t vcount, uint32_t icount, uint32_t firstv, uint32_t firsti) {
+    ((PFN_vkCmdDraw)f)((VkCommandBuffer)(uintptr_t)cb, vcount, icount, firstv, firsti);
+}
 */
 import "C"

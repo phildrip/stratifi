@@ -124,3 +124,56 @@ func TestStructLayoutABI(t *testing.T) {
 		}
 	}
 }
+
+func TestPipelineStructLayoutABI(t *testing.T) {
+	sizes := []struct {
+		name string
+		got  uintptr
+		want uintptr
+	}{
+		{"VkPipelineVertexInputStateCreateInfo", unsafe.Sizeof(VkPipelineVertexInputStateCreateInfo{}), 48},
+		{"VkPipelineInputAssemblyStateCreateInfo", unsafe.Sizeof(VkPipelineInputAssemblyStateCreateInfo{}), 32},
+		{"VkPipelineViewportStateCreateInfo", unsafe.Sizeof(VkPipelineViewportStateCreateInfo{}), 48},
+		{"VkPipelineRasterizationStateCreateInfo", unsafe.Sizeof(VkPipelineRasterizationStateCreateInfo{}), 64},
+		{"VkPipelineMultisampleStateCreateInfo", unsafe.Sizeof(VkPipelineMultisampleStateCreateInfo{}), 48},
+		{"VkPipelineColorBlendStateCreateInfo", unsafe.Sizeof(VkPipelineColorBlendStateCreateInfo{}), 56},
+		{"VkPipelineColorBlendAttachmentState", unsafe.Sizeof(VkPipelineColorBlendAttachmentState{}), 32},
+		{"VkPipelineDynamicStateCreateInfo", unsafe.Sizeof(VkPipelineDynamicStateCreateInfo{}), 32},
+	}
+	for _, tc := range sizes {
+		if tc.got != tc.want {
+			t.Errorf("sizeof %s = %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+
+	var vtx VkPipelineVertexInputStateCreateInfo
+	var asm VkPipelineInputAssemblyStateCreateInfo
+	var vp VkPipelineViewportStateCreateInfo
+	var rast VkPipelineRasterizationStateCreateInfo
+	var ms VkPipelineMultisampleStateCreateInfo
+	var cb VkPipelineColorBlendStateCreateInfo
+	var att VkPipelineColorBlendAttachmentState
+	var dyn VkPipelineDynamicStateCreateInfo
+	offsets := []struct {
+		name string
+		got  uintptr
+		want uintptr
+	}{
+		{"vertexInput.pVertexBindingDescriptions", unsafe.Offsetof(vtx.PVertexBindingDescriptions), 24},
+		{"inputAssembly.topology", unsafe.Offsetof(asm.Topology), 20},
+		{"viewport.viewportCount", unsafe.Offsetof(vp.ViewportCount), 20},
+		{"raster.polygonMode", unsafe.Offsetof(rast.PolygonMode), 28},
+		{"raster.cullMode", unsafe.Offsetof(rast.CullMode), 32},
+		{"multisample.rasterizationSamples", unsafe.Offsetof(ms.RasterizationSamples), 20},
+		{"colorBlend.attachmentCount", unsafe.Offsetof(cb.AttachmentCount), 28},
+		{"colorBlend.pAttachments", unsafe.Offsetof(cb.PAttachments), 32},
+		{"attachment.colorWriteMask", unsafe.Offsetof(att.ColorWriteMask), 28},
+		{"dynamic.dynamicStateCount", unsafe.Offsetof(dyn.DynamicStateCount), 20},
+		{"dynamic.pDynamicStates", unsafe.Offsetof(dyn.PDynamicStates), 24},
+	}
+	for _, tc := range offsets {
+		if tc.got != tc.want {
+			t.Errorf("offsetof %s = %d, want %d", tc.name, tc.got, tc.want)
+		}
+	}
+}

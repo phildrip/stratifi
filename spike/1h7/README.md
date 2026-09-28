@@ -52,3 +52,28 @@ Design rules this forces on the migration (learned by hitting them):
   `envelope` helper (copy in pure Go to C memory); leaf structs pass
   directly. Frame structs are leaf by construction.
 - No floats cross by value (all XMM args travel in structs by pointer).
+
+## Step 3 — textured-quad crate (the compositor's real work)
+
+`spikevk` now renders textured quads end to end in pure Go: render pass,
+framebuffer, sampler, descriptor ring, pipeline layout, graphics pipeline
+(from the production `texture.vert/frag.spv`, embedded pinned copies),
+texture upload via staging, draws with push constants, copy-out and
+readback. New tests:
+
+- `TestQuadTwoTexturesVisible`: two different textures, one frame, each
+  visible where drawn — the descriptor-aliasing regression, now asserted
+  with the ring as ordinary Go state (`descSets` + `descNext` reset per
+  frame) instead of C statics.
+- `TestQuadUploadRoundtrip`: exact-byte upload → sample → framebuffer.
+- `BenchmarkTexturedFrame`: 1280×720 compositor-shaped frame (two client
+  textures): **16.8 ms, 344 B / 10 allocs per op**. The allocs are the
+  per-draw `envelope` closures; batching descriptor updates into one call
+  recovers them. Wall time matches the C path's equivalent work (~15 ms),
+  dominated by submit/wait latency and the 3.6 MB copy, not FFI.
+
+Debugging notes that become migration rules: topology must be
+`TRIANGLE_STRIP` (the shader emits a strip); a zero dynamic-state struct
+has sType 0 and is invalid — pass nil; image-view swizzle `{0,0,0,0}` is
+identity, `{0,1,2,3}` is `{IDENTITY,R,G,B}` (validation caught both, plus a
+destroy-order gap now covered by `Close`).

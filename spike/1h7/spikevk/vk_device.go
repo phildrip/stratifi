@@ -22,6 +22,7 @@ void    spike_vkGetDeviceQueue(void* f, uint64_t dev, uint32_t fam, uint32_t idx
 import "C"
 
 import (
+	"os"
 	"unsafe"
 )
 
@@ -36,41 +37,68 @@ type GraphicsContext struct {
 
 	// Resolved addresses (opaque words). A zero value is an unresolved
 	// symbol; resolve() errors instead of handing one out.
-	vEnumeratePhysical  unsafe.Pointer
-	vPhysicalProps      unsafe.Pointer
-	vQueueFamilies      unsafe.Pointer
-	vMemoryProps        unsafe.Pointer
-	vCreateDevice       unsafe.Pointer
-	vDestroyInstance    unsafe.Pointer
-	vDestroyDevice      unsafe.Pointer
-	vGetDeviceQueue     unsafe.Pointer
-	vCreateCommandPool  unsafe.Pointer
-	vDestroyCommandPool unsafe.Pointer
-	vAllocateCmdBuffers unsafe.Pointer
-	vCreateFence        unsafe.Pointer
-	vDestroyFence       unsafe.Pointer
-	vWaitForFences      unsafe.Pointer
-	vResetFences        unsafe.Pointer
-	vBeginCmdBuffer     unsafe.Pointer
-	vEndCmdBuffer       unsafe.Pointer
-	vResetCmdBuffer     unsafe.Pointer
-	vQueueSubmit        unsafe.Pointer
-	vQueueWaitIdle      unsafe.Pointer
-	vCreateImage        unsafe.Pointer
-	vDestroyImage       unsafe.Pointer
-	vGetImageMemReqs    unsafe.Pointer
-	vAllocateMemory     unsafe.Pointer
-	vFreeMemory         unsafe.Pointer
-	vMapMemory          unsafe.Pointer
-	vUnmapMemory        unsafe.Pointer
-	vBindImageMemory    unsafe.Pointer
-	vCreateBuffer       unsafe.Pointer
-	vDestroyBuffer      unsafe.Pointer
-	vGetBufferMemReqs   unsafe.Pointer
-	vBindBufferMemory   unsafe.Pointer
-	vCmdPipelineBarrier unsafe.Pointer
-	vCmdClearColorImage unsafe.Pointer
-	vCmdCopyImageToBuf  unsafe.Pointer
+	vEnumeratePhysical       unsafe.Pointer
+	vPhysicalProps           unsafe.Pointer
+	vQueueFamilies           unsafe.Pointer
+	vMemoryProps             unsafe.Pointer
+	vCreateDevice            unsafe.Pointer
+	vDestroyInstance         unsafe.Pointer
+	vDestroyDevice           unsafe.Pointer
+	vGetDeviceQueue          unsafe.Pointer
+	vCreateCommandPool       unsafe.Pointer
+	vDestroyCommandPool      unsafe.Pointer
+	vAllocateCmdBuffers      unsafe.Pointer
+	vCreateFence             unsafe.Pointer
+	vDestroyFence            unsafe.Pointer
+	vWaitForFences           unsafe.Pointer
+	vResetFences             unsafe.Pointer
+	vBeginCmdBuffer          unsafe.Pointer
+	vEndCmdBuffer            unsafe.Pointer
+	vResetCmdBuffer          unsafe.Pointer
+	vQueueSubmit             unsafe.Pointer
+	vQueueWaitIdle           unsafe.Pointer
+	vCreateImage             unsafe.Pointer
+	vDestroyImage            unsafe.Pointer
+	vCreateImageView         unsafe.Pointer
+	vDestroyImageView        unsafe.Pointer
+	vGetImageMemReqs         unsafe.Pointer
+	vAllocateMemory          unsafe.Pointer
+	vFreeMemory              unsafe.Pointer
+	vMapMemory               unsafe.Pointer
+	vUnmapMemory             unsafe.Pointer
+	vBindImageMemory         unsafe.Pointer
+	vCreateBuffer            unsafe.Pointer
+	vDestroyBuffer           unsafe.Pointer
+	vGetBufferMemReqs        unsafe.Pointer
+	vBindBufferMemory        unsafe.Pointer
+	vCmdPipelineBarrier      unsafe.Pointer
+	vCmdClearColorImage      unsafe.Pointer
+	vCmdCopyImageToBuf       unsafe.Pointer
+	vCmdCopyBufferToImage    unsafe.Pointer
+	vCreateShaderModule      unsafe.Pointer
+	vDestroyShaderModule     unsafe.Pointer
+	vCreateDescSetLayout     unsafe.Pointer
+	vDestroyDescSetLayout    unsafe.Pointer
+	vCreateDescPool          unsafe.Pointer
+	vDestroyDescPool         unsafe.Pointer
+	vAllocateDescSets        unsafe.Pointer
+	vUpdateDescSets          unsafe.Pointer
+	vCreatePipelineLayout    unsafe.Pointer
+	vDestroyPipelineLayout   unsafe.Pointer
+	vCreateGraphicsPipelines unsafe.Pointer
+	vDestroyPipeline         unsafe.Pointer
+	vCreateRenderPass        unsafe.Pointer
+	vDestroyRenderPass       unsafe.Pointer
+	vCreateFramebuffer       unsafe.Pointer
+	vDestroyFramebuffer      unsafe.Pointer
+	vCreateSampler           unsafe.Pointer
+	vDestroySampler          unsafe.Pointer
+	vCmdBeginRenderPass      unsafe.Pointer
+	vCmdEndRenderPass        unsafe.Pointer
+	vCmdBindPipeline         unsafe.Pointer
+	vCmdBindDescSets         unsafe.Pointer
+	vCmdPushConstants        unsafe.Pointer
+	vCmdDraw                 unsafe.Pointer
 }
 
 // OpenInstance walks loader → instance → physical → logical device + queue.
@@ -84,6 +112,13 @@ func OpenInstance(loader *Loader) (*GraphicsContext, error) {
 	info := VkInstanceCreateInfo{
 		SType:            STRUCT_INSTANCE_CREATE_INFO,
 		PApplicationInfo: &app,
+	}
+	var layerName []byte
+	if os.Getenv("BLOXWM_VK_VALIDATION") != "" {
+		layerName = acByte("VK_LAYER_KHRONOS_validation")
+		layerPtr := &layerName[0]
+		info.EnabledLayerCount = 1
+		info.PpEnabledLayerNames = &layerPtr
 	}
 
 	var instance Instance
@@ -145,6 +180,8 @@ func (ctx *GraphicsContext) resolve(loader *Loader) error {
 		{"vkQueueWaitIdle", &ctx.vQueueWaitIdle},
 		{"vkCreateImage", &ctx.vCreateImage},
 		{"vkDestroyImage", &ctx.vDestroyImage},
+		{"vkCreateImageView", &ctx.vCreateImageView},
+		{"vkDestroyImageView", &ctx.vDestroyImageView},
 		{"vkGetImageMemoryRequirements", &ctx.vGetImageMemReqs},
 		{"vkAllocateMemory", &ctx.vAllocateMemory},
 		{"vkFreeMemory", &ctx.vFreeMemory},
@@ -158,6 +195,31 @@ func (ctx *GraphicsContext) resolve(loader *Loader) error {
 		{"vkCmdPipelineBarrier", &ctx.vCmdPipelineBarrier},
 		{"vkCmdClearColorImage", &ctx.vCmdClearColorImage},
 		{"vkCmdCopyImageToBuffer", &ctx.vCmdCopyImageToBuf},
+		{"vkCmdCopyBufferToImage", &ctx.vCmdCopyBufferToImage},
+		{"vkCreateShaderModule", &ctx.vCreateShaderModule},
+		{"vkDestroyShaderModule", &ctx.vDestroyShaderModule},
+		{"vkCreateDescriptorSetLayout", &ctx.vCreateDescSetLayout},
+		{"vkDestroyDescriptorSetLayout", &ctx.vDestroyDescSetLayout},
+		{"vkCreateDescriptorPool", &ctx.vCreateDescPool},
+		{"vkDestroyDescriptorPool", &ctx.vDestroyDescPool},
+		{"vkAllocateDescriptorSets", &ctx.vAllocateDescSets},
+		{"vkUpdateDescriptorSets", &ctx.vUpdateDescSets},
+		{"vkCreatePipelineLayout", &ctx.vCreatePipelineLayout},
+		{"vkDestroyPipelineLayout", &ctx.vDestroyPipelineLayout},
+		{"vkCreateGraphicsPipelines", &ctx.vCreateGraphicsPipelines},
+		{"vkDestroyPipeline", &ctx.vDestroyPipeline},
+		{"vkCreateRenderPass", &ctx.vCreateRenderPass},
+		{"vkDestroyRenderPass", &ctx.vDestroyRenderPass},
+		{"vkCreateFramebuffer", &ctx.vCreateFramebuffer},
+		{"vkDestroyFramebuffer", &ctx.vDestroyFramebuffer},
+		{"vkCreateSampler", &ctx.vCreateSampler},
+		{"vkDestroySampler", &ctx.vDestroySampler},
+		{"vkCmdBeginRenderPass", &ctx.vCmdBeginRenderPass},
+		{"vkCmdEndRenderPass", &ctx.vCmdEndRenderPass},
+		{"vkCmdBindPipeline", &ctx.vCmdBindPipeline},
+		{"vkCmdBindDescriptorSets", &ctx.vCmdBindDescSets},
+		{"vkCmdPushConstants", &ctx.vCmdPushConstants},
+		{"vkCmdDraw", &ctx.vCmdDraw},
 	}
 	for _, b := range binds {
 		p := loader.Resolve(ctx.Instance, b.name)
