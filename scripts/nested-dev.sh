@@ -4,6 +4,7 @@
 #
 #   scripts/nested-dev.sh              build, (re)start, open a client, tail log
 #   scripts/nested-dev.sh --shm        use the shm blitter instead of Vulkan
+#   scripts/nested-dev.sh --kms        bare metal via DRM/KMS (needs a VT, not sway)
 #   scripts/nested-dev.sh --no-tail    don't follow the log
 #   scripts/nested-dev.sh down         stop bloxwm and its clients
 #   scripts/nested-dev.sh status       report what is running
@@ -25,6 +26,7 @@ CLIENT="${BLOXWM_CLIENT:-foot}"
 SOCKPATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/$SOCKET"
 
 GPU=1
+KMS=0
 DO_FOOT=1
 DO_TAIL=-1 # -1 = auto (only when interactive)
 
@@ -63,12 +65,14 @@ start() {
 	: >"$LOG"
 	local env_args=()
 	[ "$GPU" = 1 ] && env_args+=(BLOXWM_GPU=1)
+	[ "$KMS" = 1 ] && env_args+=(BLOXWM_KMS=1)
 	# setsid: the compositor outlives this script and its process group,
 	# so Ctrl-C on the log tail does not tear it down.
 	setsid env "${env_args[@]}" "$BIN" </dev/null >"$LOG" 2>&1 &
 	disown || true
 	wait_ready
 	local mode="shm"; [ "$GPU" = 1 ] && mode="Vulkan"
+	[ "$KMS" = 1 ] && mode="$mode+kms"
 	say "up: display=$SOCKET mode=$mode log=$LOG"
 }
 
@@ -121,6 +125,7 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--gpu) GPU=1 ;;
 	--shm) GPU=0 ;;
+	--kms) KMS=1 ;;
 	--no-tail) DO_TAIL=0 ;;
 	--tail) DO_TAIL=1 ;;
 	--no-foot) DO_FOOT=0 ;;

@@ -68,6 +68,24 @@ func main() {
 	outputW := int32(1280)
 	outputH := int32(720)
 
+	// Bare-metal output: BLOXWM_KMS=1 opens the DRM card directly instead of
+	// nesting in a parent compositor. Requires DRM master (run from a VT).
+	// Output dimensions then come from the connector's preferred mode, and
+	// input arrives from evdev rather than parent Wayland events.
+	useKMS := os.Getenv("BLOXWM_KMS") == "1"
+	var kmsDisp *kmsDisplay
+	if useKMS {
+		var err error
+		kmsDisp, err = setupKMSDisplay()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] %v\n", err)
+			os.Exit(1)
+		}
+		defer kmsDisp.Close()
+		outputW = kmsDisp.Width()
+		outputH = kmsDisp.Height()
+	}
+
 	// OWNER-MODEL SHELL: no shared mutex. All scene state below is owned
 	// by the actor goroutine in runActor; server callbacks and the input
 	// pump communicate through the events channel (plain-data sends).
@@ -177,21 +195,43 @@ func main() {
 	}
 
 	var backend *nested.Backend
+	var output compositor.Output
 	var err error
-	backend, err = nested.NewBackend(outputW, outputH, cb)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] Failed to initialize nested backend: %v\n", err)
-		os.Exit(1)
+	if useKMS {
+		output = kmsDisp
+	} else {
+		backend, err = nested.NewBackend(outputW, outputH, cb)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] Failed to initialize nested backend: %v\n", err)
+			os.Exit(1)
+		}
+		defer backend.Close()
+		output = backend
 	}
-	defer backend.Close()
 
-	frameLoop = compositor.NewFrameLoop(backend, nil, nil)
+	frameLoop = compositor.NewFrameLoop(output, nil, nil)
 	frameLoop.SetConfig(compositor.FrameConfig{
 		BorderWidth:    engine.Config.BorderWidth,
 		TitlebarHeight: engine.Config.TitlebarHeight,
 	})
 	if os.Getenv("BLOXWM_GPU") == "1" {
-		if gpuExec, err := compositor.NewVulkanExecutor(outputW, outputH); err == nil {
+		if useKMS {
+			// GPU renders straight into scanout memory; flip presents it.
+			// No bridge, no readback, no CPU pixels on this path.
+			if fd, err := kmsDisp.PrimeFD(); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] KMS scanout export: %v\n", err)
+				os.Exit(1)
+			} else if gpuExec, err := compositor.NewVulkanExecutorOnDmaBuf(
+				fd, uint32(outputW), uint32(outputH), uint32(kmsDisp.Stride()), outputW, outputH,
+			); err != nil {
+				fmt.Fprintf(os.Stderr, "[-] GPU scanout executor: %v\n", err)
+				os.Exit(1)
+			} else {
+				frameLoop.SetExecutor(compositor.ScanoutExecutor{Inner: gpuExec, Flip: kmsDisp.Present})
+				defer gpuExec.Close()
+				fmt.Println("[+] GPU+KMS direct scanout enabled (Vulkan executor)")
+			}
+		} else if gpuExec, err := compositor.NewVulkanExecutor(outputW, outputH); err == nil {
 			// GPU composites each frame; BridgeTo copies into the parent
 			// shm surface after every render (KMS scanout removes this).
 			frameLoop.SetExecutor(compositor.BridgeExecutor{Inner: gpuExec, Out: backend})
@@ -202,7 +242,16 @@ func main() {
 		}
 	}
 
-	go backend.RunEventLoop()
+	if useKMS {
+		// Bare metal: pump evdev directly; no parent compositor exists.
+		if _, err := startEvdevInput(ringBuf); err != nil {
+			fmt.Fprintf(os.Stderr, "[-] %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("[+] evdev input enabled")
+	} else {
+		go backend.RunEventLoop()
+	}
 
 	// 4. Start high-throughput Input Consumer Loop
 	go func() {

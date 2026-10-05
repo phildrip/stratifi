@@ -28,6 +28,9 @@ type vulkanExecutor struct {
 	entries  map[texKey]*texEntry
 	scratch  []byte // actor-owned pixel fetch buffer, grown on demand
 	debugged map[string]bool
+	// scanoutImport is non-nil when target is scanout-backed (phase 4);
+	// destroyed on Close. The dma-buf fd itself stays with the caller.
+	scanoutImport *vulkan.ImportedBuffer
 }
 
 type texKey struct {
@@ -293,8 +296,64 @@ func (e *vulkanExecutor) Close() {
 		e.drop(k)
 	}
 	e.ren.DestroyTarget(e.target)
+	if e.scanoutImport != nil {
+		e.dev.DestroyImportedBuffer(e.scanoutImport)
+		e.scanoutImport = nil
+	}
 	e.ren.Close()
 	e.dev.Close()
+}
+
+// NewVulkanExecutorOnDmaBuf builds a GPU executor rendering straight into a
+// caller-provided dma-buf (KMS scanout dumb buffer, linear). No bridge, no
+// readback: after Execute, the caller flips the scanout (ScanoutExecutor).
+// The fd stays owned by the caller; the import and framebuffer are released
+// on Close.
+func NewVulkanExecutorOnDmaBuf(fd int, w, h, stride uint32, outW, outH int32) (*vulkanExecutor, error) {
+	dev, err := vulkan.NewDevice()
+	if err != nil {
+		return nil, fmt.Errorf("vulkan executor: %w", err)
+	}
+	ren, err := vulkan.NewRenderer(dev)
+	if err != nil {
+		dev.Close()
+		return nil, fmt.Errorf("vulkan executor: %w", err)
+	}
+	// Dumb buffers carry no modifier (linear).
+	imported, err := dev.ImportDmaBufAsTarget(fd, w, h, stride, 0)
+	if err != nil {
+		ren.Close()
+		dev.Close()
+		return nil, fmt.Errorf("vulkan executor: scanout import: %w", err)
+	}
+	target, err := ren.CreateScanoutTarget(imported, w, h)
+	if err != nil {
+		dev.DestroyImportedBuffer(imported)
+		ren.Close()
+		dev.Close()
+		return nil, fmt.Errorf("vulkan executor: scanout target: %w", err)
+	}
+
+	drmFD := -1
+	for _, p := range []string{"/dev/dri/card1", "/dev/dri/card0", "/dev/dri/card2"} {
+		fd, oerr := unix.Open(p, unix.O_RDWR|unix.O_CLOEXEC, 0)
+		if oerr == nil {
+			drmFD = fd
+			break
+		}
+	}
+
+	return &vulkanExecutor{
+		dev:           dev,
+		ren:           ren,
+		target:        target,
+		outW:          outW,
+		outH:          outH,
+		entries:       make(map[texKey]*texEntry),
+		debugged:      make(map[string]bool),
+		drmFD:         drmFD,
+		scanoutImport: imported,
+	}, nil
 }
 
 // ioctl issues a raw DRM ioctl (mirrors the vulkan test helpers).
@@ -340,4 +399,20 @@ func (b BridgeExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
 		return
 	}
 	b.Inner.Execute(dl, avail, copyFn)
+}
+
+// ScanoutExecutor composites on the GPU straight into scanout memory, then
+// flips (phase 4: no bridge, no readback, no CPU pixels). Implements
+// Executor. A Flip failure is ignored here (fire-and-forget like BridgeTo);
+// the KMS layer owns logging and shutdown policy.
+type ScanoutExecutor struct {
+	Inner Executor
+	Flip  func() error
+}
+
+func (b ScanoutExecutor) Execute(dl *DrawList, avail AvailFn, copyFn CopyFn) {
+	b.Inner.Execute(dl, avail, copyFn)
+	if b.Flip != nil {
+		_ = b.Flip()
+	}
 }
