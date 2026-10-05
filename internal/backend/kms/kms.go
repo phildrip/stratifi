@@ -58,6 +58,7 @@ const (
 	reqCreateBlob   byte = 0xbd
 	reqDestroyBlob  byte = 0xbe
 	reqAtomic       byte = 0xbc
+	reqPrimeToFD    byte = 0x2d
 )
 
 // ---------------------------------------------------------------------------

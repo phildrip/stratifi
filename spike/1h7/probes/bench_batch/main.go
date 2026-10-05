@@ -29,23 +29,35 @@ func bench(name string, f func()) {
 }
 
 func main() {
-	const ( N = 1_000_000; quads = 4 ) // typical chrome quads per window; the frame has a handful
+	const (
+		N     = 1_000_000
+		quads = 4
+	) // typical chrome quads per window; the frame has a handful
 	qs := make([]quad, quads)
 	cq := make([]C.Quad, quads)
-	for i := range qs { cq[i].x = C.float(float32(i)) }
-	var one quad; oneC := (*C.Quad)(unsafe.Pointer(&one))
+	for i := range qs {
+		cq[i].x = C.float(float32(i))
+	}
+	var one quad
+	oneC := (*C.Quad)(unsafe.Pointer(&one))
 
 	bench("cgo: 1 call/quad (current)", func() {
 		for i := 0; i < N; i++ {
-			for j := 0; j < quads; j++ { _ = int(C.c_draw_many(&cq[j], 1)) }
+			for j := 0; j < quads; j++ {
+				_ = int(C.c_draw_many(&cq[j], 1))
+			}
 		}
 	})
 	bench("cgo: 1 call/frame (batched)", func() {
-		for i := 0; i < N; i++ { _ = int(C.c_draw_many(&cq[0], quads)) }
+		for i := 0; i < N; i++ {
+			_ = int(C.c_draw_many(&cq[0], quads))
+		}
 	})
 	bench("pure go: 0 FFI, 1 pass/frame", func() {
 		for i := 0; i < N; i++ {
-			for j := 0; j < quads; j++ { _ = int(oneC.x) }
+			for j := 0; j < quads; j++ {
+				_ = int(oneC.x)
+			}
 		}
 	})
 	_ = one

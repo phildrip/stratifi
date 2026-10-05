@@ -136,7 +136,7 @@ static void destroy_vulkan_context(VkContext* ctx) {
     }
 }
 
-static int import_dmabuf_buffer(VkContext* ctx, int fd, uint32_t width, uint32_t height, uint32_t stride, uint64_t modifier, VkImportedBuffer* out) {
+static int import_dmabuf_impl(VkContext* ctx, int fd, uint32_t width, uint32_t height, uint32_t stride, uint64_t modifier, VkImageUsageFlags usage, VkImportedBuffer* out) {
     memset(out, 0, sizeof(VkImportedBuffer));
     out->width = width;
     out->height = height;
@@ -196,7 +196,7 @@ static int import_dmabuf_buffer(VkContext* ctx, int fd, uint32_t width, uint32_t
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
-        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        .usage = usage,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -277,6 +277,19 @@ static int import_dmabuf_buffer(VkContext* ctx, int fd, uint32_t width, uint32_t
     }
 
     return 0;
+}
+
+// import_dmabuf_buffer imports a dma-buf as a sampled client surface texture.
+static int import_dmabuf_buffer(VkContext* ctx, int fd, uint32_t width, uint32_t height, uint32_t stride, uint64_t modifier, VkImportedBuffer* out) {
+    return import_dmabuf_impl(ctx, fd, width, height, stride, modifier,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, out);
+}
+
+// import_dmabuf_target imports a dma-buf (typically a KMS scanout dumb
+// buffer, linear modifier) as a renderable image for direct scanout.
+static int import_dmabuf_target(VkContext* ctx, int fd, uint32_t width, uint32_t height, uint32_t stride, uint64_t modifier, VkImportedBuffer* out) {
+    return import_dmabuf_impl(ctx, fd, width, height, stride, modifier,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, out);
 }
 
 static void destroy_imported_buffer(VkContext* ctx, VkImportedBuffer* buf) {
@@ -380,6 +393,38 @@ func (d *Device) ImportDmaBuf(fd int, width, height, stride uint32, modifier uin
 		return nil, err
 	}
 	return &buf, nil
+}
+
+// ImportDmaBufAsTarget imports a dma-buf (KMS scanout dumb buffer, linear)
+// as a COLOR_ATTACHMENT image so the compositor can render straight into
+// scanout memory. No CPU round trip.
+func (d *Device) ImportDmaBufAsTarget(fd int, width, height, stride uint32, modifier uint64) (*ImportedBuffer, error) {
+	if d.closed.Load() {
+		return nil, fmt.Errorf("device is closed")
+	}
+
+	var buf C.VkImportedBuffer
+	res := C.import_dmabuf_target(
+		&d.ctx,
+		C.int(fd),
+		C.uint32_t(width),
+		C.uint32_t(height),
+		C.uint32_t(stride),
+		C.uint64_t(modifier),
+		&buf,
+	)
+
+	if res != 0 {
+		return nil, fmt.Errorf("import_dmabuf_target failed (code %d)", int(res))
+	}
+
+	return &ImportedBuffer{
+		buf:      buf,
+		Width:    width,
+		Height:   height,
+		Stride:   stride,
+		Modifier: modifier,
+	}, nil
 }
 
 // DestroyImportedBuffer releases Vulkan resources associated with an imported DMA-BUF.

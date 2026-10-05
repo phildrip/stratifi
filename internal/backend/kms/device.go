@@ -33,6 +33,7 @@ var (
 	iocObjGetProps  = iowr(reqObjGetProps, unsafe.Sizeof(ObjProps{}))
 	iocObjSetProp   = iowr(reqObjSetProp, unsafe.Sizeof(ObjSetProp{}))
 	iocAtomic       = iowr(reqAtomic, unsafe.Sizeof(Atomic{}))
+	iocPrimeToFD    = iowr(reqPrimeToFD, unsafe.Sizeof(PrimeHandle{}))
 	iocGetPlaneRes  = iowr(reqGetPlaneRes, unsafe.Sizeof(GetPlaneRes{}))
 	iocGetPlane     = iowr(reqGetPlane, unsafe.Sizeof(GetPlane{}))
 	iocGetProperty  = iowr(reqGetProp, unsafe.Sizeof(GetProperty{}))
@@ -461,8 +462,10 @@ func (c *Card) ReadFlipEvents(dst []EventVBlank) (int, error) {
 	return n, nil
 }
 
-// scanout is a KMS scanout framebuffer backed by a dumb buffer.
-type scanout struct {
+// Scanout is a KMS scanout framebuffer backed by a dumb buffer. The same
+// dumb buffer can be handed to Vulkan (PrimeExport + ImportDmaBuf) so the
+// compositor renders straight into scanout memory: no CPU round trip.
+type Scanout struct {
 	mu     sync.Mutex
 	Card   *Card
 	FBID   uint32
@@ -475,7 +478,7 @@ type scanout struct {
 }
 
 // CreateScanout allocates a dumb buffer and registers it as a KMS framebuffer.
-func (c *Card) CreateScanout(width, height uint32) (*scanout, error) {
+func (c *Card) CreateScanout(width, height uint32) (*Scanout, error) {
 	cd := CreateDumb{Width: width, Height: height, Bpp: 32}
 	if err := c.ioctl(iocCreateDumb, unsafe.Pointer(&cd)); err != nil {
 		return nil, fmt.Errorf("kms: CREATE_DUMB %dx%d: %w", width, height, err)
@@ -509,7 +512,7 @@ func (c *Card) CreateScanout(width, height uint32) (*scanout, error) {
 		return nil, fmt.Errorf("kms: mmap dumb buffer: %w", err)
 	}
 
-	return &scanout{
+	return &Scanout{
 		Card:   c,
 		FBID:   fb.FbID,
 		Handle: cd.Handle,
@@ -519,6 +522,23 @@ func (c *Card) CreateScanout(width, height uint32) (*scanout, error) {
 		Height: height,
 		Data:   data,
 	}, nil
+}
+
+// PrimeHandlenis the PRIME_HANDLE_TO_FD payload (handle in, fd out).
+type PrimeHandle struct {
+	Handle uint32
+	Flags  uint32
+	FD     int32
+}
+
+// PrimeExport exports a dumb-buffer GEM handle as a dma-buf fd (O_RDWR).
+// The fd is handed to Vulkan's ImportDmaBuf; closing the scanout closes it.
+func (c *Card) PrimeExport(handle uint32) (int, error) {
+	pr := PrimeHandle{Handle: handle, Flags: uint32(unix.O_RDWR | unix.O_CLOEXEC), FD: -1}
+	if err := c.ioctl(iocPrimeToFD, unsafe.Pointer(&pr)); err != nil {
+		return -1, fmt.Errorf("kms: PRIME export handle %d: %w", handle, err)
+	}
+	return int(pr.FD), nil
 }
 
 func (c *Card) destroyDumb(fbID, handle uint32) error {
@@ -538,7 +558,7 @@ func (c *Card) destroyDumb(fbID, handle uint32) error {
 }
 
 // Close releases the dumb buffer, framebuffer, and CPU mapping.
-func (s *scanout) Close() error {
+func (s *Scanout) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.Data != nil {
@@ -559,7 +579,7 @@ func (s *scanout) Close() error {
 }
 
 // Fill clears the scanout to a BGRA color (used for diagnostics and tests).
-func (s *scanout) Fill(r, g, b uint8) {
+func (s *Scanout) Fill(r, g, b uint8) {
 	row := s.Data
 	for y := uint32(0); y < s.Height; y++ {
 		for x := uint32(0); x < s.Width; x++ {

@@ -456,6 +456,36 @@ static int create_target(VkContext* ctx, VkRenderPass rp, uint32_t width, uint32
     return 0;
 }
 
+// create_scanout_target builds a framebuffer around an already-imported
+// image view (typically a KMS scanout dumb buffer). The image, view and
+// memory stay owned by the importer; only the framebuffer is created here
+// and only it is destroyed by destroy_scanout_target.
+static int create_scanout_target(VkContext* ctx, VkRenderPass rp, VkImageView view, uint32_t width, uint32_t height, VkTarget* out) {
+    memset(out, 0, sizeof(VkTarget));
+    out->width = width;
+    out->height = height;
+
+    VkFramebufferCreateInfo fbInfo = {
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass = rp,
+        .attachmentCount = 1,
+        .pAttachments = &view,
+        .width = width,
+        .height = height,
+        .layers = 1,
+    };
+    VkResult res = vkCreateFramebuffer(ctx->device, &fbInfo, NULL, &out->framebuffer);
+    if (res != VK_SUCCESS) {
+        return (int)res;
+    }
+    return 0;
+}
+
+static void destroy_scanout_target(VkContext* ctx, VkTarget* t) {
+    if (t->framebuffer) vkDestroyFramebuffer(ctx->device, t->framebuffer, NULL);
+    memset(t, 0, sizeof(VkTarget));
+}
+
 static void destroy_target(VkContext* ctx, VkTarget* t) {
     if (t->framebuffer) vkDestroyFramebuffer(ctx->device, t->framebuffer, NULL);
     if (t->view) vkDestroyImageView(ctx->device, t->view, NULL);
@@ -1070,6 +1100,32 @@ func (ren *Renderer) CreateTarget(width, height uint32) (*RenderTarget, error) {
 }
 
 // DestroyTarget frees GPU memory and framebuffer resources of a RenderTarget.
+// CreateScanoutTarget wraps an imported dma-buf image (KMS scanout dumb
+// buffer) in a framebuffer on the renderer's render pass, so frames render
+// straight into scanout memory. The image, view and memory stay owned by
+// the ImportedBuffer; DestroyTarget only releases the framebuffer.
+func (ren *Renderer) CreateScanoutTarget(imported *ImportedBuffer, width, height uint32) (*RenderTarget, error) {
+	if width == 0 || height == 0 {
+		return nil, fmt.Errorf("create_scanout_target: invalid dimensions %dx%d", width, height)
+	}
+
+	ren.mu.Lock()
+	defer ren.mu.Unlock()
+
+	var t C.VkTarget
+	res := C.create_scanout_target(&ren.dev.ctx, ren.r.renderPass, imported.buf.view,
+		C.uint32_t(width), C.uint32_t(height), &t)
+	if res != 0 {
+		return nil, fmt.Errorf("create_scanout_target failed (code %d)", int(res))
+	}
+
+	return &RenderTarget{
+		target: t,
+		Width:  width,
+		Height: height,
+	}, nil
+}
+
 func (ren *Renderer) DestroyTarget(target *RenderTarget) {
 	ren.mu.Lock()
 	defer ren.mu.Unlock()
