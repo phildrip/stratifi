@@ -85,3 +85,18 @@ func TestLoadFileMissingIsDefault(t *testing.T) {
 		t.Errorf("got %+v, want defaults", cfg)
 	}
 }
+
+func TestParseColumnWidth(t *testing.T) {
+	cfg, err := Parse([]byte("column_width 0.5\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.ColumnWidth != 0.5 {
+		t.Errorf("ColumnWidth = %v, want 0.5", cfg.ColumnWidth)
+	}
+	for _, bad := range []string{"column_width 0\n", "column_width 2\n", "column_width x\n", "column_width\n"} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("Parse(%q) succeeded, want error", bad)
+		}
+	}
+}

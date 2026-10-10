@@ -188,3 +188,17 @@ func (ws *Workspaces) SwitchToNumber(n int) WorkspaceID {
 func (ws *Workspaces) Visible(win WindowID) bool {
 	return ws.engine.ContainsTagged(uint32(ws.activeIdx+1), win)
 }
+
+// ComputeScrollable returns the active workspace's niri-style viewport:
+// fixed-width columns scrolled to the active one.
+func (ws *Workspaces) ComputeScrollable(bounds Rect) ([]WindowID, []Rect) {
+	return ws.engine.ComputeScrollable(uint32(ws.activeIdx+1), bounds)
+}
+
+// MoveActiveColumn walks the active workspace's columns (focus left/right).
+func (ws *Workspaces) MoveActiveColumn(delta int) {
+	ws.engine.MoveActiveColumn(uint32(ws.activeIdx+1), delta)
+}
+
+// ActiveColumn returns the focused column index on the active workspace.
+func (ws *Workspaces) ActiveColumn() int { return ws.engine.ActiveColumn() }

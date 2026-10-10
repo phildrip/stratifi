@@ -111,7 +111,7 @@ func (s *shellState) focusActive() {
 // window moves between workspaces. Hidden windows keep their last rect but
 // are excluded from the scene (Compute only emits the active tag).
 func (s *shellState) relayoutAll() {
-	winIDs, rects := s.workspaces.Compute(s.output)
+	winIDs, rects := s.workspaces.ComputeScrollable(s.output)
 	for i, id := range winIDs {
 		if m, ok := s.windows[id]; ok {
 			m.Rect = rects[i]
@@ -146,8 +146,11 @@ func (s *shellState) applyEvent(ev shellEvent) {
 	case evWindowAdded:
 		winID := s.engine.SlotMap.Allocate()
 		_ = s.workspaces.AddWindow(winID)
+		// Focus the column that just received the window (niri: new windows
+		// open in the active column, scrolled into view).
+		s.workspaces.Engine().SetActiveColumn(s.columnIndexOf(winID))
 
-		winIDs, rects := s.workspaces.Compute(s.output)
+		winIDs, rects := s.workspaces.ComputeScrollable(s.output)
 		for i, id := range winIDs {
 			if m, ok := s.windows[id]; ok {
 				m.Rect = rects[i]
@@ -249,7 +252,7 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 
 		// Recompute layout for the survivors and reconfigure them.
-		winIDs, rects := s.workspaces.Compute(s.output)
+		winIDs, rects := s.workspaces.ComputeScrollable(s.output)
 		for i, id := range winIDs {
 			if m, ok := s.windows[id]; ok {
 				m.Rect = rects[i]
@@ -268,6 +271,16 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 
 		s.publishScene()
+
+	case evColumnNext:
+		s.workspaces.MoveActiveColumn(1)
+		s.relayoutAll()
+		s.focusColumnActive()
+
+	case evColumnPrev:
+		s.workspaces.MoveActiveColumn(-1)
+		s.relayoutAll()
+		s.focusColumnActive()
 
 	case evWorkspaceSwitch:
 		s.workspaces.SwitchToNumber(ev.wsIndex)
@@ -347,4 +360,47 @@ func (s *shellState) popupParentBody(parentXdgSurfaceID uint32) (layout.Rect, la
 		}
 	}
 	return layout.Rect{}, 0
+}
+
+// columnIndexOf returns the visible column index holding win on the active
+// workspace, or the last column when not found.
+func (s *shellState) columnIndexOf(win layout.WindowID) int {
+	tag := uint32(s.workspaces.ActiveID())
+	idx := 0
+	found := -1
+	for i := range s.engine.Columns {
+		if s.engine.Columns[i].Workspace != tag {
+			continue
+		}
+		for _, id := range s.engine.Columns[i].Windows {
+			if id == win {
+				found = idx
+			}
+		}
+		idx++
+	}
+	if found < 0 {
+		return idx - 1
+	}
+	return found
+}
+
+// focusColumnActive focuses the first window of the active column so
+// keyboard focus follows the viewport (niri: focus and scroll together).
+func (s *shellState) focusColumnActive() {
+	tag := uint32(s.workspaces.ActiveID())
+	idx := 0
+	target := s.workspaces.ActiveColumn()
+	for i := range s.engine.Columns {
+		col := &s.engine.Columns[i]
+		if col.Workspace != tag {
+			continue
+		}
+		if idx == target && len(col.Windows) > 0 {
+			s.activeWin = col.Windows[0]
+			s.focusActive()
+			return
+		}
+		idx++
+	}
 }

@@ -14,7 +14,10 @@ type Config struct {
 	Gap            int32
 	BorderWidth    int32
 	TitlebarHeight int32
-	Bindings       []Binding
+	// ColumnWidth is the scrollable column width as a fraction of the
+	// output (niri model); 0 means the layout default (1/2).
+	ColumnWidth float32
+	Bindings    []Binding
 }
 
 // Binding maps one key combination to an action. Combo and Action are kept
@@ -69,6 +72,19 @@ func Parse(data []byte) (Config, error) {
 			continue
 		}
 		switch key := fields[0]; key {
+		case "column_width":
+			if _, dup := seen[key]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", key, seen[key])
+			}
+			if len(fields) != 2 {
+				return Config{}, parseError(line, "column_width needs exactly one value")
+			}
+			f, err := parseFrac(fields[1])
+			if err != nil {
+				return Config{}, parseError(line, "column_width: %v", err)
+			}
+			seen[key] = line
+			cfg.ColumnWidth = f
 		case "gap", "border_width", "titlebar_height":
 			if _, dup := seen[key]; dup {
 				return Config{}, parseError(line, "duplicate key %q (first at line %d)", key, seen[key])
@@ -215,4 +231,38 @@ func LoadFile(path string) (Config, error) {
 		return Config{}, err
 	}
 	return Parse(data)
+}
+
+// parseFrac parses a fraction in (0, 1] (e.g. "0.5", "0.333", "1").
+func parseFrac(s string) (float32, error) {
+	if s == "" {
+		return 0, errEmpty()
+	}
+	var whole, frac float64
+	var fracDiv float64 = 1
+	seenDot := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			if seenDot {
+				fracDiv *= 10
+				frac = frac*10 + float64(c-'0')
+			} else {
+				whole = whole*10 + float64(c-'0')
+			}
+		case c == '.':
+			if seenDot {
+				return 0, errNotInt(s)
+			}
+			seenDot = true
+		default:
+			return 0, errNotInt(s)
+		}
+	}
+	v := whole + frac/fracDiv
+	if v <= 0 || v > 1 {
+		return 0, &pxErr{"fraction out of range (0,1]: " + s}
+	}
+	return float32(v), nil
 }

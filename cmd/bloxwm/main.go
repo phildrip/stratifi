@@ -53,6 +53,8 @@ const (
 	evPopupAdded
 	evWorkspaceSwitch
 	evWorkspaceMove
+	evColumnNext
+	evColumnPrev
 )
 
 // shellEvent is one message to the owner goroutine.
@@ -120,6 +122,7 @@ func main() {
 		Gap:            cfg.Gap,
 		BorderWidth:    cfg.BorderWidth,
 		TitlebarHeight: cfg.TitlebarHeight,
+		ColumnWidth:    cfg.ColumnWidth,
 	})
 	engine := workspaces.Engine()
 
@@ -190,7 +193,7 @@ func main() {
 		seenCombo[key] = true
 		switch pb.Action {
 		case "close", "quit", "spawn", "focus_next", "focus_prev",
-			"workspace", "move_to_workspace":
+			"workspace", "move_to_workspace", "focus_col_next", "focus_col_prev":
 		default:
 			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
 			os.Exit(1)
@@ -242,6 +245,10 @@ func main() {
 			emit(shellEvent{kind: evFocusNext})
 		case "focus_prev":
 			emit(shellEvent{kind: evFocusPrev})
+		case "focus_col_next":
+			emit(shellEvent{kind: evColumnNext})
+		case "focus_col_prev":
+			emit(shellEvent{kind: evColumnPrev})
 		case "workspace":
 			if n, ok := parseWorkspaceArg(args); ok {
 				emit(shellEvent{kind: evWorkspaceSwitch, wsIndex: n})

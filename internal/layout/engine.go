@@ -35,13 +35,17 @@ type Column struct {
 	// Workspace tags the column (niri model: one engine, workspaces as
 	// tagged strip slots); Compute only emits the active tag's columns.
 	Workspace uint32
+	// WidthFrac overrides the column's width as a fraction of the output
+	// for the scrollable viewport (0 = use Config.ColumnWidth).
+	WidthFrac float32
 }
 
 // LayoutConfig configures margins and borders.
 type LayoutConfig struct {
-	Gap            int32 // Pixel gap between windows
-	BorderWidth    int32 // Window border width
-	TitlebarHeight int32 // Height of titlebar for mouse grabbing
+	Gap            int32   // Pixel gap between windows
+	BorderWidth    int32   // Window border width
+	TitlebarHeight int32   // Height of titlebar for mouse grabbing
+	ColumnWidth    float32 // Scrollable column width as a fraction of output (0 -> DefaultColumnWidth)
 }
 
 // Engine manages the block/grid layout math and mouse interaction state.
@@ -49,6 +53,9 @@ type Engine struct {
 	SlotMap *SlotMap
 	Config  LayoutConfig
 	Columns []Column
+
+	// ActiveCol is the focused column for the scrollable viewport.
+	ActiveCol int
 
 	// Scratch cache for zero-alloc layout calculation
 	windowRects []Rect
