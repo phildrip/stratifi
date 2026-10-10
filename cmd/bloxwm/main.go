@@ -10,6 +10,7 @@ import (
 
 	"bloxwm/internal/backend/nested"
 	"bloxwm/internal/compositor"
+	"bloxwm/internal/config"
 	"bloxwm/internal/input"
 	"bloxwm/internal/layout"
 	"bloxwm/internal/server"
@@ -91,11 +92,21 @@ func main() {
 	// pump communicate through the events channel (plain-data sends).
 	events := make(chan shellEvent, 128)
 
-	// 1. Initialize DOD Layout Engine
+	// 1. Initialize DOD Layout Engine (metrics from config; hard
+	// defaults apply when no config file exists).
+	cfgPath := config.FindConfigPath()
+	cfg, err := config.LoadFile(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] Bad config %s: %v\n", cfgPath, err)
+		os.Exit(1)
+	}
+	if cfgPath != "" {
+		fmt.Printf("[+] Config: %s (%d bindings)\n", cfgPath, len(cfg.Bindings))
+	}
 	engine := layout.NewEngine(layout.LayoutConfig{
-		Gap:            8,
-		BorderWidth:    3,
-		TitlebarHeight: 28,
+		Gap:            cfg.Gap,
+		BorderWidth:    cfg.BorderWidth,
+		TitlebarHeight: cfg.TitlebarHeight,
 	})
 
 	outputBounds := layout.Rect{
@@ -196,10 +207,10 @@ func main() {
 
 	var backend *nested.Backend
 	var output compositor.Output
-	var err error
 	if useKMS {
 		output = kmsDisp
 	} else {
+		var err error
 		backend, err = nested.NewBackend(outputW, outputH, cb)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[-] Failed to initialize nested backend: %v\n", err)
