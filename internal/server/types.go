@@ -134,6 +134,23 @@ type XdgToplevel struct {
 	Active       bool
 }
 
+// DataSource is one client's offered data source: the mime types it
+// provides for selection transfers (and DnD later).
+type DataSource struct {
+	ID        uint32
+	MimeTypes []string
+	Active    bool
+}
+
+// Selection is the compositor's clipboard: the last client to call
+// wl_data_device.set_selection owns it until replaced or destroyed.
+// Offers present live as DataSource records registered per client.
+type Selection struct {
+	OwnerID   uint32   // client id of the source's owner (0 = none)
+	SourceID  uint32   // wl_data_source object id in the owner client
+	MimeTypes []string // types offered, order = preference
+}
+
 // XdgPositioner accumulates the xdg_positioner state a client assembles
 // before requesting a popup placement.
 type XdgPositioner struct {

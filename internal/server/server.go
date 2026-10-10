@@ -17,6 +17,8 @@ type Server struct {
 
 	onCommit        func(s *Surface)
 	onToplevel      func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	selectionMu     sync.Mutex
+	selection       Selection // compositor clipboard: last set_selection wins
 	onPopup         func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
 	onPopupMapped   func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
 	onClientDestroy func(clientID uint32)
@@ -182,4 +184,52 @@ func (s *Server) Close() error {
 	s.clientMu.Unlock()
 
 	return err
+}
+
+// setSelection stores the clipboard owner (last set_selection wins).
+func (s *Server) setSelection(sel Selection) {
+	s.selectionMu.Lock()
+	s.selection = sel
+	s.selectionMu.Unlock()
+}
+
+// clearSelectionIfOwner drops the clipboard when its owner's source goes
+// away (client destroyed the source or disconnected).
+func (s *Server) clearSelectionIfOwner(clientID, sourceID uint32) {
+	s.selectionMu.Lock()
+	if s.selection.OwnerID == clientID && s.selection.SourceID == sourceID {
+		s.selection = Selection{}
+	}
+	s.selectionMu.Unlock()
+}
+
+// clipboardOwner resolves the selection owner client IF it still offers
+// the requested mime type; nil otherwise.
+func (s *Server) clipboardOwner(mimeType string) *Client {
+	s.selectionMu.Lock()
+	owner := s.selection.OwnerID
+	sourceID := s.selection.SourceID
+	s.selectionMu.Unlock()
+	if owner == 0 {
+		return nil
+	}
+	c := s.GetClient(owner)
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	src, ok := c.dataSources.get(sourceID)
+	supported := ok && src.Active && containsString(src.MimeTypes, mimeType)
+	c.mu.Unlock()
+	if !supported {
+		return nil
+	}
+	return c
+}
+
+// GetSelection returns a snapshot of the current clipboard owner.
+func (s *Server) GetSelection() Selection {
+	s.selectionMu.Lock()
+	defer s.selectionMu.Unlock()
+	return s.selection
 }

@@ -99,6 +99,7 @@ func (r *Router) SetFocus(targetWin layout.WindowID, clientID, surfaceID, toplev
 		newClient := r.getClient(r.focusClientID)
 		if newClient != nil {
 			newClient.SendKeyboardEnter(r.focusSurfaceID, nil)
+			newClient.GiveClipboardOffer()
 		}
 	}
 

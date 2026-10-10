@@ -43,12 +43,14 @@ type Client struct {
 	xdgToplevels   xdgStore[XdgToplevel]
 	xdgPositioners xdgStore[XdgPositioner]
 	xdgPopups      xdgStore[XdgPopup]
+	dataSources    xdgStore[DataSource]
 
 	serial atomic.Uint32
 
-	pointerID  uint32
-	closed     atomic.Bool
-	keyboardID uint32
+	pointerID    uint32
+	closed       atomic.Bool
+	keyboardID   uint32
+	dataDeviceID uint32
 
 	capture *CaptureState
 }
@@ -1132,6 +1134,24 @@ func (c *Client) SendKeyboardModifiers(depressed, latched, locked, group uint32)
 	_ = c.conn.Flush()
 }
 
+// SendDataSourceSend forwards wl_data_source.send to the owner with the
+// pasting client's fd. The owner writes selection bytes into the fd.
+func (c *Client) SendDataSourceSend(sourceID uint32, mimeType string, fd int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return fmt.Errorf("owner client closed")
+	}
+	if typ, ok := c.findObject(sourceID); !ok || typ != ObjDataSource {
+		return fmt.Errorf("owner data source %d gone", sourceID)
+	}
+	w := c.conn.WriterRef()
+	if err := wayland.SendWlDataSourceSend(w, sourceID, mimeType, fd); err != nil {
+		return err
+	}
+	return c.conn.Flush()
+}
+
 // SendToplevelClose asks the client to close a toplevel window (the graceful
 // path behind the compositor's close action). No-op unless the id is a live
 // toplevel, so a stale window reference can never emit a protocol error.
@@ -1259,6 +1279,7 @@ func (c *Client) HandleWlDataDeviceManagerCreateDataSource(senderID uint32, id u
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.registerObject(id, ObjDataSource)
+	c.dataSources.add(id, DataSource{ID: id, Active: true})
 	return nil
 }
 
@@ -1266,6 +1287,7 @@ func (c *Client) HandleWlDataDeviceManagerGetDataDevice(senderID uint32, id uint
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.registerObject(id, ObjDataDevice)
+	c.dataDeviceID = id
 	return nil
 }
 
@@ -1282,7 +1304,24 @@ func (c *Client) HandleWlDataDeviceStartDrag(senderID uint32, source uint32, ori
 	return nil
 }
 
+// HandleWlDataDeviceSetSelection makes this client the clipboard owner:
+// remember which data source cross-references pasting clients' offers.
 func (c *Client) HandleWlDataDeviceSetSelection(senderID uint32, source uint32, serial uint32) error {
+	c.mu.Lock()
+	mimes := []string(nil)
+	if src, ok := c.dataSources.get(source); ok {
+		mimes = append([]string(nil), src.MimeTypes...)
+	}
+	c.mu.Unlock()
+
+	if mimes == nil {
+		return fmt.Errorf("set_selection: unknown data source %d in client %d", source, c.id)
+	}
+	c.server.setSelection(Selection{
+		OwnerID:   c.id,
+		SourceID:  source,
+		MimeTypes: mimes,
+	})
 	return nil
 }
 
@@ -1295,14 +1334,34 @@ func (c *Client) HandleWlDataDeviceRelease(senderID uint32) error {
 
 // --- WlDataSourceHandler ---
 
+// HandleWlDataSourceOffer records a mime type offered by the source; the
+// selection machinery broadcasts it to pasting clients.
 func (c *Client) HandleWlDataSourceOffer(senderID uint32, mimeType string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if src, ok := c.dataSources.get(senderID); ok {
+		if !containsString(src.MimeTypes, mimeType) {
+			src.MimeTypes = append(src.MimeTypes, mimeType)
+		}
+	}
 	return nil
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) HandleWlDataSourceDestroy(senderID uint32) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.unregisterObject(senderID)
+	c.dataSources.mutate(senderID, func(src *DataSource) { src.Active = false })
+	c.server.clearSelectionIfOwner(c.id, senderID)
 	return nil
 }
 
@@ -1328,17 +1387,28 @@ func (c *Client) Close() error {
 
 // --- WlDataOfferHandler ---
 
+// HandleWlDataOfferAccept records the paste client's chosen type (or the
+// empty string to decline). No-where needed yet; ACCEPT MUST NOT
+// unregister the offer — that bug made paste offers vanish.
 func (c *Client) HandleWlDataOfferAccept(senderID uint32, serial uint32, mimeType string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.unregisterObject(senderID)
 	return nil
 }
 
+// HandleWlDataOfferReceive routes a paste: hand the fd to the clipboard
+// OWNER client via wl_data_source.send; the owner writes the bytes into
+// the fd directly. The compositor stores nothing.
 func (c *Client) HandleWlDataOfferReceive(senderID uint32, mimeType string, fd int) error {
-	// The compositor does not source selection data yet; close the offered
-	// fd so the client is not left hanging on a receive.
-	_ = unix.Close(fd)
+	// On error paths the fd must not leak; on success the OWNER closes it
+	// after writing (Wayland contract for data_source.send).
+	owner := c.server.clipboardOwner(mimeType)
+	if owner == nil {
+		_ = unix.Close(fd)
+		return fmt.Errorf("receive: no source offers %q", mimeType)
+	}
+	if err := owner.SendDataSourceSend(c.server.selection.SourceID, mimeType, fd); err != nil {
+		_ = unix.Close(fd)
+		return err
+	}
 	return nil
 }
 
@@ -1409,4 +1479,36 @@ func (c *Client) SurfaceBufferInfo(surfaceID uint32) (width, height, stride int3
 		return 0, 0, 0, false
 	}
 	return buf.Width, buf.Height, buf.Stride, true
+}
+
+// GiveClipboardOffer creates a wl_data_offer for this client advertising the
+// current selection's mime types, then sends wl_data_device.selection. Call
+// when the client receives keyboard focus (the standard paste handshake).
+// No-op when the clipboard is empty. Returns the offer id (0 if none).
+func (c *Client) GiveClipboardOffer() uint32 {
+	sel := c.server.GetSelection()
+	if sel.OwnerID == 0 || sel.OwnerID == c.id {
+		return 0 // no content, or pasting from itself
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() || c.dataDeviceID == 0 {
+		return 0
+	}
+
+	// Compositor-chosen id: one past the highest the client ever used.
+	// Wayland lets the compositor pick new ids for data_offer events; going
+	// above the client's high-water mark avoids ever colliding with
+	// client-chosen ids (which may reuse destroyed slots).
+	offerID := c.objects.high
+	c.registerObject(offerID, ObjDataOffer)
+
+	w := c.conn.WriterRef()
+	_ = wayland.SendWlDataDeviceDataOffer(w, c.dataDeviceID, offerID)
+	for _, mime := range sel.MimeTypes {
+		_ = wayland.SendWlDataOfferOffer(w, offerID, mime)
+	}
+	_ = wayland.SendWlDataDeviceSelection(w, c.dataDeviceID, offerID)
+	_ = c.conn.Flush()
+	return offerID
 }
