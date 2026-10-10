@@ -344,3 +344,26 @@ func TestShellWorkspaceMove(t *testing.T) {
 		t.Fatalf("ws2 windows = %v, want [%d]", got, first)
 	}
 }
+
+// TestShellWorkspaceCycle: workspace_next/prev walk the strip (the actions
+// bound to swipe gestures).
+func TestShellWorkspaceCycle(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	// Ensure a second workspace exists so next has somewhere to go.
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceSwitch, wsIndex: 2})
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceSwitch, wsIndex: 1})
+
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceNext})
+	if h.shell.workspaces.ActiveID() != 2 {
+		t.Fatalf("after next, active = %d, want 2", h.shell.workspaces.ActiveID())
+	}
+	h.shell.applyEvent(shellEvent{kind: evWorkspacePrev})
+	if h.shell.workspaces.ActiveID() != 1 {
+		t.Fatalf("after prev, active = %d, want 1", h.shell.workspaces.ActiveID())
+	}
+	// The window is visible again on ws1.
+	if list := h.sceneInfo.Load(); len(*list) != 1 {
+		t.Fatalf("ws1 scene = %d windows, want 1", len(*list))
+	}
+}

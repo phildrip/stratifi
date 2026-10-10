@@ -55,6 +55,8 @@ const (
 	evWorkspaceMove
 	evColumnNext
 	evColumnPrev
+	evWorkspaceNext
+	evWorkspacePrev
 )
 
 // shellEvent is one message to the owner goroutine.
@@ -193,7 +195,8 @@ func main() {
 		seenCombo[key] = true
 		switch pb.Action {
 		case "close", "quit", "spawn", "focus_next", "focus_prev",
-			"workspace", "move_to_workspace", "focus_col_next", "focus_col_prev":
+			"workspace", "move_to_workspace", "focus_col_next", "focus_col_prev",
+			"workspace_next", "workspace_prev", "column_next", "column_prev", "overview":
 		default:
 			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
 			os.Exit(1)
@@ -201,7 +204,7 @@ func main() {
 		bindings = append(bindings, pb)
 	}
 	router.SetBindings(input.NewMatcher(bindings))
-	router.SetActionHandler(func(action string, args []string) {
+	handleAction := func(action string, args []string) {
 		emit := func(ev shellEvent) {
 			select {
 			case events <- ev:
@@ -249,6 +252,18 @@ func main() {
 			emit(shellEvent{kind: evColumnNext})
 		case "focus_col_prev":
 			emit(shellEvent{kind: evColumnPrev})
+		case "workspace_next":
+			emit(shellEvent{kind: evWorkspaceNext})
+		case "workspace_prev":
+			emit(shellEvent{kind: evWorkspacePrev})
+		case "column_next":
+			emit(shellEvent{kind: evColumnNext})
+		case "column_prev":
+			emit(shellEvent{kind: evColumnPrev})
+		case "overview":
+			// Overview is not implemented yet; recognized and ignored so a
+			// bound gesture is not reported as an unknown action.
+			_ = args
 		case "workspace":
 			if n, ok := parseWorkspaceArg(args); ok {
 				emit(shellEvent{kind: evWorkspaceSwitch, wsIndex: n})
@@ -260,7 +275,29 @@ func main() {
 		default:
 			fmt.Printf("[-] Unknown action %q\n", action)
 		}
-	})
+	}
+	router.SetActionHandler(handleAction)
+
+	// Gesture router: config-driven gesture bindings dispatch through the
+	// same action handler as keybindings. Fed from evdev MT events in KMS
+	// mode; nested mode has no touchpad source.
+	var gestureRouter *input.GestureRouter
+	{
+		var gb []input.GestureBinding
+		for _, g := range cfg.Gestures {
+			b, err := input.ParseGestureBinding(g.Type, g.Direction, g.Fingers, g.Action)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[-] Bad gesture binding: %v\n", err)
+				os.Exit(1)
+			}
+			gb = append(gb, b)
+		}
+		if len(gb) > 0 {
+			gestureRouter = input.NewGestureRouter(gb, func(a input.GestureAction) {
+				handleAction(string(a), nil)
+			})
+		}
+	}
 
 	cb := nested.Callbacks{
 		OnPointerMotion: func(x, y float64) {
@@ -362,7 +399,7 @@ func main() {
 
 	if useKMS {
 		// Bare metal: pump evdev directly; no parent compositor exists.
-		if _, err := startEvdevInput(ringBuf); err != nil {
+		if _, err := startEvdevInput(ringBuf, gestureRouter); err != nil {
 			fmt.Fprintf(os.Stderr, "[-] %v\n", err)
 			os.Exit(1)
 		}

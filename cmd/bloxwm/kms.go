@@ -117,10 +117,13 @@ func setupKMSDisplay() (*kmsDisplay, error) {
 // startEvdevInput pumps /dev/input devices into the shared ring buffer for
 // bare-metal mode (no parent compositor to forward events). The existing
 // input-consumer loop drains the ring into the router unchanged.
-func startEvdevInput(rb *input.RingBuffer) (*evdev.EvdevPump, error) {
+func startEvdevInput(rb *input.RingBuffer, gestures *input.GestureRouter) (*evdev.EvdevPump, error) {
 	pump, err := evdev.NewEvdevPump(rb)
 	if err != nil {
 		return nil, fmt.Errorf("kms: evdev pump: %w", err)
+	}
+	if gestures != nil {
+		pump.SetGestureRouter(gestures)
 	}
 	if n := pump.ScanDevices(); n == 0 {
 		_ = pump.Close()

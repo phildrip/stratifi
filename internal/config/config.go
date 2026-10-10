@@ -18,6 +18,16 @@ type Config struct {
 	// output (niri model); 0 means the layout default (1/2).
 	ColumnWidth float32
 	Bindings    []Binding
+	Gestures    []GestureBinding
+}
+
+// GestureBinding is one `bind_gesture` line: a recognized gesture mapped to
+// a compositor action. Direction and Fingers are optional filters.
+type GestureBinding struct {
+	Type      string // "swipe", "pinch", "tap", "scroll"
+	Direction string // "left"/"right"/"up"/"down" or "" for any
+	Fingers   int    // 0 = any
+	Action    string
 }
 
 // Binding maps one key combination to an action. Combo and Action are kept
@@ -112,6 +122,12 @@ func Parse(data []byte) (Config, error) {
 			if err := bind(fields, line); err != nil {
 				return Config{}, err
 			}
+		case "bind_gesture":
+			gb, err := parseGestureBinding(fields, line)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.Gestures = append(cfg.Gestures, gb)
 		default:
 			return Config{}, parseError(line, "unknown directive %q", key)
 		}
@@ -265,4 +281,62 @@ func parseFrac(s string) (float32, error) {
 		return 0, &pxErr{"fraction out of range (0,1]: " + s}
 	}
 	return float32(v), nil
+}
+
+// parseGestureBinding parses: bind_gesture <type> [direction] [fingers] <action>
+// where direction/fingers are optional. Examples:
+//
+//	bind_gesture swipe left workspace_prev
+//	bind_gesture swipe right workspace_next
+//	bind_gesture swipe up 4 overview
+//	bind_gesture pinch 0 0 overview
+func parseGestureBinding(fields []string, line int) (GestureBinding, error) {
+	if len(fields) < 3 {
+		return GestureBinding{}, parseError(line, "bind_gesture needs a type and an action")
+	}
+	gb := GestureBinding{Type: fields[1]}
+	rest := fields[2:]
+	// Trailing token is always the action; anything before it is filters.
+	gb.Action = rest[len(rest)-1]
+	rest = rest[:len(rest)-1]
+
+	switch gb.Type {
+	case "swipe", "pinch", "tap", "scroll":
+	default:
+		return GestureBinding{}, parseError(line, "unknown gesture type %q", gb.Type)
+	}
+	for _, tok := range rest {
+		if isDirection(tok) {
+			gb.Direction = tok
+			continue
+		}
+		if n, ok := parseSmallInt(tok); ok {
+			gb.Fingers = n
+			continue
+		}
+		return GestureBinding{}, parseError(line, "unexpected gesture filter %q", tok)
+	}
+	return gb, nil
+}
+
+func isDirection(s string) bool {
+	switch s {
+	case "left", "right", "up", "down":
+		return true
+	}
+	return false
+}
+
+func parseSmallInt(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + int(s[i]-'0')
+	}
+	return n, true
 }

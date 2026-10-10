@@ -100,3 +100,36 @@ func TestParseColumnWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestParseGestureBindings(t *testing.T) {
+	cfg, err := Parse([]byte("bind_gesture swipe left workspace_prev\nbind_gesture swipe right workspace_next\nbind_gesture swipe up 4 overview\nbind_gesture pinch 0 0 overview\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []GestureBinding{
+		{Type: "swipe", Direction: "left", Action: "workspace_prev"},
+		{Type: "swipe", Direction: "right", Action: "workspace_next"},
+		{Type: "swipe", Direction: "up", Fingers: 4, Action: "overview"},
+		{Type: "pinch", Fingers: 0, Action: "overview"},
+	}
+	if len(cfg.Gestures) != len(want) {
+		t.Fatalf("gestures = %d, want %d", len(cfg.Gestures), len(want))
+	}
+	for i := range want {
+		if cfg.Gestures[i] != want[i] {
+			t.Errorf("gesture[%d] = %+v, want %+v", i, cfg.Gestures[i], want[i])
+		}
+	}
+}
+
+func TestParseGestureBindingErrors(t *testing.T) {
+	for _, bad := range []string{
+		"bind_gesture swipe\n",
+		"bind_gesture wobble left workspace_prev\n",
+		"bind_gesture swipe sideways workspace_prev\n",
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("Parse(%q) succeeded, want error", bad)
+		}
+	}
+}

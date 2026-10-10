@@ -282,6 +282,14 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.relayoutAll()
 		s.focusColumnActive()
 
+	case evWorkspaceNext:
+		s.workspaces.SwitchNext()
+		s.relayoutAll()
+
+	case evWorkspacePrev:
+		s.workspaces.SwitchPrev()
+		s.relayoutAll()
+
 	case evWorkspaceSwitch:
 		s.workspaces.SwitchToNumber(ev.wsIndex)
 		s.relayoutAll()

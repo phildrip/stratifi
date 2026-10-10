@@ -22,7 +22,14 @@ type EvdevPump struct {
 	rb        *input.RingBuffer
 	closed    atomic.Bool
 	inotifyFD int
+	// gestures receives raw MT-protocol-B events (nil disables touchpad
+	// gesture recognition). Set before ScanDevices.
+	gestures *input.GestureRouter
 }
+
+// SetGestureRouter attaches a multi-touch recognizer; EV_ABS MT events and
+// SYN_REPORT are then routed to it instead of being ignored.
+func (p *EvdevPump) SetGestureRouter(g *input.GestureRouter) { p.gestures = g }
 
 // NewEvdevPump creates a new evdev input listener.
 func NewEvdevPump(rb *input.RingBuffer) (*EvdevPump, error) {
@@ -198,6 +205,18 @@ func (p *EvdevPump) translateAndPush(dev *Device, kev *KernelInputEvent) bool {
 			out.Dx = float64(kev.Value)
 			return p.rb.Push(out)
 		}
+
+	case EV_ABS:
+		if p.gestures != nil {
+			_ = p.gestures.FeedEvent(uint16(kev.Type), int32(kev.Code), kev.Value, timeUsec)
+		}
+		return false
+
+	case EV_SYN:
+		if p.gestures != nil && kev.Code == input.SynReport {
+			p.gestures.Sync(timeUsec)
+		}
+		return false
 
 	case EV_KEY:
 		// Distinguish mouse buttons vs keyboard keys
