@@ -32,6 +32,10 @@ type shellState struct {
 	surfaceToWin map[objRef]layout.WindowID
 	activeWin    layout.WindowID
 
+	// Popups keyed by (clientID, popupID): placed over the parent window
+	// body from the configure geometry the server computed.
+	popups map[popupKey]*popupEntry
+
 	sceneInfo    *atomic.Pointer[[]input.WindowInfo]
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
@@ -49,6 +53,7 @@ func newShellState(
 		output:       output,
 		windows:      make(map[layout.WindowID]*WindowMapping),
 		surfaceToWin: make(map[objRef]layout.WindowID),
+		popups:       make(map[popupKey]*popupEntry),
 		sceneInfo:    sceneInfo,
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
@@ -58,7 +63,7 @@ func newShellState(
 // publishScene pushes a lock-free WindowInfo list for the router's
 // hit-testing (atomic.Pointer swap: readers never block).
 func (s *shellState) publishScene() {
-	list := make([]input.WindowInfo, 0, len(s.windows))
+	list := make([]input.WindowInfo, 0, len(s.windows)+len(s.popups))
 	for _, m := range s.windows {
 		list = append(list, input.WindowInfo{
 			WinID:      m.WinID,
@@ -66,6 +71,19 @@ func (s *shellState) publishScene() {
 			SurfaceID:  m.SurfaceID,
 			ToplevelID: m.ToplevelID,
 			Rect:       m.Rect,
+		})
+	}
+	// Popups publish after windows: the router hit-tests in order, so a
+	// popup over its parent wins clicks on its own area. Rects smaller
+	// than 2x2 are unmapped noise; skip them.
+	for _, p := range s.popups {
+		if p.w < 2 || p.h < 2 {
+			continue
+		}
+		list = append(list, input.WindowInfo{
+			ClientID:  p.clientID,
+			SurfaceID: p.surfaceID,
+			Rect:      layout.Rect{X: p.x, Y: p.y, W: p.w, H: p.h},
 		})
 	}
 	s.sceneInfo.Store(&list)
@@ -146,6 +164,29 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.publishScene()
 		s.focusActive()
 
+	case evPopupAdded:
+		// Place over the parent window's body: the server's geometry is
+		// relative to the parent body origin, so add the body's output
+		// rect (the window's content area inside border+titlebar).
+		key := popupKey{ev.clientID, ev.popupID}
+		if _, dup := s.popups[key]; dup {
+			return
+		}
+		bodyRect, parentWin := s.popupParentBody(ev.xdgSurfaceID)
+		if parentWin == 0 {
+			return // parent gone: drop the popup
+		}
+		s.popups[key] = &popupEntry{
+			clientID:  ev.clientID,
+			surfaceID: ev.surfaceID,
+			parentWin: parentWin,
+			x:         bodyRect.X + ev.px,
+			y:         bodyRect.Y + ev.py,
+			w:         ev.pw,
+			h:         ev.ph,
+		}
+		s.publishScene()
+
 	case evCommitted:
 		if winID, ok := s.surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
 			if m, exists := s.windows[winID]; exists {
@@ -170,6 +211,12 @@ func (s *shellState) applyEvent(ev shellEvent) {
 					s.activeWin = 0
 				}
 				fmt.Printf("[-] Window closed: WinID=%d ClientID=%d\n", winID, ev.clientID)
+			}
+		}
+		// A dead client's popups die with it; stale rects must never render.
+		for key, p := range s.popups {
+			if p.clientID == ev.clientID {
+				delete(s.popups, key)
 			}
 		}
 
@@ -227,4 +274,38 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.activeWin = ids[at]
 		s.focusActive()
 	}
+}
+
+// popupKey scopes popup lookups: object ids are per-client.
+type popupKey struct {
+	clientID uint32
+	popupID  uint32
+}
+
+// popupEntry is the actor's record of one popup surface: which window it
+// parents onto and where it sits inside the output.
+type popupEntry struct {
+	clientID   uint32
+	surfaceID  uint32
+	parentWin  layout.WindowID
+	x, y, w, h int32
+}
+
+// popupParentBody maps a parent xdg_surface to its window's client-body
+// rectangle inside the output and the window id. Zero ids mean the parent
+// is unknown or already gone.
+func (s *shellState) popupParentBody(parentXdgSurfaceID uint32) (layout.Rect, layout.WindowID) {
+	for _, m := range s.windows {
+		if m.XdgSurfaceID == parentXdgSurfaceID {
+			bw := s.engine.Config.BorderWidth
+			th := s.engine.Config.TitlebarHeight
+			return layout.Rect{
+				X: m.Rect.X + bw,
+				Y: m.Rect.Y + bw + th,
+				W: m.Rect.W - 2*bw,
+				H: m.Rect.H - bw - th - bw,
+			}, m.WinID
+		}
+	}
+	return layout.Rect{}, 0
 }

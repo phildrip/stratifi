@@ -50,18 +50,21 @@ const (
 	evCloseActive
 	evFocusNext
 	evFocusPrev
+	evPopupAdded
 )
 
 // shellEvent is one message to the owner goroutine.
 type shellEvent struct {
-	kind         evKind
-	clientID     uint32
-	surfaceID    uint32
-	xdgSurfaceID uint32
-	toplevelID   uint32
-	winID        layout.WindowID
-	title        string
-	appID        string
+	kind           evKind
+	popupID        uint32
+	px, py, pw, ph int32
+	clientID       uint32
+	surfaceID      uint32
+	xdgSurfaceID   uint32
+	toplevelID     uint32
+	winID          layout.WindowID
+	title          string
+	appID          string
 }
 
 func main() {
@@ -389,6 +392,20 @@ func main() {
 		}
 	})
 
+	srv.SetOnPopupMapped(func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32) {
+		events <- shellEvent{
+			kind:         evPopupAdded,
+			clientID:     clientID,
+			surfaceID:    surfaceID,
+			popupID:      popupID,
+			xdgSurfaceID: parentXdgSurfaceID,
+			px:           x,
+			py:           y,
+			pw:           w,
+			ph:           h,
+		}
+	})
+
 	srv.SetOnCommit(func(s *server.Surface) {
 		select {
 		case events <- shellEvent{kind: evCommitted, clientID: s.ClientID, surfaceID: s.ID}:
@@ -438,6 +455,20 @@ func main() {
 					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
 				},
 				Active: m.WinID == shell.activeWin,
+			})
+		}
+		// Popups render above windows, borderless, at their placed rects.
+		for _, p := range shell.popups {
+			if p.w < 2 || p.h < 2 {
+				continue
+			}
+			dst = append(dst, compositor.SceneWindow{
+				ClientID:  p.clientID,
+				SurfaceID: p.surfaceID,
+				Rect: compositor.Rect{
+					X: p.x, Y: p.y, W: p.w, H: p.h,
+				},
+				Popup: true,
 			})
 		}
 		return dst

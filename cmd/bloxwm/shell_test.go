@@ -217,3 +217,80 @@ func TestShellFocusCyclesWindows(t *testing.T) {
 		t.Fatalf("lone-window cycle changed state")
 	}
 }
+
+// TestShellPopupPlacesOverParentBody: a popup's parent-relative configure
+// geometry maps into output coordinates via the window's content area.
+func TestShellPopupPlacesOverParentBody(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	m := h.shell.windows[h.shell.activeWin]
+
+	// The engine placed the window; compute the expected body rect the same
+	// way applyEvent does (client area inside border+titlebar).
+	bw, th := h.shell.engine.Config.BorderWidth, h.shell.engine.Config.TitlebarHeight
+	want := layout.Rect{X: m.Rect.X + bw, Y: m.Rect.Y + bw + th}
+
+	// Popup 10px into the body, 100x30.
+	h.shell.applyEvent(shellEvent{
+		kind:         evPopupAdded,
+		clientID:     1,
+		surfaceID:    90,
+		popupID:      55,
+		xdgSurfaceID: 16,
+		px:           10,
+		py:           10,
+		pw:           100,
+		ph:           30,
+	})
+
+	list := h.sceneInfo.Load()
+	if list == nil {
+		t.Fatal("scene not published")
+	}
+	found := false
+	for _, info := range *list {
+		if info.SurfaceID == 90 {
+			found = true
+			if info.Rect.X != want.X+10 || info.Rect.Y != want.Y+10 {
+				t.Errorf("popup rect = %+v, want body+(10,10) = X%d Y%d", info.Rect, want.X+10, want.Y+10)
+			}
+			if info.Rect.W != 100 || info.Rect.H != 30 {
+				t.Errorf("popup size = %dx%d, want 100x30", info.Rect.W, info.Rect.H)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("popup missing from the scene")
+	}
+}
+
+// TestShellPopupDroppedWhenParentGone: a popup whose parent window is gone
+// (client closed under it) is dropped, never renders at a stale rect.
+func TestShellPopupDroppedWhenParentGone(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	h.client.surfaceID = 9
+	h.shell.applyEvent(windowAddedEvent(2, 18, 19))
+	second := h.shell.activeWin
+	_ = second
+	_ = h
+
+	// Popup pointing at the FIRST window's xdg surface, then close its client.
+	h.shell.applyEvent(shellEvent{
+		kind:         evPopupAdded,
+		clientID:     1,
+		surfaceID:    90,
+		popupID:      55,
+		xdgSurfaceID: 16,
+		px:           5, py: 5, pw: 60, ph: 20,
+	})
+	if _, ok := h.shell.popups[popupKey{1, 55}]; !ok {
+		t.Fatal("popup not registered")
+	}
+
+	// Client 1 disappears: its popup must go too.
+	h.shell.applyEvent(shellEvent{kind: evClientGone, clientID: 1})
+	if _, ok := h.shell.popups[popupKey{1, 55}]; ok {
+		t.Error("popup outlived its parent client")
+	}
+}

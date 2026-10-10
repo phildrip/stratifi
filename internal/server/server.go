@@ -17,6 +17,8 @@ type Server struct {
 
 	onCommit        func(s *Surface)
 	onToplevel      func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	onPopup         func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
+	onPopupMapped   func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
 	onClientDestroy func(clientID uint32)
 	closed          atomic.Bool
 
@@ -112,6 +114,25 @@ func (s *Server) onSurfaceCommitted(surf *Surface) {
 func (s *Server) onToplevelCreated(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32) {
 	if s.onToplevel != nil {
 		s.onToplevel(c, toplevel, xdgSurfaceID)
+	}
+}
+
+// SetOnPopupMapped is the popup lifecycle callback the shell uses:
+// placed geometry relative to the parent body.
+func (s *Server) SetOnPopup(fn func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)) {
+	s.onPopup = fn
+}
+
+// SetOnPopupMapped registers a callback when a popup is placed with final
+// geometry relative to its parent body: (clientID, popupID, surfaceID,
+// parentXdgSurfaceID, x, y, w, h). This is what the shell needs to draw it.
+func (s *Server) SetOnPopupMapped(fn func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)) {
+	s.onPopupMapped = fn
+}
+
+func (s *Server) onPopupCreated(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32) {
+	if s.onPopup != nil {
+		s.onPopup(c, popupID, surfaceID, parentXdgSurfaceID)
 	}
 }
 

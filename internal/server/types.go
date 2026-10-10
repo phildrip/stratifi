@@ -21,6 +21,8 @@ const (
 	ObjXdgWmBase
 	ObjXdgSurface
 	ObjXdgToplevel
+	ObjXdgPopup
+	ObjXdgPositioner
 	ObjOutput
 	ObjSeat
 	ObjPointer
@@ -129,5 +131,38 @@ type XdgToplevel struct {
 	Maximized    bool
 	Fullscreen   bool
 	Activated    bool
+	Active       bool
+}
+
+// XdgPositioner accumulates the xdg_positioner state a client assembles
+// before requesting a popup placement.
+type XdgPositioner struct {
+	ID                   uint32
+	Width                int32 // requested popup size
+	Height               int32
+	AnchorRect           [4]int32 // x, y, w, h in parent surface coords
+	AnchorMask           uint32   // edge bits for anchor point
+	GravityMask          uint32   // edge bits for placement direction
+	ConstraintAdjustment uint32
+	OffsetX              int32
+	OffsetY              int32
+	ParentWidth          int32
+	ParentHeight         int32
+	Active               bool
+}
+
+// XdgPopup tracks one popup surface and its placement over a parent.
+type XdgPopup struct {
+	ID           uint32
+	SurfaceID    uint32 // wl_surface
+	XdgSurfaceID uint32 // owning xdg_surface (for configure serials)
+	Parent       uint32 // parent xdg_surface id
+	Grabs        uint32 // seat grabs taken (input modal while > 0)
+	Configured   bool
+	ConfiguredX  int32 // placement relative to parent body origin
+	ConfiguredY  int32
+	ConfiguredW  int32 // committed popup size
+	ConfiguredH  int32
+	LastSerial   uint32
 	Active       bool
 }

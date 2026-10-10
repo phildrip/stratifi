@@ -28,6 +28,8 @@ type SceneWindow struct {
 	SurfaceID uint32
 	Rect      Rect
 	Active    bool
+	// Popup marks a borderless popup surface drawn above windows.
+	Popup bool
 }
 
 // Colors are ARGB8888 (little-endian BGRA in memory).

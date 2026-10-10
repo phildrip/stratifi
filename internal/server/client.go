@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -33,18 +34,20 @@ type Client struct {
 	conn   *wire.Conn
 	server *Server
 
-	mu           sync.Mutex
-	objects      objectTable
-	pools        poolStore
-	buffers      bufferStore
-	surfaces     surfaceStore
-	xdgSurfaces  xdgStore[XdgSurface]
-	xdgToplevels xdgStore[XdgToplevel]
+	mu             sync.Mutex
+	objects        objectTable
+	pools          poolStore
+	buffers        bufferStore
+	surfaces       surfaceStore
+	xdgSurfaces    xdgStore[XdgSurface]
+	xdgToplevels   xdgStore[XdgToplevel]
+	xdgPositioners xdgStore[XdgPositioner]
+	xdgPopups      xdgStore[XdgPopup]
 
 	serial atomic.Uint32
-	closed bool
 
 	pointerID  uint32
+	closed     atomic.Bool
 	keyboardID uint32
 
 	capture *CaptureState
@@ -132,16 +135,22 @@ func (c *Client) Run() error {
 // so a missing entry is caught by TestDispatchTableComplete at test time
 // instead of surfacing as a runtime "no dispatcher" error mid-session.
 var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) error{
-	ObjDisplay:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlDisplay(r, h, c) },
-	ObjRegistry:      func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlRegistry(r, h, c) },
-	ObjCompositor:    func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlCompositor(r, h, c) },
-	ObjShm:           func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlShm(r, h, c) },
-	ObjShmPool:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlShmPool(r, h, c) },
-	ObjSurface:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSurface(r, h, c) },
-	ObjBuffer:        func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlBuffer(r, h, c) },
-	ObjXdgWmBase:     func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgWmBase(r, h, c) },
-	ObjXdgSurface:    func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgSurface(r, h, c) },
-	ObjXdgToplevel:   func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgToplevel(r, h, c) },
+	ObjDisplay:     func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlDisplay(r, h, c) },
+	ObjRegistry:    func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlRegistry(r, h, c) },
+	ObjCompositor:  func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlCompositor(r, h, c) },
+	ObjShm:         func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlShm(r, h, c) },
+	ObjShmPool:     func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlShmPool(r, h, c) },
+	ObjSurface:     func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSurface(r, h, c) },
+	ObjBuffer:      func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlBuffer(r, h, c) },
+	ObjXdgWmBase:   func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgWmBase(r, h, c) },
+	ObjXdgSurface:  func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgSurface(r, h, c) },
+	ObjXdgToplevel: func(c *Client, r *wire.Reader, h wire.Header) error { return xdgshell.DispatchXdgToplevel(r, h, c) },
+	ObjXdgPopup: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return xdgshell.DispatchXdgPopup(r, h, c)
+	},
+	ObjXdgPositioner: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return xdgshell.DispatchXdgPositioner(r, h, c)
+	},
 	ObjOutput:        func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlOutput(r, h, c) },
 	ObjSeat:          func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSeat(r, h, c) },
 	ObjPointer:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlPointer(r, h, c) },
@@ -514,11 +523,100 @@ func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	}
 	c.mu.Unlock()
 
+	// Popups are placed as soon as the client commits: configure geometry
+	// from the positioner, then ack-configure. The commit's senderID is the
+	// wl_surface; find the popup role registered for that surface.
+	c.configurePendingPopups(senderID)
+
 	// Notify compositor of surface update outside of c.mu
 	if c.server.onCommit != nil {
 		c.server.onSurfaceCommitted(&surfCopy)
 	}
 	return nil
+}
+
+// (The popup's own xdg_surface id was recorded in XdgPopup.XdgSurfaceID at
+// get_popup time.)
+// configurePendingPopups places a popup whose wl_surface just committed:
+// configure geometry from its positioner, then ack-configure. senderID is
+// the committing wl_surface id; no-op for non-popup surfaces. Locking is
+// explicit (not defer) because the mapped callback must run unlocked.
+func (c *Client) configurePendingPopups(surfaceID uint32) {
+	c.mu.Lock()
+
+	popupID := uint32(0)
+	var popup *XdgPopup
+	for i := range c.xdgPopups.items {
+		p := &c.xdgPopups.items[i].rec
+		if !p.Active || p.SurfaceID != surfaceID {
+			continue
+		}
+		if p.Configured {
+			continue
+		}
+		popupID = c.xdgPopups.items[i].id
+		popup = p
+		break
+	}
+	if popupID == 0 {
+		c.mu.Unlock()
+		return
+	}
+
+	// Parent geometry: the parent xdg_surface's current buffer size (0 while
+	// the parent has no buffer; the popup then uses no flip constraints).
+	var parentW, parentH int32 = 100000, 100000 // unconstrained until the parent maps
+	if x, ok := c.xdgSurfaces.get(popup.Parent); ok {
+		if sf, found := c.surfaces.get(x.SurfaceID); found && sf.Current.AttachedBufferID != 0 {
+			if buf, found := c.buffers.get(sf.Current.AttachedBufferID); found {
+				parentW = buf.Width
+				parentH = buf.Height
+			}
+		}
+	}
+
+	// Positioner snapshot: last one registered with the popup (there is
+	// exactly one per get_popup call in practice; the latest wins).
+	var pos XdgPositioner
+	foundPos := false
+	for i := range c.xdgPositioners.items {
+		if p := &c.xdgPositioners.items[i].rec; p.Active {
+			pos = *p
+			foundPos = true
+		}
+	}
+	if !foundPos {
+		pos = XdgPositioner{Width: 100, Height: 32}
+	}
+
+	// Output bounds in parent-relative coordinates: the compositor places
+	// popups over the parent's window body, so the output equals the parent
+	// body size. The parent size is the whole usable area here.
+	placement := PlacePopup(pos, parentW, parentH, parentW, parentH)
+
+	// Snapshot what the callback needs before dropping the lock: holding
+	// mutexes across callbacks re-enters dispatch paths that lock again.
+	mapped := struct {
+		popupID, surfaceID, parent uint32
+		x, y, w, h                 int32
+	}{popupID, popup.SurfaceID, popup.Parent, placement.X, placement.Y, placement.Width, placement.Height}
+
+	w := c.conn.WriterRef()
+	_ = xdgshell.SendXdgPopupConfigure(w, popupID, placement.X, placement.Y, placement.Width, placement.Height)
+	serial := c.NextSerial()
+	c.xdgSurfaces.mutate(popup.XdgSurfaceID, func(x *XdgSurface) { x.LastSerial = serial })
+	_ = xdgshell.SendXdgSurfaceConfigure(w, popup.XdgSurfaceID, serial)
+	_ = c.conn.Flush()
+
+	popup.Configured = true
+	popup.ConfiguredX, popup.ConfiguredY = placement.X, placement.Y
+	popup.ConfiguredW, popup.ConfiguredH = placement.Width, placement.Height
+	c.mu.Unlock()
+
+	if c.server.onPopupMapped != nil {
+		c.server.onPopupMapped(c.ID(), mapped.popupID, mapped.surfaceID, mapped.parent,
+			mapped.x, mapped.y, mapped.w, mapped.h)
+	}
 }
 
 func (c *Client) HandleWlSurfaceSetBufferTransform(senderID uint32, transform int32) error {
@@ -547,6 +645,77 @@ func (c *Client) HandleXdgWmBaseDestroy(senderID uint32) error {
 }
 
 func (c *Client) HandleXdgWmBaseCreatePositioner(senderID uint32, id uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjXdgPositioner)
+	c.xdgPositioners.add(id, XdgPositioner{ID: id, Active: true})
+	return nil
+}
+
+// --- XdgPositionerHandler ---
+
+func (c *Client) HandleXdgPositionerDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.Active = false })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetSize(senderID uint32, width, height int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.Width, p.Height = width, height })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetAnchorRect(senderID uint32, x, y, w, h int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) {
+		p.AnchorRect = [4]int32{x, y, w, h}
+	})
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetAnchor(senderID uint32, anchor uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.AnchorMask = anchor })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetGravity(senderID uint32, gravity uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.GravityMask = gravity })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetConstraintAdjustment(senderID uint32, adj uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.ConstraintAdjustment = adj })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetOffset(senderID uint32, x, y int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.OffsetX, p.OffsetY = x, y })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetReactive(senderID uint32) error { return nil }
+
+func (c *Client) HandleXdgPositionerSetParentSize(senderID uint32, w, h int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPositioners.mutate(senderID, func(p *XdgPositioner) { p.ParentWidth, p.ParentHeight = w, h })
+	return nil
+}
+
+func (c *Client) HandleXdgPositionerSetParentConfigure(senderID uint32, serial uint32) error {
 	return nil
 }
 
@@ -612,8 +781,63 @@ func (c *Client) HandleXdgSurfaceGetToplevel(senderID uint32, id uint32) error {
 	return fmt.Errorf("xdg_surface %d not found for get_toplevel", senderID)
 }
 
+// HandleXdgSurfaceGetPopup registers a popup role for a surface. Placement
+// happens on the surface's first commit, once the client has set its size.
 func (c *Client) HandleXdgSurfaceGetPopup(senderID uint32, id uint32, parent uint32, positioner uint32) error {
+	c.mu.Lock()
+
+	if os.Getenv("BLOXWM_TRACE") != "" {
+		fmt.Printf("[popup] get_popup popup=%d parent=%d positioner=%d surface=%d\n", id, parent, positioner, c.xdgSurfaceSurfaceID(senderID))
+	}
+	c.registerObject(id, ObjXdgPopup)
+	c.xdgPopups.add(id, XdgPopup{
+		ID:           id,
+		SurfaceID:    c.xdgSurfaceSurfaceID(senderID),
+		XdgSurfaceID: senderID,
+		Parent:       parent,
+		Active:       true,
+	})
+	surfaceID := c.xdgSurfaceSurfaceID(senderID)
+	c.mu.Unlock()
+	c.server.onPopupCreated(c, id, surfaceID, senderID)
 	return nil
+}
+
+// --- XdgPopupHandler ---
+
+func (c *Client) HandleXdgPopupDestroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	c.xdgPopups.mutate(senderID, func(p *XdgPopup) { p.Active = false })
+	return nil
+}
+
+// HandleXdgPopupGrab takes a modal seat grab: input outside the popup
+// dismisses it (compositor policy) — recorded so the scene can trigger
+// dismissal on outside clicks.
+func (c *Client) HandleXdgPopupGrab(senderID uint32, seat uint32, serial uint32) error {
+	if os.Getenv("BLOXWM_TRACE") != "" {
+		fmt.Printf("[popup] grab popup=%d seat=%d serial=%d\n", senderID, seat, serial)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xdgPopups.mutate(senderID, func(p *XdgPopup) { p.Grabs++ })
+	return nil
+}
+
+func (c *Client) HandleXdgPopupReposition(senderID uint32, positioner uint32, token uint32) error {
+	// Reposition re-runs placement at the next commit with the new
+	// positioner; nothing to record yet.
+	return nil
+}
+
+// xdgSurfaceSurfaceID maps an xdg_surface object id to its wl_surface id.
+func (c *Client) xdgSurfaceSurfaceID(xdgID uint32) uint32 {
+	if x, ok := c.xdgSurfaces.get(xdgID); ok {
+		return x.SurfaceID
+	}
+	return 0
 }
 
 func (c *Client) HandleXdgSurfaceSetWindowGeometry(senderID uint32, x int32, y int32, width int32, height int32) error {
@@ -1087,15 +1311,14 @@ func (c *Client) HandleWlDataSourceSetActions(senderID uint32, dndActions uint32
 }
 
 // Close terminates client connection and cleans up all mapped SHM pools.
+// Uses its own closeMu: Close is called from BOTH the server's teardown
+// and the connection's deferred cleanup, and must never tangle with
+// handlers holding c.mu. The closed flag is the idempotence gate; Set's
+// second-value return makes double Close cheap and safe.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
+	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	c.closed = true
-
 	for _, p := range c.pools.items {
 		_ = p.Close()
 	}

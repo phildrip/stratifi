@@ -58,6 +58,21 @@ func (dl *DrawList) Build(scene []SceneWindow, cfg FrameConfig, outW, outH int32
 
 	for i := range scene {
 		w := &scene[i]
+		if w.Popup {
+			// Popups are borderless client surfaces drawn above windows;
+			// no container, border or titlebar.
+			if w.Rect.W > 0 && w.Rect.H > 0 {
+				dl.Blits = append(dl.Blits, Blit{
+					ClientID:  w.ClientID,
+					SurfaceID: w.SurfaceID,
+					DstX:      w.Rect.X,
+					DstY:      w.Rect.Y,
+					DstW:      w.Rect.W,
+					DstH:      w.Rect.H,
+				})
+			}
+			continue
+		}
 		borderCol := uint32(BorderColorInactive)
 		if w.Active {
 			borderCol = uint32(BorderColorActive)
