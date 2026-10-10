@@ -51,6 +51,8 @@ const (
 	evFocusNext
 	evFocusPrev
 	evPopupAdded
+	evWorkspaceSwitch
+	evWorkspaceMove
 )
 
 // shellEvent is one message to the owner goroutine.
@@ -58,6 +60,7 @@ type shellEvent struct {
 	kind           evKind
 	popupID        uint32
 	px, py, pw, ph int32
+	wsIndex        int
 	clientID       uint32
 	surfaceID      uint32
 	xdgSurfaceID   uint32
@@ -113,11 +116,12 @@ func main() {
 	if cfgPath != "" {
 		fmt.Printf("[+] Config: %s (%d bindings)\n", cfgPath, len(cfg.Bindings))
 	}
-	engine := layout.NewEngine(layout.LayoutConfig{
+	workspaces := layout.NewWorkspaces(layout.LayoutConfig{
 		Gap:            cfg.Gap,
 		BorderWidth:    cfg.BorderWidth,
 		TitlebarHeight: cfg.TitlebarHeight,
 	})
+	engine := workspaces.Engine()
 
 	outputBounds := layout.Rect{
 		X: 12,
@@ -185,7 +189,8 @@ func main() {
 		}
 		seenCombo[key] = true
 		switch pb.Action {
-		case "close", "quit", "spawn", "focus_next", "focus_prev":
+		case "close", "quit", "spawn", "focus_next", "focus_prev",
+			"workspace", "move_to_workspace":
 		default:
 			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
 			os.Exit(1)
@@ -237,6 +242,14 @@ func main() {
 			emit(shellEvent{kind: evFocusNext})
 		case "focus_prev":
 			emit(shellEvent{kind: evFocusPrev})
+		case "workspace":
+			if n, ok := parseWorkspaceArg(args); ok {
+				emit(shellEvent{kind: evWorkspaceSwitch, wsIndex: n})
+			}
+		case "move_to_workspace":
+			if n, ok := parseWorkspaceArg(args); ok {
+				emit(shellEvent{kind: evWorkspaceMove, wsIndex: n})
+			}
 		default:
 			fmt.Printf("[-] Unknown action %q\n", action)
 		}
@@ -429,7 +442,7 @@ func main() {
 	// client lookup and focus requests are injected so the shell is
 	// testable without a live server (see shell_test.go).
 	shell := newShellState(
-		engine, outputBounds, &sceneInfo,
+		workspaces, outputBounds, &sceneInfo,
 		func(clientID uint32) shellClient {
 			if srv == nil {
 				return nil
@@ -448,6 +461,9 @@ func main() {
 	// goroutine — single-owner discipline, no locks needed.
 	frameLoop.SetScene(func(dst []compositor.SceneWindow) []compositor.SceneWindow {
 		for _, m := range shell.windows {
+			if !shell.workspaces.Visible(m.WinID) {
+				continue // hidden on another workspace
+			}
 			dst = append(dst, compositor.SceneWindow{
 				ClientID:  m.ClientID,
 				SurfaceID: m.SurfaceID,
@@ -525,4 +541,19 @@ func main() {
 			return
 		}
 	}
+}
+
+// parseWorkspaceArg reads a 1-based workspace number from a binding arg.
+func parseWorkspaceArg(args []string) (int, bool) {
+	if len(args) != 1 {
+		return 0, false
+	}
+	n := 0
+	for _, c := range args[0] {
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, n > 0
 }

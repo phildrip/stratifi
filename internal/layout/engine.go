@@ -32,6 +32,9 @@ type Column struct {
 	WidthWeight   float32
 	Windows       []WindowID
 	HeightWeights []float32
+	// Workspace tags the column (niri model: one engine, workspaces as
+	// tagged strip slots); Compute only emits the active tag's columns.
+	Workspace uint32
 }
 
 // LayoutConfig configures margins and borders.
@@ -93,6 +96,38 @@ func (e *Engine) AddWindow(id WindowID) error {
 	col.Windows = append(col.Windows, id)
 	col.HeightWeights = append(col.HeightWeights, 1.0)
 	return nil
+}
+
+// AddWindowTagged adds a window to the column at targetCol, creating the
+// column (carrying the workspace tag) when it doesn't exist.
+func (e *Engine) AddWindowTagged(id WindowID, targetCol int, tag uint32) error {
+	if !e.SlotMap.Validate(id) {
+		return fmt.Errorf("invalid WindowID: %d", id)
+	}
+	for targetCol >= len(e.Columns) {
+		e.Columns = append(e.Columns, Column{
+			WidthWeight:   1.0,
+			Windows:       []WindowID{},
+			HeightWeights: []float32{},
+			Workspace:     tag,
+		})
+	}
+	col := &e.Columns[targetCol]
+	col.Workspace = tag
+	col.Windows = append(col.Windows, id)
+	col.HeightWeights = append(col.HeightWeights, 1.0)
+	return nil
+}
+
+// WindowsTagged lists column windows for one workspace tag (diagnostics).
+func (e *Engine) WindowsTagged(tag uint32) []WindowID {
+	out := make([]WindowID, 0, 8)
+	for i := range e.Columns {
+		if e.Columns[i].Workspace == tag {
+			out = append(out, e.Columns[i].Windows...)
+		}
+	}
+	return out
 }
 
 // RemoveWindow removes a window from the layout and rebalances column weights.
@@ -221,45 +256,102 @@ func (e *Engine) Compute(bounds Rect) ([]WindowID, []Rect) {
 			colW = (bounds.X + bounds.W) - curX
 		}
 
-		numWins := len(col.Windows)
-		if numWins > 0 {
-			var colHeightWeight float32
-			for _, hw := range col.HeightWeights {
-				colHeightWeight += hw
-			}
-			if colHeightWeight <= 0 {
-				colHeightWeight = 1.0
-			}
-
-			totalGapsH := int32(numWins-1) * e.Config.Gap
-			availH := bounds.H - totalGapsH
-			if availH < 0 {
-				availH = 0
-			}
-
-			curY := bounds.Y
-			for wIdx := range col.Windows {
-				winH := int32((col.HeightWeights[wIdx] / colHeightWeight) * float32(availH))
-				if wIdx == numWins-1 {
-					winH = (bounds.Y + bounds.H) - curY
-				}
-
-				e.windowIDs = append(e.windowIDs, col.Windows[wIdx])
-				e.windowRects = append(e.windowRects, Rect{
-					X: curX,
-					Y: curY,
-					W: colW,
-					H: winH,
-				})
-
-				curY += winH + e.Config.Gap
-			}
-		}
+		e.computeColumn(col, curX, colW, bounds)
 
 		curX += colW + e.Config.Gap
 	}
 
 	return e.windowIDs, e.windowRects
+}
+
+// ComputeTagged computes rects only for columns tagged with the given
+// workspace, renormalizing their width weights so the visible columns fill
+// the bounds exactly as if hidden ones did not exist. Same scratch reuse as
+// Compute: zero heap on the hot path.
+func (e *Engine) ComputeTagged(tag uint32, bounds Rect) ([]WindowID, []Rect) {
+	e.windowIDs = e.windowIDs[:0]
+	e.windowRects = e.windowRects[:0]
+
+	numCols := 0
+	var totalWeight float32
+	for i := range e.Columns {
+		if e.Columns[i].Workspace != tag {
+			continue
+		}
+		numCols++
+		totalWeight += e.Columns[i].WidthWeight
+	}
+	if numCols == 0 || bounds.W <= 0 || bounds.H <= 0 {
+		return e.windowIDs, e.windowRects
+	}
+	if totalWeight <= 0 {
+		totalWeight = 1.0
+	}
+
+	totalGapsW := int32(numCols-1) * e.Config.Gap
+	availW := bounds.W - totalGapsW
+	if availW < 0 {
+		availW = 0
+	}
+
+	curX := bounds.X
+	seen := 0
+	for cIdx := range e.Columns {
+		col := &e.Columns[cIdx]
+		if col.Workspace != tag {
+			continue
+		}
+		seen++
+		colW := int32((col.WidthWeight / totalWeight) * float32(availW))
+		if seen == numCols {
+			// Final visible column absorbs integer rounding error.
+			colW = (bounds.X + bounds.W) - curX
+		}
+		e.computeColumn(col, curX, colW, bounds)
+		curX += colW + e.Config.Gap
+	}
+	return e.windowIDs, e.windowRects
+}
+
+// computeColumn stacks a column's windows vertically into the scratch
+// slices; the last window absorbs the rounding remainder. Extracted so
+// Compute and ComputeTagged share one implementation.
+func (e *Engine) computeColumn(col *Column, colX, colW int32, bounds Rect) {
+	numWins := len(col.Windows)
+	if numWins == 0 {
+		return
+	}
+	var colHeightWeight float32
+	for _, hw := range col.HeightWeights {
+		colHeightWeight += hw
+	}
+	if colHeightWeight <= 0 {
+		colHeightWeight = 1.0
+	}
+
+	totalGapsH := int32(numWins-1) * e.Config.Gap
+	availH := bounds.H - totalGapsH
+	if availH < 0 {
+		availH = 0
+	}
+
+	curY := bounds.Y
+	for wIdx := range col.Windows {
+		winH := int32((col.HeightWeights[wIdx] / colHeightWeight) * float32(availH))
+		if wIdx == numWins-1 {
+			winH = (bounds.Y + bounds.H) - curY
+		}
+
+		e.windowIDs = append(e.windowIDs, col.Windows[wIdx])
+		e.windowRects = append(e.windowRects, Rect{
+			X: colX,
+			Y: curY,
+			W: colW,
+			H: winH,
+		})
+
+		curY += winH + e.Config.Gap
+	}
 }
 
 // HitTest determines what layout component is beneath a screen coordinate point.
@@ -303,4 +395,19 @@ func (e *Engine) HitTest(p Point) HitResult {
 	}
 
 	return HitResult{Type: HitNone}
+}
+
+// ContainsTagged reports whether a window sits in a column tagged with tag.
+func (e *Engine) ContainsTagged(tag uint32, win WindowID) bool {
+	for i := range e.Columns {
+		if e.Columns[i].Workspace != tag {
+			continue
+		}
+		for _, id := range e.Columns[i].Windows {
+			if id == win {
+				return true
+			}
+		}
+	}
+	return false
 }

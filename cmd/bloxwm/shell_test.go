@@ -36,14 +36,14 @@ type shellHarness struct {
 }
 
 func newShellHarness() *shellHarness {
-	engine := layout.NewEngine(layout.LayoutConfig{Gap: 8, BorderWidth: 3, TitlebarHeight: 28})
+	workspaces := layout.NewWorkspaces(layout.LayoutConfig{Gap: 8, BorderWidth: 3, TitlebarHeight: 28})
 	h := &shellHarness{
 		focus:     &[]focusCall{},
 		client:    &fakeClient{surfaceID: 3},
 		sceneInfo: &atomic.Pointer[[]input.WindowInfo]{},
 	}
 	h.shell = newShellState(
-		engine, layout.Rect{X: 12, Y: 12, W: 1256, H: 696}, h.sceneInfo,
+		workspaces, layout.Rect{X: 12, Y: 12, W: 1256, H: 696}, h.sceneInfo,
 		func(uint32) shellClient { return h.client },
 		func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32) {
 			*h.focus = append(*h.focus, focusCall{winID, clientID, surfaceID})
@@ -292,5 +292,55 @@ func TestShellPopupDroppedWhenParentGone(t *testing.T) {
 	h.shell.applyEvent(shellEvent{kind: evClientGone, clientID: 1})
 	if _, ok := h.shell.popups[popupKey{1, 55}]; ok {
 		t.Error("popup outlived its parent client")
+	}
+}
+
+// TestShellWorkspaceSwitch: switching hides the old workspace's windows
+// from the scene and shows the target's; the active window refocuses.
+func TestShellWorkspaceSwitch(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	first := h.shell.activeWin
+
+	// Switch to a fresh workspace 2: scene empties.
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceSwitch, wsIndex: 2})
+	if h.shell.workspaces.ActiveID() != 2 {
+		t.Fatalf("active ws = %d, want 2", h.shell.workspaces.ActiveID())
+	}
+	if list := h.sceneInfo.Load(); list == nil || len(*list) != 0 {
+		t.Fatalf("scene = %v, want empty on fresh ws2", list)
+	}
+
+	// Add a window on ws2.
+	h.client.surfaceID = 9
+	h.shell.applyEvent(windowAddedEvent(2, 18, 19))
+	if list := h.sceneInfo.Load(); len(*list) != 1 {
+		t.Fatalf("ws2 scene = %d windows, want 1", len(*list))
+	}
+
+	// Switch back to ws1: the first window reappears, the ws2 one hides.
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceSwitch, wsIndex: 1})
+	list := h.sceneInfo.Load()
+	if len(*list) != 1 || (*list)[0].WinID != first {
+		t.Fatalf("ws1 scene = %v, want only window %d", list, first)
+	}
+}
+
+// TestShellWorkspaceMove: moving the active window to another workspace
+// removes it from the current scene and lands it on the target.
+func TestShellWorkspaceMove(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	first := h.shell.activeWin
+
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceMove, wsIndex: 2})
+	if list := h.sceneInfo.Load(); len(*list) != 0 {
+		t.Fatalf("scene after move = %v, want empty", list)
+	}
+	if h.shell.workspaces.ActiveID() != 1 {
+		t.Errorf("active ws = %d, want 1 (move does not switch)", h.shell.workspaces.ActiveID())
+	}
+	if got := h.shell.workspaces.WindowsOf(2); len(got) != 1 || got[0] != first {
+		t.Fatalf("ws2 windows = %v, want [%d]", got, first)
 	}
 }

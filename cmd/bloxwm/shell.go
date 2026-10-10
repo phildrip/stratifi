@@ -25,8 +25,9 @@ type shellClient interface {
 // lookup, focus requests, the lock-free scene snapshot for hit-testing)
 // are injected as functions so tests can record them.
 type shellState struct {
-	engine *layout.Engine
-	output layout.Rect
+	engine     *layout.Engine     // == workspaces.Engine(); Config/metrics access
+	workspaces *layout.Workspaces // the virtual-desktop strip (niri model)
+	output     layout.Rect
 
 	windows      map[layout.WindowID]*WindowMapping
 	surfaceToWin map[objRef]layout.WindowID
@@ -42,14 +43,15 @@ type shellState struct {
 }
 
 func newShellState(
-	engine *layout.Engine,
+	workspaces *layout.Workspaces,
 	output layout.Rect,
 	sceneInfo *atomic.Pointer[[]input.WindowInfo],
 	clientOf func(clientID uint32) shellClient,
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32),
 ) *shellState {
 	return &shellState{
-		engine:       engine,
+		engine:       workspaces.Engine(),
+		workspaces:   workspaces,
 		output:       output,
 		windows:      make(map[layout.WindowID]*WindowMapping),
 		surfaceToWin: make(map[objRef]layout.WindowID),
@@ -65,6 +67,9 @@ func newShellState(
 func (s *shellState) publishScene() {
 	list := make([]input.WindowInfo, 0, len(s.windows)+len(s.popups))
 	for _, m := range s.windows {
+		if !s.workspaces.Visible(m.WinID) {
+			continue // hidden on another workspace
+		}
 		list = append(list, input.WindowInfo{
 			WinID:      m.WinID,
 			ClientID:   m.ClientID,
@@ -101,6 +106,29 @@ func (s *shellState) focusActive() {
 	s.requestFocus(s.activeWin, m.ClientID, m.SurfaceID, m.ToplevelID)
 }
 
+// relayoutAll recomputes the active workspace's tiling, repositions every
+// visible window, and re-asserts focus — used after workspace switches and
+// window moves between workspaces. Hidden windows keep their last rect but
+// are excluded from the scene (Compute only emits the active tag).
+func (s *shellState) relayoutAll() {
+	winIDs, rects := s.workspaces.Compute(s.output)
+	for i, id := range winIDs {
+		if m, ok := s.windows[id]; ok {
+			m.Rect = rects[i]
+			s.configure(m)
+		}
+	}
+	if _, ok := s.windows[s.activeWin]; !ok {
+		// Active window moved away: focus the first visible one.
+		s.activeWin = 0
+		if len(winIDs) > 0 {
+			s.activeWin = winIDs[0]
+		}
+	}
+	s.publishScene()
+	s.focusActive()
+}
+
 // configure tells a client the body size available for its window.
 func (s *shellState) configure(m *WindowMapping) {
 	c := s.clientOf(m.ClientID)
@@ -117,9 +145,9 @@ func (s *shellState) applyEvent(ev shellEvent) {
 	switch ev.kind {
 	case evWindowAdded:
 		winID := s.engine.SlotMap.Allocate()
-		_ = s.engine.AddWindow(winID)
+		_ = s.workspaces.AddWindow(winID)
 
-		winIDs, rects := s.engine.Compute(s.output)
+		winIDs, rects := s.workspaces.Compute(s.output)
 		for i, id := range winIDs {
 			if m, ok := s.windows[id]; ok {
 				m.Rect = rects[i]
@@ -206,7 +234,7 @@ func (s *shellState) applyEvent(ev shellEvent) {
 				delete(s.windows, winID)
 				delete(s.surfaceToWin, objRef{m.ClientID, m.SurfaceID})
 				delete(s.surfaceToWin, objRef{m.ClientID, m.XdgSurfaceID})
-				_ = s.engine.RemoveWindow(winID)
+				_ = s.workspaces.RemoveWindow(winID)
 				if s.activeWin == winID {
 					s.activeWin = 0
 				}
@@ -221,7 +249,7 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 
 		// Recompute layout for the survivors and reconfigure them.
-		winIDs, rects := s.engine.Compute(s.output)
+		winIDs, rects := s.workspaces.Compute(s.output)
 		for i, id := range winIDs {
 			if m, ok := s.windows[id]; ok {
 				m.Rect = rects[i]
@@ -240,6 +268,17 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 
 		s.publishScene()
+
+	case evWorkspaceSwitch:
+		s.workspaces.SwitchToNumber(ev.wsIndex)
+		s.relayoutAll()
+
+	case evWorkspaceMove:
+		if m, ok := s.windows[s.activeWin]; ok {
+			if s.workspaces.MoveWindowToWorkspace(m.WinID, s.workspaces.Ensure(ev.wsIndex)) {
+				s.relayoutAll()
+			}
+		}
 
 	case evCloseActive:
 		m, ok := s.windows[s.activeWin]
