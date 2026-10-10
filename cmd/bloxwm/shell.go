@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"sync/atomic"
 
 	"bloxwm/internal/input"
@@ -14,6 +15,7 @@ import (
 type shellClient interface {
 	ConfigureToplevel(xdgSurfaceID, toplevelID uint32, width, height int32, states []byte)
 	GetSurfaceIDForXdgSurface(xdgSurfaceID uint32) uint32
+	SendToplevelClose(toplevelID uint32)
 }
 
 // shellState is the actor's scene state. The actor goroutine owns it
@@ -32,7 +34,7 @@ type shellState struct {
 
 	sceneInfo    *atomic.Pointer[[]input.WindowInfo]
 	clientOf     func(clientID uint32) shellClient
-	requestFocus func(winID layout.WindowID, clientID, surfaceID uint32)
+	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
 }
 
 func newShellState(
@@ -40,7 +42,7 @@ func newShellState(
 	output layout.Rect,
 	sceneInfo *atomic.Pointer[[]input.WindowInfo],
 	clientOf func(clientID uint32) shellClient,
-	requestFocus func(winID layout.WindowID, clientID, surfaceID uint32),
+	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32),
 ) *shellState {
 	return &shellState{
 		engine:       engine,
@@ -59,10 +61,11 @@ func (s *shellState) publishScene() {
 	list := make([]input.WindowInfo, 0, len(s.windows))
 	for _, m := range s.windows {
 		list = append(list, input.WindowInfo{
-			WinID:     m.WinID,
-			ClientID:  m.ClientID,
-			SurfaceID: m.SurfaceID,
-			Rect:      m.Rect,
+			WinID:      m.WinID,
+			ClientID:   m.ClientID,
+			SurfaceID:  m.SurfaceID,
+			ToplevelID: m.ToplevelID,
+			Rect:       m.Rect,
 		})
 	}
 	s.sceneInfo.Store(&list)
@@ -77,7 +80,7 @@ func (s *shellState) focusActive() {
 	if !ok || m.SurfaceID == 0 {
 		return
 	}
-	s.requestFocus(s.activeWin, m.ClientID, m.SurfaceID)
+	s.requestFocus(s.activeWin, m.ClientID, m.SurfaceID, m.ToplevelID)
 }
 
 // configure tells a client the body size available for its window.
@@ -185,10 +188,43 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		if len(winIDs) > 0 {
 			if m, ok := s.windows[winIDs[0]]; ok {
 				s.activeWin = winIDs[0]
-				s.requestFocus(winIDs[0], m.ClientID, m.SurfaceID)
+				s.requestFocus(winIDs[0], m.ClientID, m.SurfaceID, m.ToplevelID)
 			}
 		}
 
 		s.publishScene()
+
+	case evCloseActive:
+		m, ok := s.windows[s.activeWin]
+		if !ok {
+			return
+		}
+		if c := s.clientOf(m.ClientID); c != nil {
+			c.SendToplevelClose(m.ToplevelID)
+		}
+
+	case evFocusNext, evFocusPrev:
+		if len(s.windows) < 2 {
+			return
+		}
+		ids := make([]layout.WindowID, 0, len(s.windows))
+		for id := range s.windows {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		at := 0
+		for i, id := range ids {
+			if id == s.activeWin {
+				at = i
+				break
+			}
+		}
+		if ev.kind == evFocusNext {
+			at = (at + 1) % len(ids)
+		} else {
+			at = (at - 1 + len(ids)) % len(ids)
+		}
+		s.activeWin = ids[at]
+		s.focusActive()
 	}
 }

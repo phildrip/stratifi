@@ -18,8 +18,8 @@ func TestRouterRequestFocusQueue(t *testing.T) {
 	)
 
 	// Queue a focus command before any event arrives.
-	r.RequestFocus(7, 2, 3)
-	r.RequestFocus(9, 3, 4) // supersedes: queued commands coalesce by arrival
+	r.RequestFocus(7, 2, 3, 0)
+	r.RequestFocus(9, 3, 4, 0) // supersedes: queued commands coalesce by arrival
 
 	r.ProcessEvent(InputEvent{}) // drains the queue; applies the last target
 
@@ -38,6 +38,6 @@ func TestRouterFocusQueueNoBlock(t *testing.T) {
 		nil,
 	)
 	for i := 0; i < 100; i++ {
-		r.RequestFocus(layout.WindowID(i), uint32(i), uint32(i)) // must not block past cap 8
+		r.RequestFocus(layout.WindowID(i), uint32(i), uint32(i), 0) // must not block past cap 8
 	}
 }

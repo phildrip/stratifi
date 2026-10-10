@@ -11,6 +11,7 @@ import (
 type fakeClient struct {
 	surfaceID  uint32
 	configured []layout.Rect
+	closed     []uint32
 }
 
 func (f *fakeClient) ConfigureToplevel(_, _ uint32, w, h int32, _ []byte) {
@@ -18,6 +19,8 @@ func (f *fakeClient) ConfigureToplevel(_, _ uint32, w, h int32, _ []byte) {
 }
 
 func (f *fakeClient) GetSurfaceIDForXdgSurface(uint32) uint32 { return f.surfaceID }
+
+func (f *fakeClient) SendToplevelClose(toplevelID uint32) { f.closed = append(f.closed, toplevelID) }
 
 type focusCall struct {
 	winID     layout.WindowID
@@ -42,7 +45,7 @@ func newShellHarness() *shellHarness {
 	h.shell = newShellState(
 		engine, layout.Rect{X: 12, Y: 12, W: 1256, H: 696}, h.sceneInfo,
 		func(uint32) shellClient { return h.client },
-		func(winID layout.WindowID, clientID, surfaceID uint32) {
+		func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32) {
 			*h.focus = append(*h.focus, focusCall{winID, clientID, surfaceID})
 		},
 	)
@@ -157,5 +160,60 @@ func TestShellRefocusesSurvivorOnClientGone(t *testing.T) {
 	}
 	if len(*h.focus) != 1 || (*h.focus)[0].winID != first {
 		t.Fatalf("focus = %+v, want the surviving window %d", *h.focus, first)
+	}
+}
+
+// TestShellCloseActive asks the active window's client to close gracefully.
+func TestShellCloseActive(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+
+	h.shell.applyEvent(shellEvent{kind: evCloseActive})
+	if len(h.client.closed) != 1 || h.client.closed[0] != 17 {
+		t.Fatalf("closed = %v, want [17] (the active toplevel)", h.client.closed)
+	}
+
+	// No active window: silent no-op, never a nil dereference.
+	h2 := newShellHarness()
+	h2.shell.applyEvent(shellEvent{kind: evCloseActive})
+	if len(h2.client.closed) != 0 {
+		t.Fatalf("closed = %v, want nothing", h2.client.closed)
+	}
+}
+
+// TestShellFocusCyclesWindows: next/prev walk creation order deterministically.
+func TestShellFocusCyclesWindows(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	first := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(2, 18, 19))
+	second := h.shell.activeWin
+	if second == first {
+		t.Fatal("second window did not become active")
+	}
+
+	*h.focus = (*h.focus)[:0]
+	h.shell.applyEvent(shellEvent{kind: evFocusNext})
+	if h.shell.activeWin != first {
+		t.Fatalf("next from %d = %d, want wrap to %d", second, h.shell.activeWin, first)
+	}
+	h.shell.applyEvent(shellEvent{kind: evFocusPrev})
+	if h.shell.activeWin != second {
+		t.Fatalf("prev from %d = %d, want %d", first, h.shell.activeWin, second)
+	}
+	// Focus requests follow the active window.
+	if len(*h.focus) != 2 || (*h.focus)[0].winID != first || (*h.focus)[1].winID != second {
+		t.Fatalf("focus trail = %+v, want [%d %d]", *h.focus, first, second)
+	}
+
+	// A lone window is a no-op (no divide by zero, no focus churn).
+	h2 := newShellHarness()
+	h2.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	*h2.focus = (*h2.focus)[:0]
+	before := len(*h2.focus)
+	h2.shell.applyEvent(shellEvent{kind: evFocusNext})
+	if h2.shell.activeWin == 0 || len(*h2.focus) != before {
+		// activeWin valid and no new request: single-window cycle is silent.
+		t.Fatalf("lone-window cycle changed state")
 	}
 }

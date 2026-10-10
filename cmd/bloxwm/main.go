@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync/atomic"
 	"syscall"
@@ -46,6 +47,9 @@ const (
 	evCommitted
 	evFocusMoved
 	evQuit
+	evCloseActive
+	evFocusNext
+	evFocusPrev
 )
 
 // shellEvent is one message to the owner goroutine.
@@ -68,6 +72,9 @@ func main() {
 
 	outputW := int32(1280)
 	outputH := int32(720)
+
+	// The Wayland socket we serve; spawned clients are pointed at it.
+	const socketName = "wayland-blox-0"
 
 	// Bare-metal output: BLOXWM_KMS=1 opens the DRM card directly instead of
 	// nesting in a parent compositor. Requires DRM master (run from a VT).
@@ -155,6 +162,83 @@ func main() {
 
 	// 3. Initialize Nested Backend connecting to parent Sway
 	exitCh := make(chan struct{}, 1)
+
+	// Keybindings from config. A bad binding exits loudly: a typo'd combo
+	// that silently does nothing is the failure this strictness prevents.
+	// Duplicate combos and unknown actions are rejected here, not at fire
+	// time, for the same reason.
+	var bindings []input.Binding
+	seenCombo := make(map[[2]uint32]bool)
+	for _, b := range cfg.Bindings {
+		pb, err := input.ParseBinding(b.Combo, b.Action, b.Args)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[-] Bad binding: %v\n", err)
+			os.Exit(1)
+		}
+		key := [2]uint32{pb.Mods, pb.Code}
+		if seenCombo[key] {
+			fmt.Fprintf(os.Stderr, "[-] Duplicate binding for combo %q\n", b.Combo)
+			os.Exit(1)
+		}
+		seenCombo[key] = true
+		switch pb.Action {
+		case "close", "quit", "spawn", "focus_next", "focus_prev":
+		default:
+			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
+			os.Exit(1)
+		}
+		bindings = append(bindings, pb)
+	}
+	router.SetBindings(input.NewMatcher(bindings))
+	router.SetActionHandler(func(action string, args []string) {
+		emit := func(ev shellEvent) {
+			select {
+			case events <- ev:
+			default:
+			}
+		}
+		switch action {
+		case "close":
+			emit(shellEvent{kind: evCloseActive})
+		case "quit":
+			select {
+			case exitCh <- struct{}{}:
+			default:
+			}
+		case "spawn":
+			if len(args) == 0 {
+				return
+			}
+			cmd := exec.Command(args[0], args[1:]...)
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			// Children are bloxwm clients, not the parent's: point them at
+			// our socket explicitly. Replace (not append) WAYLAND_DISPLAY —
+			// a duplicate leaves the old value winning.
+			env := os.Environ()
+			display := "WAYLAND_DISPLAY=" + socketName
+			replaced := false
+			for i, kv := range env {
+				if len(kv) >= 16 && kv[:16] == "WAYLAND_DISPLAY=" {
+					env[i] = display
+					replaced = true
+				}
+			}
+			if !replaced {
+				env = append(env, display)
+			}
+			cmd.Env = env
+			if err := cmd.Start(); err == nil {
+				_ = cmd.Process.Release() // fully detach: no zombies, survives us
+			}
+		case "focus_next":
+			emit(shellEvent{kind: evFocusNext})
+		case "focus_prev":
+			emit(shellEvent{kind: evFocusPrev})
+		default:
+			fmt.Printf("[-] Unknown action %q\n", action)
+		}
+	})
+
 	cb := nested.Callbacks{
 		OnPointerMotion: func(x, y float64) {
 			ringBuf.Push(input.InputEvent{
@@ -280,7 +364,6 @@ func main() {
 	}()
 
 	// 5. Initialize bloxwm Wayland Server
-	socketName := "wayland-blox-0"
 	srv, err = server.NewServer(socketName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] Failed to start bloxwm server: %v\n", err)
@@ -339,8 +422,8 @@ func main() {
 			}
 			return nil
 		},
-		func(winID layout.WindowID, clientID, surfaceID uint32) {
-			router.RequestFocus(winID, clientID, surfaceID)
+		func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32) {
+			router.RequestFocus(winID, clientID, surfaceID, toplevelID)
 		},
 	)
 

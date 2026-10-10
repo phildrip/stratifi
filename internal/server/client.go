@@ -908,6 +908,20 @@ func (c *Client) SendKeyboardModifiers(depressed, latched, locked, group uint32)
 	_ = c.conn.Flush()
 }
 
+// SendToplevelClose asks the client to close a toplevel window (the graceful
+// path behind the compositor's close action). No-op unless the id is a live
+// toplevel, so a stale window reference can never emit a protocol error.
+func (c *Client) SendToplevelClose(toplevelID uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if typ, ok := c.findObject(toplevelID); !ok || typ != ObjXdgToplevel {
+		return
+	}
+	w := c.conn.WriterRef()
+	_ = xdgshell.SendXdgToplevelClose(w, toplevelID)
+	_ = c.conn.Flush()
+}
+
 // ConfigureToplevel sends xdg_toplevel.configure and xdg_surface.configure to client.
 func (c *Client) ConfigureToplevel(xdgSurfaceID uint32, toplevelID uint32, width, height int32, states []byte) {
 	c.mu.Lock()
