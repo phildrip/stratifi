@@ -229,7 +229,9 @@ func (r *Router) HandlePointerButton(timeMs uint32, button, state uint32) {
 	if state == ButtonStatePressed {
 		cx, cy := r.CursorPosition()
 		info, hit := r.lookupWindow(cx, cy)
-		if hit && info.WinID != r.focusWinID {
+		// WinID 0 is a layer surface (panel/bar), not a window: give it
+		// pointer events but never steal the window keyboard focus for it.
+		if hit && info.WinID != 0 && info.WinID != r.focusWinID {
 			r.SetFocus(info.WinID, info.ClientID, info.SurfaceID, info.ToplevelID)
 		}
 	}

@@ -47,6 +47,11 @@ type shellState struct {
 	// has none, the compositor default is used.
 	cursors map[uint32]cursorEntry
 
+	// Layer surfaces (panels/bars/locks) keyed by (clientID, surfaceID).
+	// They render in their layer and reserve exclusive zones the tiling
+	// must avoid.
+	layers map[layerKey]*layerEntry
+
 	sceneInfo    *atomic.Pointer[[]input.WindowInfo]
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
@@ -68,6 +73,7 @@ func newShellState(
 		popups:       make(map[popupKey]*popupEntry),
 		subsurfaces:  make(map[subsurfaceKey]*subsurfaceEntry),
 		cursors:      make(map[uint32]cursorEntry),
+		layers:       make(map[layerKey]*layerEntry),
 		sceneInfo:    sceneInfo,
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
@@ -77,7 +83,13 @@ func newShellState(
 // publishScene pushes a lock-free WindowInfo list for the router's
 // hit-testing (atomic.Pointer swap: readers never block).
 func (s *shellState) publishScene() {
-	list := make([]input.WindowInfo, 0, len(s.windows)+len(s.popups))
+	list := make([]input.WindowInfo, 0, len(s.windows)+len(s.popups)+len(s.layers))
+	// Top/overlay layers hit-test above windows (a bar over a fullscreen
+	// window must still receive clicks). Published first: the router returns
+	// the first match, so front = topmost.
+	for _, p := range s.layerPlacements(layerOverlay, layerTop) {
+		list = append(list, input.WindowInfo{ClientID: p.clientID, SurfaceID: p.surfaceID, Rect: p.rect})
+	}
 	fs := s.fullscreenActive()
 	for _, m := range s.windows {
 		if !s.sceneVisible(m.WinID) {
@@ -112,6 +124,11 @@ func (s *shellState) publishScene() {
 			Rect:      layout.Rect{X: p.x, Y: p.y, W: p.w, H: p.h},
 		})
 	}
+	// Background/bottom layers sit beneath the windows: published last so a
+	// window overlapping them wins the hit-test.
+	for _, p := range s.layerPlacements(layerBackground, layerBottom) {
+		list = append(list, input.WindowInfo{ClientID: p.clientID, SurfaceID: p.surfaceID, Rect: p.rect})
+	}
 	s.sceneInfo.Store(&list)
 }
 
@@ -132,7 +149,7 @@ func (s *shellState) focusActive() {
 // window moves between workspaces. Hidden windows keep their last rect but
 // are excluded from the scene (Compute only emits the active tag).
 func (s *shellState) relayoutAll() {
-	winIDs, rects := s.workspaces.ComputeScrollable(s.output)
+	winIDs, rects := s.workspaces.ComputeScrollable(s.tilingArea())
 	for i, id := range winIDs {
 		if m, ok := s.windows[id]; ok {
 			m.Rect = rects[i]
@@ -184,7 +201,7 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		// open in the active column, scrolled into view).
 		s.workspaces.Engine().SetActiveColumn(s.columnIndexOf(winID))
 
-		winIDs, rects := s.workspaces.ComputeScrollable(s.output)
+		winIDs, rects := s.workspaces.ComputeScrollable(s.tilingArea())
 		for i, id := range winIDs {
 			if m, ok := s.windows[id]; ok {
 				m.Rect = rects[i]
@@ -291,6 +308,31 @@ func (s *shellState) applyEvent(ev shellEvent) {
 			active:    ev.cursorOn,
 		}
 
+	case evLayerAdded:
+		key := layerKey{ev.clientID, ev.surfaceID}
+		s.layers[key] = &layerEntry{
+			clientID:  ev.clientID,
+			surfaceID: ev.surfaceID,
+			layer:     ev.layerIndex,
+			namespace: ev.namespace,
+			w:         ev.pw,
+			h:         ev.ph,
+			anchor:    ev.anchor,
+			exclusive: ev.exclusive,
+			margin:    ev.margin,
+			keyboard:  ev.keyboard,
+		}
+		// A new exclusive zone changes the tiling area.
+		s.relayoutAll()
+		// Exclusive keyboard interactivity takes focus on map (locks).
+		if ev.keyboard == 1 {
+			s.requestFocus(0, ev.clientID, ev.surfaceID, 0)
+		}
+
+	case evLayerGone:
+		delete(s.layers, layerKey{ev.clientID, ev.surfaceID})
+		s.relayoutAll() // the reserved zone is released
+
 	case evCommitted:
 		if winID, ok := s.surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
 			if m, exists := s.windows[winID]; exists {
@@ -334,9 +376,15 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 		// And so does the client's cursor shape.
 		delete(s.cursors, ev.clientID)
+		// Layer surfaces die with their client; release their zones.
+		for key, l := range s.layers {
+			if l.clientID == ev.clientID {
+				delete(s.layers, key)
+			}
+		}
 
 		// Recompute layout for the survivors and reconfigure them.
-		winIDs, rects := s.workspaces.ComputeScrollable(s.output)
+		winIDs, rects := s.workspaces.ComputeScrollable(s.tilingArea())
 		for i, id := range winIDs {
 			if m, ok := s.windows[id]; ok {
 				m.Rect = rects[i]
@@ -454,6 +502,108 @@ type popupEntry struct {
 	surfaceID  uint32
 	parentWin  layout.WindowID
 	x, y, w, h int32
+}
+
+// Layer-surface layer constants (zwlr_layer_shell_v1).
+const (
+	layerBackground = 0
+	layerBottom     = 1
+	layerTop        = 2
+	layerOverlay    = 3
+)
+
+// Anchor bit constants (zwlr_layer_surface_v1).
+const (
+	anchorTop    = 1
+	anchorBottom = 2
+	anchorLeft   = 4
+	anchorRight  = 8
+)
+
+// layerKey scopes layer-surface lookups by client and surface id.
+type layerKey struct {
+	clientID  uint32
+	surfaceID uint32
+}
+
+// layerEntry is the actor's record of one layer surface.
+type layerEntry struct {
+	clientID  uint32
+	surfaceID uint32
+	layer     uint32
+	namespace string
+	w, h      int32
+	anchor    uint32
+	exclusive int32
+	margin    [4]int32 // top, right, bottom, left
+	keyboard  uint32
+}
+
+// placeLayer resolves a layer surface to an output rect from its anchors,
+// size and margins. out is the full output (layer surfaces position against
+// the output, not the tiling area).
+func placeLayer(out layout.Rect, l *layerEntry) layout.Rect {
+	mt, mr, mb, ml := l.margin[0], l.margin[1], l.margin[2], l.margin[3]
+	w, h := l.w, l.h
+	var x, y int32
+	switch {
+	case l.anchor&anchorLeft != 0 && l.anchor&anchorRight != 0:
+		x = out.X + ml
+		if w == 0 {
+			w = out.W - ml - mr
+		}
+	case l.anchor&anchorLeft != 0:
+		x = out.X + ml
+	case l.anchor&anchorRight != 0:
+		x = out.X + out.W - mr - w
+	default:
+		x = out.X + (out.W-w)/2
+	}
+	switch {
+	case l.anchor&anchorTop != 0 && l.anchor&anchorBottom != 0:
+		y = out.Y + mt
+		if h == 0 {
+			h = out.H - mt - mb
+		}
+	case l.anchor&anchorTop != 0:
+		y = out.Y + mt
+	case l.anchor&anchorBottom != 0:
+		y = out.Y + out.H - mb - h
+	default:
+		y = out.Y + (out.H-h)/2
+	}
+	return layout.Rect{X: x, Y: y, W: w, H: h}
+}
+
+// tilingArea returns the output minus any exclusive zones reserved by layer
+// surfaces (e.g. a top bar): the region the tiling and maximized windows use.
+func (s *shellState) tilingArea() layout.Rect {
+	out := s.output
+	for _, l := range s.layers {
+		if l.exclusive <= 0 {
+			continue
+		}
+		z := l.exclusive
+		switch {
+		case l.anchor&anchorTop != 0 && l.anchor&anchorBottom == 0:
+			out.Y += z
+			out.H -= z
+		case l.anchor&anchorBottom != 0 && l.anchor&anchorTop == 0:
+			out.H -= z
+		case l.anchor&anchorLeft != 0 && l.anchor&anchorRight == 0:
+			out.X += z
+			out.W -= z
+		case l.anchor&anchorRight != 0 && l.anchor&anchorLeft == 0:
+			out.W -= z
+		}
+	}
+	if out.W < 1 {
+		out.W = 1
+	}
+	if out.H < 1 {
+		out.H = 1
+	}
+	return out
 }
 
 // cursorEntry is one client's cursor shape: the wl_surface it set plus the
@@ -584,6 +734,28 @@ type subsurfacePlacement struct {
 	parentWin           layout.WindowID
 	rect                layout.Rect
 	order               int32
+}
+
+// layerPlacements returns the layer surfaces resolved to output rects,
+// bottom-to-top within a given set of layers. The scene draws background/
+// bottom below windows and top/overlay above them.
+func (s *shellState) layerPlacements(layers ...uint32) []subsurfacePlacement {
+	out := make([]subsurfacePlacement, 0, len(s.layers))
+	for _, l := range s.layers {
+		in := false
+		for _, want := range layers {
+			if l.layer == want {
+				in = true
+				break
+			}
+		}
+		if !in || l.w < 2 || l.h < 2 {
+			continue
+		}
+		r := placeLayer(s.output, l)
+		out = append(out, subsurfacePlacement{clientID: l.clientID, surfaceID: l.surfaceID, rect: r})
+	}
+	return out
 }
 
 // visibleSubsurfaces returns the subsurfaces on visible workspaces, resolved

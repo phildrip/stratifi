@@ -7,7 +7,9 @@ import (
 	"sync/atomic"
 
 	"bloxwm/internal/protocol/capture"
+	"bloxwm/internal/protocol/layershell"
 	"bloxwm/internal/protocol/wayland"
+	"bloxwm/internal/protocol/xdgoutput"
 	"bloxwm/internal/protocol/xdgshell"
 	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
@@ -22,6 +24,8 @@ const (
 	GlobalSeat              uint32 = 5
 	GlobalSubcompositor     uint32 = 6
 	GlobalDataDeviceManager uint32 = 7
+	GlobalLayerShell        uint32 = 10
+	GlobalXdgOutputManager  uint32 = 11
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -44,6 +48,7 @@ type Client struct {
 	xdgPositioners xdgStore[XdgPositioner]
 	xdgPopups      xdgStore[XdgPopup]
 	subsurfaces    xdgStore[Subsurface]
+	layerSurfaces  xdgStore[LayerSurface]
 	dataSources    xdgStore[DataSource]
 
 	// subsurfaceOrder maps a parent wl_surface id to the ordered list of
@@ -178,7 +183,19 @@ var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) erro
 	ObjPointer:       func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlPointer(r, h, c) },
 	ObjKeyboard:      func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlKeyboard(r, h, c) },
 	ObjSubcompositor: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubcompositor(r, h, c) },
-	ObjSubsurface:    func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubsurface(r, h, c) },
+	ObjLayerShell: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return layershell.DispatchZwlrLayerShellV1(r, h, c)
+	},
+	ObjLayerSurface: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return layershell.DispatchZwlrLayerSurfaceV1(r, h, c)
+	},
+	ObjXdgOutputManager: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return xdgoutput.DispatchZxdgOutputManagerV1(r, h, c)
+	},
+	ObjXdgOutput: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return xdgoutput.DispatchZxdgOutputV1(r, h, c)
+	},
+	ObjSubsurface: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubsurface(r, h, c) },
 	ObjDataDeviceManager: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return wayland.DispatchWlDataDeviceManager(r, h, c)
 	},
@@ -258,13 +275,19 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalXdgWmBase, "xdg_wm_base", 3); err != nil {
 		return err
 	}
-	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutput, "wl_output", 2); err != nil {
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutput, "wl_output", 4); err != nil {
 		return err
 	}
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalSeat, "wl_seat", 5); err != nil {
 		return err
 	}
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalSubcompositor, "wl_subcompositor", 1); err != nil {
+		return err
+	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalLayerShell, "zwlr_layer_shell_v1", 5); err != nil {
+		return err
+	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalXdgOutputManager, "zxdg_output_manager_v1", 3); err != nil {
 		return err
 	}
 	return wayland.SendWlRegistryGlobal(w, registryID, GlobalDataDeviceManager, "wl_data_device_manager", 3)
@@ -295,6 +318,9 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		out := c.server.Output()
 		_ = wayland.SendWlOutputMode(w, id, 0x3,
 			int32(out.Width), int32(out.Height), int32(out.RefreshHz*1000))
+		// v4: clients (waybar et al.) match bars to outputs by name.
+		_ = wayland.SendWlOutputName(w, id, "BLOXWM-1")
+		_ = wayland.SendWlOutputDescription(w, id, "bloxwm output 1")
 		_ = wayland.SendWlOutputDone(w, id)
 	case GlobalSeat:
 		c.registerObject(id, ObjSeat)
@@ -303,6 +329,10 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		_ = wayland.SendWlSeatName(w, id, "seat0")
 	case GlobalSubcompositor:
 		c.registerObject(id, ObjSubcompositor)
+	case GlobalLayerShell:
+		c.registerObject(id, ObjLayerShell)
+	case GlobalXdgOutputManager:
+		c.registerObject(id, ObjXdgOutputManager)
 	case GlobalDataDeviceManager:
 		c.registerObject(id, ObjDataDeviceManager)
 	case GlobalOutputImageCaptureSourceManager:
@@ -561,6 +591,9 @@ func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	// Subsurfaces: a desync child applies on its own commit; a sync child
 	// applies when its parent commits.
 	c.applySubsurfaceCommit(senderID)
+
+	// Layer surfaces configure on their first commit and re-emit each commit.
+	c.applyLayerCommit(senderID)
 
 	// A cursor surface's commit may have changed its image or size.
 	c.mu.Lock()
@@ -1492,6 +1525,197 @@ func indexUint32(s []uint32, v uint32) int {
 		}
 	}
 	return -1
+}
+
+// --- ZwlrLayerShellV1Handler / ZwlrLayerSurfaceV1Handler ---
+
+func (c *Client) HandleZwlrLayerShellV1GetLayerSurface(senderID, id, surface, output, layer uint32, namespace string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjLayerSurface)
+	c.layerSurfaces.add(id, LayerSurface{
+		ID: id, SurfaceID: surface, OutputID: output,
+		Layer: layer, Namespace: namespace, Active: true,
+	})
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerShellV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetSize(senderID, width, height uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.Width, ls.Height = int32(width), int32(height) })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetAnchor(senderID, anchor uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.Anchor = anchor })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetExclusiveZone(senderID uint32, zone int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.ExclusiveZone = zone })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetMargin(senderID uint32, top, right, bottom, left int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.Margin = [4]int32{top, right, bottom, left} })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetKeyboardInteractivity(senderID, mode uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.KeyboardInteractivity = mode })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetLayer(senderID, layer uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.Layer = layer })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1SetExclusiveEdge(senderID, edge uint32) error {
+	// Exclusive edge only matters when the exclusive zone is -1 (choose the
+	// edge automatically); we always anchor, so it is a no-op here.
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1GetPopup(senderID, popup uint32) error {
+	// Layer-surface popups (e.g. waybar tooltips) are not composited yet;
+	// recognized so a client's request does not error.
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1AckConfigure(senderID, serial uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.layerSurfaces.mutate(senderID, func(ls *LayerSurface) { ls.LastSerial = serial })
+	return nil
+}
+
+func (c *Client) HandleZwlrLayerSurfaceV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	var surfaceID uint32
+	var gone bool
+	if ls, ok := c.layerSurfaces.get(senderID); ok {
+		surfaceID = ls.SurfaceID
+		gone = true
+	}
+	c.layerSurfaces.remove(senderID)
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+
+	if gone && c.server.onLayerSurfaceGone != nil {
+		c.server.onLayerSurfaceGone(c.ID(), surfaceID)
+	}
+	return nil
+}
+
+// --- ZxdgOutputManagerV1Handler / ZxdgOutputV1Handler ---
+
+func (c *Client) HandleZxdgOutputManagerV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleZxdgOutputManagerV1GetXdgOutput(senderID, id, output uint32) error {
+	c.mu.Lock()
+	c.registerObject(id, ObjXdgOutput)
+	out := c.server.Output()
+	w := c.conn.WriterRef()
+	// Single logical output at the origin; name/description let clients
+	// (waybar et al.) match panels to outputs.
+	_ = xdgoutput.SendZxdgOutputV1LogicalPosition(w, id, 0, 0)
+	_ = xdgoutput.SendZxdgOutputV1LogicalSize(w, id, int32(out.Width), int32(out.Height))
+	_ = xdgoutput.SendZxdgOutputV1Name(w, id, "BLOXWM-1")
+	_ = xdgoutput.SendZxdgOutputV1Description(w, id, "bloxwm output 1")
+	_ = xdgoutput.SendZxdgOutputV1Done(w, id)
+	_ = c.conn.Flush()
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZxdgOutputV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+// layerConfigureSize resolves the size to configure a layer surface with:
+// a requested 0 fills the anchored dimension of the output, minus margins.
+func (c *Client) layerConfigureSize(ls *LayerSurface) (int32, int32) {
+	const (
+		anchorTop    = 1
+		anchorBottom = 2
+		anchorLeft   = 4
+		anchorRight  = 8
+	)
+	out := c.server.Output()
+	w, h := ls.Width, ls.Height
+	if w == 0 && ls.Anchor&(anchorLeft|anchorRight) == (anchorLeft|anchorRight) {
+		w = int32(out.Width) - ls.Margin[1] - ls.Margin[3]
+	}
+	if h == 0 && ls.Anchor&(anchorTop|anchorBottom) == (anchorTop|anchorBottom) {
+		h = int32(out.Height) - ls.Margin[0] - ls.Margin[2]
+	}
+	return w, h
+}
+
+// applyLayerCommit propagates a wl_surface.commit to a layer surface: the
+// first commit gets a configure (so the client can map), and every commit
+// re-emits the state so the actor can place it. Emits run unlocked.
+func (c *Client) applyLayerCommit(surfaceID uint32) {
+	c.mu.Lock()
+	var ls *LayerSurface
+	for i := range c.layerSurfaces.items {
+		if c.layerSurfaces.items[i].rec.SurfaceID == surfaceID && c.layerSurfaces.items[i].rec.Active {
+			ls = &c.layerSurfaces.items[i].rec
+			break
+		}
+	}
+	if ls == nil {
+		c.mu.Unlock()
+		return
+	}
+	needConfigure := !ls.Configured
+	w, h := c.layerConfigureSize(ls)
+	if needConfigure {
+		ls.Configured = true
+		serial := c.NextSerial()
+		ls.LastSerial = serial
+		lw := c.conn.WriterRef()
+		_ = layershell.SendZwlrLayerSurfaceV1Configure(lw, ls.ID, serial, uint32(w), uint32(h))
+		_ = c.conn.Flush()
+	}
+	info := LayerSurfaceInfo{
+		ClientID: c.ID(), SurfaceID: ls.SurfaceID, Layer: ls.Layer,
+		Namespace: ls.Namespace, Width: w, Height: h, Anchor: ls.Anchor,
+		ExclusiveZone: ls.ExclusiveZone, Margin: ls.Margin,
+		KeyboardInteractivity: ls.KeyboardInteractivity,
+	}
+	c.mu.Unlock()
+
+	if c.server.onLayerSurface != nil {
+		c.server.onLayerSurface(info)
+	}
 }
 
 // subsurfaceOrderOf returns the stack index of a subsurface object id.

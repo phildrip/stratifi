@@ -33,6 +33,10 @@ const (
 	ObjDataDevice
 	ObjDataSource
 	ObjDataOffer
+	ObjLayerShell
+	ObjLayerSurface
+	ObjXdgOutputManager
+	ObjXdgOutput
 
 	// Screen capture protocol objects (ext-image-copy-capture-v1).
 	ObjCaptureSourceManagerOutput
@@ -173,6 +177,43 @@ type Subsurface struct {
 	lastMapped                 bool
 	lastOrder                  int32
 	emitted                    bool
+}
+
+// LayerSurface is one zwlr_layer_surface_v1: a panel/bar/lock surface
+// composited in a layer above or below the windows, positioned by anchors
+// and margins, optionally reserving an exclusive zone the tiling must not
+// cover.
+type LayerSurface struct {
+	ID        uint32
+	SurfaceID uint32 // the wl_surface
+	OutputID  uint32 // requested wl_output (0 = compositor default)
+	Layer     uint32 // 0 background, 1 bottom, 2 top, 3 overlay
+	Namespace string
+
+	Width, Height         int32 // requested size; 0 = fill the anchored dimension
+	Anchor                uint32
+	ExclusiveZone         int32
+	Margin                [4]int32 // top, right, bottom, left
+	KeyboardInteractivity uint32
+
+	Configured bool
+	LastSerial uint32
+	Active     bool
+}
+
+// LayerSurfaceInfo is the actor-facing snapshot of a layer surface (the
+// fields the compositor needs to place and draw it).
+type LayerSurfaceInfo struct {
+	ClientID  uint32
+	SurfaceID uint32
+	Layer     uint32
+	Namespace string
+
+	Width, Height         int32
+	Anchor                uint32
+	ExclusiveZone         int32
+	Margin                [4]int32
+	KeyboardInteractivity uint32
 }
 
 // XdgPositioner accumulates the xdg_positioner state a client assembles

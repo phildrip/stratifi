@@ -599,3 +599,81 @@ func TestShellMoveWithinColumn(t *testing.T) {
 		}
 	}
 }
+
+// TestPlaceLayer: anchoring, size and margins resolve to output rects.
+func TestPlaceLayer(t *testing.T) {
+	out := layout.Rect{X: 0, Y: 0, W: 1000, H: 800}
+	cases := []struct {
+		name string
+		l    layerEntry
+		want layout.Rect
+	}{
+		{"top bar fills width", layerEntry{anchor: anchorTop | anchorLeft | anchorRight, w: 0, h: 30},
+			layout.Rect{X: 0, Y: 0, W: 1000, H: 30}},
+		{"top bar with margins", layerEntry{anchor: anchorTop | anchorLeft | anchorRight, w: 0, h: 30,
+			margin: [4]int32{5, 10, 0, 10}},
+			layout.Rect{X: 10, Y: 5, W: 980, H: 30}},
+		{"bottom-right corner", layerEntry{anchor: anchorBottom | anchorRight, w: 200, h: 100},
+			layout.Rect{X: 800, Y: 700, W: 200, H: 100}},
+		{"centered", layerEntry{anchor: 0, w: 100, h: 50},
+			layout.Rect{X: 450, Y: 375, W: 100, H: 50}},
+		{"left edge", layerEntry{anchor: anchorLeft, w: 40, h: 200},
+			layout.Rect{X: 0, Y: 300, W: 40, H: 200}},
+	}
+	for _, c := range cases {
+		if got := placeLayer(out, &c.l); got != c.want {
+			t.Errorf("%s: got %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestTilingAreaExclusiveZones: reserved zones shrink the area windows tile in.
+func TestTilingAreaExclusiveZones(t *testing.T) {
+	h := newShellHarness()
+	out := h.shell.output
+	if got := h.shell.tilingArea(); got != out {
+		t.Fatalf("no layers: tiling area %+v, want output %+v", got, out)
+	}
+	h.shell.layers[layerKey{1, 1}] = &layerEntry{layer: layerTop, anchor: anchorTop, exclusive: 30}
+	h.shell.layers[layerKey{2, 2}] = &layerEntry{layer: layerTop, anchor: anchorLeft, exclusive: 40}
+	got := h.shell.tilingArea()
+	want := layout.Rect{X: out.X + 40, Y: out.Y + 30, W: out.W - 40, H: out.H - 30}
+	if got != want {
+		t.Errorf("tiling area = %+v, want %+v", got, want)
+	}
+}
+
+// TestShellLayerReservesTilingSpace: adding a top bar re-tiles the windows
+// below the reserved zone; removing it restores the full area.
+func TestShellLayerReservesTilingSpace(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	full := h.shell.windows[h.shell.activeWin].Rect
+
+	h.shell.applyEvent(shellEvent{
+		kind: evLayerAdded, clientID: 9, surfaceID: 50, layerIndex: layerTop,
+		namespace: "bar", anchor: anchorTop | anchorLeft | anchorRight,
+		pw: h.shell.output.W, ph: 30, exclusive: 30,
+	})
+	if _, ok := h.shell.layers[layerKey{9, 50}]; !ok {
+		t.Fatal("layer surface not registered")
+	}
+	shrunk := h.shell.windows[h.shell.activeWin].Rect
+	if shrunk.Y != h.shell.output.Y+30 || shrunk.H != full.H-30 {
+		t.Errorf("after bar: window rect %+v, want Y=%d H=%d", shrunk, h.shell.output.Y+30, full.H-30)
+	}
+
+	// The bar is published for input (front of the list: it wins the hit-test).
+	list := h.sceneInfo.Load()
+	if list == nil || len(*list) == 0 || (*list)[0].SurfaceID != 50 || (*list)[0].WinID != 0 {
+		t.Errorf("scene list = %v, want the bar (surface 50, WinID 0) first", list)
+	}
+
+	h.shell.applyEvent(shellEvent{kind: evLayerGone, clientID: 9, surfaceID: 50})
+	if len(h.shell.layers) != 0 {
+		t.Error("layer surface survived removal")
+	}
+	if got := h.shell.windows[h.shell.activeWin].Rect; got != full {
+		t.Errorf("after removing bar: window rect %+v, want %+v", got, full)
+	}
+}

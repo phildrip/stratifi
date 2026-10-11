@@ -15,17 +15,19 @@ type Server struct {
 	clientMu   sync.RWMutex
 	nextClient atomic.Uint32
 
-	onCommit         func(s *Surface)
-	onToplevel       func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
-	selectionMu      sync.Mutex
-	selection        Selection // compositor clipboard: last set_selection wins
-	onPopup          func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
-	onPopupMapped    func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
-	onSubsurface     func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)
-	onSubsurfaceGone func(clientID, surfaceID uint32)
-	onCursor         func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)
-	onClientDestroy  func(clientID uint32)
-	closed           atomic.Bool
+	onCommit           func(s *Surface)
+	onToplevel         func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	selectionMu        sync.Mutex
+	selection          Selection // compositor clipboard: last set_selection wins
+	onPopup            func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
+	onPopupMapped      func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
+	onSubsurface       func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)
+	onSubsurfaceGone   func(clientID, surfaceID uint32)
+	onCursor           func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)
+	onLayerSurface     func(info LayerSurfaceInfo)
+	onLayerSurfaceGone func(clientID, surfaceID uint32)
+	onClientDestroy    func(clientID uint32)
+	closed             atomic.Bool
 
 	keymapFD   int
 	keymapSize uint32
@@ -153,6 +155,19 @@ func (s *Server) SetOnSubsurface(fn func(clientID, surfaceID, parentSurfaceID ui
 // so the shell can drop its scene entry.
 func (s *Server) SetOnSubsurfaceGone(fn func(clientID, surfaceID uint32)) {
 	s.onSubsurfaceGone = fn
+}
+
+// SetOnLayerSurface registers a callback with a layer surface's current
+// state: fired on its first commit (after configure) and on every commit,
+// so the shell can place it in the right layer.
+func (s *Server) SetOnLayerSurface(fn func(info LayerSurfaceInfo)) {
+	s.onLayerSurface = fn
+}
+
+// SetOnLayerSurfaceGone registers a callback when a layer surface is
+// destroyed, so the shell can drop it.
+func (s *Server) SetOnLayerSurfaceGone(fn func(clientID, surfaceID uint32)) {
+	s.onLayerSurfaceGone = fn
 }
 
 // SetOnCursor registers a callback for the client's pointer cursor: the

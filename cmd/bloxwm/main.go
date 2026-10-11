@@ -56,6 +56,8 @@ const (
 	evSubsurfaceAdded
 	evSubsurfaceGone
 	evCursorSet
+	evLayerAdded
+	evLayerGone
 	evFullscreen
 	evFocusWindowUp
 	evFocusWindowDown
@@ -78,6 +80,12 @@ type shellEvent struct {
 	px, py, pw, ph  int32
 	ssOrder         int32
 	cursorOn        bool
+	layerIndex      uint32
+	anchor          uint32
+	exclusive       int32
+	margin          [4]int32
+	keyboard        uint32
+	namespace       string
 	wsIndex         int
 	clientID        uint32
 	surfaceID       uint32
@@ -534,6 +542,26 @@ func main() {
 		}
 	})
 
+	srv.SetOnLayerSurface(func(info server.LayerSurfaceInfo) {
+		events <- shellEvent{
+			kind:       evLayerAdded,
+			clientID:   info.ClientID,
+			surfaceID:  info.SurfaceID,
+			layerIndex: info.Layer,
+			namespace:  info.Namespace,
+			pw:         info.Width,
+			ph:         info.Height,
+			anchor:     info.Anchor,
+			exclusive:  info.ExclusiveZone,
+			margin:     info.Margin,
+			keyboard:   info.KeyboardInteractivity,
+		}
+	})
+
+	srv.SetOnLayerSurfaceGone(func(clientID, surfaceID uint32) {
+		events <- shellEvent{kind: evLayerGone, clientID: clientID, surfaceID: surfaceID}
+	})
+
 	srv.SetOnCommit(func(s *server.Surface) {
 		select {
 		case events <- shellEvent{kind: evCommitted, clientID: s.ClientID, surfaceID: s.ID}:
@@ -585,6 +613,14 @@ func main() {
 	// The frame loop renders from closures that run ON the actor
 	// goroutine — single-owner discipline, no locks needed.
 	frameLoop.SetScene(func(dst []compositor.SceneWindow) []compositor.SceneWindow {
+		// Background and bottom layers render beneath the windows.
+		for _, p := range shell.layerPlacements(layerBackground, layerBottom) {
+			dst = append(dst, compositor.SceneWindow{
+				ClientID: p.clientID, SurfaceID: p.surfaceID,
+				Rect:  compositor.Rect{X: p.rect.X, Y: p.rect.Y, W: p.rect.W, H: p.rect.H},
+				Popup: true,
+			})
+		}
 		fs := shell.fullscreenActive()
 		for _, m := range shell.windows {
 			if !shell.sceneVisible(m.WinID) {
@@ -636,6 +672,14 @@ func main() {
 				Rect: compositor.Rect{
 					X: p.x, Y: p.y, W: p.w, H: p.h,
 				},
+				Popup: true,
+			})
+		}
+		// Top and overlay layers render above the windows (bars, locks).
+		for _, p := range shell.layerPlacements(layerTop, layerOverlay) {
+			dst = append(dst, compositor.SceneWindow{
+				ClientID: p.clientID, SurfaceID: p.surfaceID,
+				Rect:  compositor.Rect{X: p.rect.X, Y: p.rect.Y, W: p.rect.W, H: p.rect.H},
 				Popup: true,
 			})
 		}

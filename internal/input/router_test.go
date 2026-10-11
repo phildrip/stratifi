@@ -147,3 +147,33 @@ func TestRouterCursorStateIsReadable(t *testing.T) {
 		t.Errorf("cursor = (%.0f,%.0f), want (10,10)", x, y)
 	}
 }
+
+// TestRouterLayerSurfaceDoesNotStealFocus: a click on a layer surface
+// (WinID 0) must deliver pointer events without moving window focus.
+func TestRouterLayerSurfaceDoesNotStealFocus(t *testing.T) {
+	var focusChanges []layout.WindowID
+	lookup := func(x, y float64) (WindowInfo, bool) {
+		// A layer surface (WinID 0) over the top-left 100x30.
+		if x < 100 && y < 30 {
+			return WindowInfo{WinID: 0, ClientID: 5, SurfaceID: 50, Rect: layout.Rect{X: 0, Y: 0, W: 100, H: 30}}, true
+		}
+		return WindowInfo{WinID: 42, ClientID: 7, SurfaceID: 10, Rect: layout.Rect{X: 0, Y: 0, W: 500, H: 500}}, true
+	}
+	router := NewRouter(lookup, func(uint32) *server.Client { return nil },
+		func(oldWin, newWin layout.WindowID) { focusChanges = append(focusChanges, newWin) })
+
+	// Click the window: focus moves to it.
+	router.HandlePointerMotion(0, 200, 200)
+	router.HandlePointerButton(0, 0x110, ButtonStatePressed)
+	if len(focusChanges) != 1 || focusChanges[0] != 42 {
+		t.Fatalf("window click focus = %v, want [42]", focusChanges)
+	}
+	focusChanges = nil
+
+	// Click on the layer surface: pointer events yes, focus change no.
+	router.HandlePointerMotion(0, 50, 15)
+	router.HandlePointerButton(0, 0x110, ButtonStatePressed)
+	if len(focusChanges) != 0 {
+		t.Errorf("layer-surface click changed focus: %v", focusChanges)
+	}
+}
