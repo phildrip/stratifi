@@ -29,9 +29,10 @@ type shellState struct {
 	workspaces *layout.Workspaces // the virtual-desktop strip (niri model)
 	output     layout.Rect
 
-	windows      map[layout.WindowID]*WindowMapping
-	surfaceToWin map[objRef]layout.WindowID
-	activeWin    layout.WindowID
+	windows       map[layout.WindowID]*WindowMapping
+	surfaceToWin  map[objRef]layout.WindowID
+	activeWin     layout.WindowID
+	fullscreenWin layout.WindowID // 0 = none
 
 	// Popups keyed by (clientID, popupID): placed over the parent window
 	// body from the configure geometry the server computed.
@@ -77,23 +78,32 @@ func newShellState(
 // hit-testing (atomic.Pointer swap: readers never block).
 func (s *shellState) publishScene() {
 	list := make([]input.WindowInfo, 0, len(s.windows)+len(s.popups))
+	fs := s.fullscreenActive()
 	for _, m := range s.windows {
-		if !s.workspaces.Visible(m.WinID) {
-			continue // hidden on another workspace
+		if !s.sceneVisible(m.WinID) {
+			continue // hidden on another workspace, or behind fullscreen
+		}
+		rect := m.Rect
+		if m.WinID == fs {
+			rect = s.output // fullscreen owns the whole output
 		}
 		list = append(list, input.WindowInfo{
 			WinID:      m.WinID,
 			ClientID:   m.ClientID,
 			SurfaceID:  m.SurfaceID,
 			ToplevelID: m.ToplevelID,
-			Rect:       m.Rect,
+			Rect:       rect,
 		})
 	}
 	// Popups publish after windows: the router hit-tests in order, so a
 	// popup over its parent wins clicks on its own area. Rects smaller
-	// than 2x2 are unmapped noise; skip them.
+	// than 2x2 are unmapped noise; skip them. A fullscreen window's own
+	// popups (menus) stay reachable; other windows' do not.
 	for _, p := range s.popups {
 		if p.w < 2 || p.h < 2 {
+			continue
+		}
+		if fs != 0 && p.parentWin != fs {
 			continue
 		}
 		list = append(list, input.WindowInfo{
@@ -142,12 +152,25 @@ func (s *shellState) relayoutAll() {
 
 // configure tells a client the body size available for its window.
 func (s *shellState) configure(m *WindowMapping) {
-	c := s.clientOf(m.ClientID)
-	if c == nil {
+	// A fullscreen window's body is the whole output, not its tiled rect —
+	// so relayout (which reconfigures every visible window) cannot clobber
+	// the fullscreen size back to the tiled one.
+	if m.WinID == s.fullscreenWin {
+		s.configureBody(m, s.output.W, s.output.H)
 		return
 	}
 	bodyW := m.Rect.W - 2*s.engine.Config.BorderWidth
 	bodyH := m.Rect.H - s.engine.Config.TitlebarHeight - 2*s.engine.Config.BorderWidth
+	s.configureBody(m, bodyW, bodyH)
+}
+
+// configureBody tells a client the exact body size to render at (used for
+// fullscreen, where the body is the whole output rather than the tiled rect).
+func (s *shellState) configureBody(m *WindowMapping, bodyW, bodyH int32) {
+	c := s.clientOf(m.ClientID)
+	if c == nil {
+		return
+	}
 	c.ConfigureToplevel(m.XdgSurfaceID, m.ToplevelID, bodyW, bodyH, nil)
 }
 
@@ -291,6 +314,9 @@ func (s *shellState) applyEvent(ev shellEvent) {
 				if s.activeWin == winID {
 					s.activeWin = 0
 				}
+				if s.fullscreenWin == winID {
+					s.fullscreenWin = 0
+				}
 				fmt.Printf("[-] Window closed: WinID=%d ClientID=%d\n", winID, ev.clientID)
 			}
 		}
@@ -339,6 +365,27 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.workspaces.MoveActiveColumn(-1)
 		s.relayoutAll()
 		s.focusColumnActive()
+
+	case evFullscreen:
+		s.toggleFullscreen()
+
+	case evFocusWindowUp:
+		s.focusWithinColumn(-1)
+
+	case evFocusWindowDown:
+		s.focusWithinColumn(1)
+
+	case evMoveWindowUp:
+		s.moveWithinColumn(-1)
+
+	case evMoveWindowDown:
+		s.moveWithinColumn(1)
+
+	case evMoveColLeft:
+		s.moveColumn(-1)
+
+	case evMoveColRight:
+		s.moveColumn(1)
 
 	case evWorkspaceNext:
 		s.workspaces.SwitchNext()
@@ -437,12 +484,88 @@ type subsurfaceEntry struct {
 	order     int32
 }
 
+// fullscreenActive returns the fullscreen window id, or 0 if none is set or
+// the window has since disappeared (so a stale id can never blank the scene).
+func (s *shellState) fullscreenActive() layout.WindowID {
+	if s.fullscreenWin == 0 {
+		return 0
+	}
+	if _, ok := s.windows[s.fullscreenWin]; !ok {
+		return 0
+	}
+	return s.fullscreenWin
+}
+
+// sceneVisible reports whether a window is currently on screen: on the
+// active workspace, and — while something is fullscreen — only if it IS the
+// fullscreen window.
+func (s *shellState) sceneVisible(winID layout.WindowID) bool {
+	if !s.workspaces.Visible(winID) {
+		return false
+	}
+	if fs := s.fullscreenActive(); fs != 0 && winID != fs {
+		return false
+	}
+	return true
+}
+
+// toggleFullscreen makes the active window fill the output (hiding the
+// other windows on its workspace), or restores the tiling if it already is.
+func (s *shellState) toggleFullscreen() {
+	if s.fullscreenWin != 0 {
+		s.fullscreenWin = 0
+		s.relayoutAll()
+		return
+	}
+	if _, ok := s.windows[s.activeWin]; !ok {
+		return
+	}
+	s.fullscreenWin = s.activeWin
+	s.relayoutAll() // configure() sizes the fullscreen window to the output
+}
+
+// focusWithinColumn moves focus to the window delta rows away in the active
+// window's column (niri: the column's stack), clamped to the stack.
+func (s *shellState) focusWithinColumn(delta int) {
+	col, row, ok := s.engine.WindowPos(s.activeWin)
+	if !ok {
+		return
+	}
+	wins := s.engine.Columns[col].Windows
+	dst := row + delta
+	if dst < 0 || dst >= len(wins) {
+		return
+	}
+	s.activeWin = wins[dst]
+	s.focusActive()
+}
+
+// moveWithinColumn reorders the active window by delta rows in its column.
+func (s *shellState) moveWithinColumn(delta int) {
+	if !s.engine.MoveWindowWithinColumn(s.activeWin, delta) {
+		return
+	}
+	s.relayoutAll()
+}
+
+// moveColumn reorders the active column by delta (niri: move column
+// left/right), keeping focus on the moved column.
+func (s *shellState) moveColumn(delta int) {
+	if !s.workspaces.ReorderActiveColumn(delta) {
+		return
+	}
+	s.relayoutAll()
+}
+
 // bodyRectOf returns a window's client-body rectangle inside the output
 // (inside the border and titlebar), or zero if the window is unknown.
 func (s *shellState) bodyRectOf(winID layout.WindowID) layout.Rect {
 	m, ok := s.windows[winID]
 	if !ok {
 		return layout.Rect{}
+	}
+	if winID == s.fullscreenWin {
+		return s.output // fullscreen body is the whole output, no chrome
 	}
 	bw := s.engine.Config.BorderWidth
 	th := s.engine.Config.TitlebarHeight
@@ -469,7 +592,7 @@ type subsurfacePlacement struct {
 func (s *shellState) visibleSubsurfaces() []subsurfacePlacement {
 	subs := make([]*subsurfaceEntry, 0, len(s.subsurfaces))
 	for _, ss := range s.subsurfaces {
-		if !s.workspaces.Visible(ss.parentWin) {
+		if !s.sceneVisible(ss.parentWin) {
 			continue
 		}
 		if ss.w < 2 || ss.h < 2 {

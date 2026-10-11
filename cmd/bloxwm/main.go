@@ -56,6 +56,13 @@ const (
 	evSubsurfaceAdded
 	evSubsurfaceGone
 	evCursorSet
+	evFullscreen
+	evFocusWindowUp
+	evFocusWindowDown
+	evMoveWindowUp
+	evMoveWindowDown
+	evMoveColLeft
+	evMoveColRight
 	evWorkspaceSwitch
 	evWorkspaceMove
 	evColumnNext
@@ -204,7 +211,9 @@ func main() {
 		switch pb.Action {
 		case "close", "quit", "spawn", "focus_next", "focus_prev",
 			"workspace", "move_to_workspace", "focus_col_next", "focus_col_prev",
-			"workspace_next", "workspace_prev", "column_next", "column_prev", "overview":
+			"workspace_next", "workspace_prev", "column_next", "column_prev", "overview",
+			"fullscreen", "focus_window_up", "focus_window_down",
+			"move_window_up", "move_window_down", "move_col_left", "move_col_right":
 		default:
 			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
 			os.Exit(1)
@@ -277,6 +286,20 @@ func main() {
 			emit(shellEvent{kind: evColumnNext})
 		case "column_prev":
 			emit(shellEvent{kind: evColumnPrev})
+		case "fullscreen":
+			emit(shellEvent{kind: evFullscreen})
+		case "focus_window_up":
+			emit(shellEvent{kind: evFocusWindowUp})
+		case "focus_window_down":
+			emit(shellEvent{kind: evFocusWindowDown})
+		case "move_window_up":
+			emit(shellEvent{kind: evMoveWindowUp})
+		case "move_window_down":
+			emit(shellEvent{kind: evMoveWindowDown})
+		case "move_col_left":
+			emit(shellEvent{kind: evMoveColLeft})
+		case "move_col_right":
+			emit(shellEvent{kind: evMoveColRight})
 		case "overview":
 			// Overview is not implemented yet; recognized and ignored so a
 			// bound gesture is not reported as an unknown action.
@@ -562,9 +585,24 @@ func main() {
 	// The frame loop renders from closures that run ON the actor
 	// goroutine — single-owner discipline, no locks needed.
 	frameLoop.SetScene(func(dst []compositor.SceneWindow) []compositor.SceneWindow {
+		fs := shell.fullscreenActive()
 		for _, m := range shell.windows {
-			if !shell.workspaces.Visible(m.WinID) {
-				continue // hidden on another workspace
+			if !shell.sceneVisible(m.WinID) {
+				continue // hidden on another workspace, or behind fullscreen
+			}
+			if m.WinID == fs {
+				// Fullscreen: borderless, filling the whole output.
+				dst = append(dst, compositor.SceneWindow{
+					ClientID:  m.ClientID,
+					SurfaceID: m.SurfaceID,
+					Rect: compositor.Rect{
+						X: shell.output.X, Y: shell.output.Y,
+						W: shell.output.W, H: shell.output.H,
+					},
+					Popup:  true,
+					Active: true,
+				})
+				continue
 			}
 			dst = append(dst, compositor.SceneWindow{
 				ClientID:  m.ClientID,

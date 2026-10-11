@@ -200,5 +200,10 @@ func (ws *Workspaces) MoveActiveColumn(delta int) {
 	ws.engine.MoveActiveColumn(uint32(ws.activeIdx+1), delta)
 }
 
+// ReorderActiveColumn moves the active column left/right within the strip.
+func (ws *Workspaces) ReorderActiveColumn(delta int) bool {
+	return ws.engine.ReorderActiveColumn(uint32(ws.activeIdx+1), delta)
+}
+
 // ActiveColumn returns the focused column index on the active workspace.
 func (ws *Workspaces) ActiveColumn() int { return ws.engine.ActiveColumn() }

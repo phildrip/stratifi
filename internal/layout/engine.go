@@ -217,6 +217,40 @@ func (e *Engine) MoveWindowTo(id WindowID, targetCol int, targetRow int) bool {
 	return true
 }
 
+// WindowPos returns the column index and row of id, searching every
+// workspace tag. ok is false when the window is unknown.
+func (e *Engine) WindowPos(id WindowID) (col, row int, ok bool) {
+	for c := range e.Columns {
+		for w, wid := range e.Columns[c].Windows {
+			if wid == id {
+				return c, w, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// MoveWindowWithinColumn reorders id by delta rows inside its column,
+// clamped to the column bounds. Returns false when id is unknown or the
+// move would leave the column. Height weights follow the reorder so the
+// stack's proportions stay attached to their windows.
+func (e *Engine) MoveWindowWithinColumn(id WindowID, delta int) bool {
+	col, row, ok := e.WindowPos(id)
+	if !ok {
+		return false
+	}
+	wins := e.Columns[col].Windows
+	dst := row + delta
+	if dst < 0 || dst >= len(wins) {
+		return false
+	}
+	wins[row], wins[dst] = wins[dst], wins[row]
+	if hw := e.Columns[col].HeightWeights; len(hw) == len(wins) {
+		hw[row], hw[dst] = hw[dst], hw[row]
+	}
+	return true
+}
+
 // ResizeColumn modifies a column's width weight based on pixel drag delta.
 func (e *Engine) ResizeColumn(colIdx int, deltaPixels int32, screenWidth int32) {
 	if colIdx < 0 || colIdx >= len(e.Columns)-1 || screenWidth <= 0 {

@@ -160,3 +160,36 @@ func (e *Engine) MoveActiveColumn(tag uint32, delta int) {
 
 // ActiveColumn returns the focused column index.
 func (e *Engine) ActiveColumn() int { return e.ActiveCol }
+
+// ReorderActiveColumn swaps the active column with its neighbour delta
+// positions away within the same workspace tag, keeping focus on the moved
+// column. Returns false when there is no neighbour (a single-column
+// workspace, or a move past the end). This is the niri "move column
+// left/right" operation — distinct from MoveActiveColumn, which only moves
+// the focus/viewport index without changing the strip order.
+func (e *Engine) ReorderActiveColumn(tag uint32, delta int) bool {
+	idx := make([]int, 0, len(e.Columns))
+	for i := range e.Columns {
+		if e.Columns[i].Workspace == tag {
+			idx = append(idx, i)
+		}
+	}
+	if len(idx) == 0 {
+		return false
+	}
+	pos := e.ActiveCol
+	if pos < 0 {
+		pos = 0
+	}
+	if pos >= len(idx) {
+		pos = len(idx) - 1
+	}
+	dst := pos + delta
+	if dst < 0 || dst >= len(idx) {
+		return false
+	}
+	a, b := idx[pos], idx[dst]
+	e.Columns[a], e.Columns[b] = e.Columns[b], e.Columns[a]
+	e.ActiveCol = dst
+	return true
+}

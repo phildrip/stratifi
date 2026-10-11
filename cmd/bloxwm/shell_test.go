@@ -486,3 +486,116 @@ func TestShellCursorSetAndCleared(t *testing.T) {
 		t.Error("cursor outlived its client")
 	}
 }
+
+// TestShellFullscreen: toggling fullscreen makes the active window own the
+// whole output, hides the rest, and restores the tiling on toggle-off.
+func TestShellFullscreen(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	first := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 18, 19))
+	second := h.shell.activeWin // active = most recently added
+
+	h.shell.applyEvent(shellEvent{kind: evFullscreen})
+	if got := h.shell.fullscreenActive(); got != second {
+		t.Fatalf("fullscreen = %d, want %d", got, second)
+	}
+	if !h.shell.sceneVisible(second) {
+		t.Error("fullscreen window not visible")
+	}
+	if h.shell.sceneVisible(first) {
+		t.Error("other window still visible behind fullscreen")
+	}
+
+	// Hit-test scene: only the fullscreen window, across the whole output.
+	list := h.sceneInfo.Load()
+	if list == nil || len(*list) != 1 {
+		t.Fatalf("scene = %v, want exactly the fullscreen window", list)
+	}
+	if (*list)[0].WinID != second || (*list)[0].Rect != h.shell.output {
+		t.Errorf("scene entry = %+v, want win %d at output %+v", (*list)[0], second, h.shell.output)
+	}
+
+	// Toggle off: both visible again.
+	h.shell.applyEvent(shellEvent{kind: evFullscreen})
+	if h.shell.fullscreenActive() != 0 {
+		t.Error("fullscreen not cleared on toggle-off")
+	}
+	if !h.shell.sceneVisible(first) || !h.shell.sceneVisible(second) {
+		t.Error("windows not restored after exiting fullscreen")
+	}
+	if list := h.sceneInfo.Load(); list == nil || len(*list) != 2 {
+		t.Errorf("scene after restore = %v, want 2 windows", list)
+	}
+}
+
+// TestShellFullscreenClearedWhenClientGone: a fullscreen window whose client
+// disconnects must not leave the scene blanked.
+func TestShellFullscreenClearedWhenClientGone(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	h.shell.applyEvent(shellEvent{kind: evFullscreen})
+	if h.shell.fullscreenActive() == 0 {
+		t.Fatal("not fullscreen")
+	}
+	h.shell.applyEvent(shellEvent{kind: evClientGone, clientID: 1})
+	if h.shell.fullscreenActive() != 0 {
+		t.Error("fullscreen survived its window's client")
+	}
+	if h.shell.sceneVisible(0) {
+		t.Error("sceneVisible(0) should be false")
+	}
+}
+
+// TestShellFocusWithinColumn: focus moves up/down the active column's stack.
+func TestShellFocusWithinColumn(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	w0 := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 18, 19))
+	w1 := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 20, 21))
+	w2 := h.shell.activeWin
+
+	// All three stacked in one column, newest focused (bottom).
+	if _, row, _ := h.shell.engine.WindowPos(w2); row != 2 {
+		t.Fatalf("w2 row = %d, want 2", row)
+	}
+	h.shell.applyEvent(shellEvent{kind: evFocusWindowUp})
+	if h.shell.activeWin != w1 {
+		t.Errorf("focus up -> %d, want %d", h.shell.activeWin, w1)
+	}
+	h.shell.applyEvent(shellEvent{kind: evFocusWindowUp})
+	if h.shell.activeWin != w0 {
+		t.Errorf("focus up -> %d, want %d", h.shell.activeWin, w0)
+	}
+	// Already at the top: clamped.
+	h.shell.applyEvent(shellEvent{kind: evFocusWindowUp})
+	if h.shell.activeWin != w0 {
+		t.Errorf("focus up past top -> %d, want %d (clamped)", h.shell.activeWin, w0)
+	}
+	h.shell.applyEvent(shellEvent{kind: evFocusWindowDown})
+	if h.shell.activeWin != w1 {
+		t.Errorf("focus down -> %d, want %d", h.shell.activeWin, w1)
+	}
+}
+
+// TestShellMoveWithinColumn: the active window reorders within its column.
+func TestShellMoveWithinColumn(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	w0 := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 18, 19))
+	w1 := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 20, 21))
+	w2 := h.shell.activeWin
+
+	h.shell.applyEvent(shellEvent{kind: evMoveWindowUp}) // w2 up past w1
+	order := h.shell.engine.Columns[0].Windows
+	want := []layout.WindowID{w0, w2, w1}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+}
