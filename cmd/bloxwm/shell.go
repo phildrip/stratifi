@@ -41,6 +41,11 @@ type shellState struct {
 	// offset from the parent window's body, above it, below popups.
 	subsurfaces map[subsurfaceKey]*subsurfaceEntry
 
+	// Cursors keyed by client id: the shape each client set via
+	// wl_pointer.set_cursor. The hovered client's cursor is drawn; when it
+	// has none, the compositor default is used.
+	cursors map[uint32]cursorEntry
+
 	sceneInfo    *atomic.Pointer[[]input.WindowInfo]
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
@@ -61,6 +66,7 @@ func newShellState(
 		surfaceToWin: make(map[objRef]layout.WindowID),
 		popups:       make(map[popupKey]*popupEntry),
 		subsurfaces:  make(map[subsurfaceKey]*subsurfaceEntry),
+		cursors:      make(map[uint32]cursorEntry),
 		sceneInfo:    sceneInfo,
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
@@ -249,6 +255,19 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		delete(s.subsurfaces, subsurfaceKey{ev.clientID, ev.surfaceID})
 		s.publishScene()
 
+	case evCursorSet:
+		// The hovered client's cursor is drawn; a cleared cursor (active
+		// false) falls back to the compositor default.
+		s.cursors[ev.clientID] = cursorEntry{
+			clientID:  ev.clientID,
+			surfaceID: ev.surfaceID,
+			hx:        ev.px,
+			hy:        ev.py,
+			w:         ev.pw,
+			h:         ev.ph,
+			active:    ev.cursorOn,
+		}
+
 	case evCommitted:
 		if winID, ok := s.surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
 			if m, exists := s.windows[winID]; exists {
@@ -287,6 +306,8 @@ func (s *shellState) applyEvent(ev shellEvent) {
 				delete(s.subsurfaces, key)
 			}
 		}
+		// And so does the client's cursor shape.
+		delete(s.cursors, ev.clientID)
 
 		// Recompute layout for the survivors and reconfigure them.
 		winIDs, rects := s.workspaces.ComputeScrollable(s.output)
@@ -386,6 +407,16 @@ type popupEntry struct {
 	surfaceID  uint32
 	parentWin  layout.WindowID
 	x, y, w, h int32
+}
+
+// cursorEntry is one client's cursor shape: the wl_surface it set plus the
+// hotspot and the image size (0 size = not yet mapped).
+type cursorEntry struct {
+	clientID  uint32
+	surfaceID uint32
+	hx, hy    int32
+	w, h      int32
+	active    bool
 }
 
 // subsurfaceKey scopes subsurface lookups by client and child surface id.

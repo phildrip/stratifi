@@ -460,3 +460,29 @@ func TestShellSubsurfaceOrder(t *testing.T) {
 		t.Errorf("order = [%d %d], want [71 70] (order 0 first)", subs[0].surfaceID, subs[1].surfaceID)
 	}
 }
+
+// TestShellCursorSetAndCleared: the shell tracks the cursor shape a client
+// sets, and drops it when the client clears it or disconnects.
+func TestShellCursorSetAndCleared(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(shellEvent{
+		kind: evCursorSet, clientID: 1, surfaceID: 20,
+		px: 7, py: 4, pw: 24, ph: 24, cursorOn: true,
+	})
+	ce, ok := h.shell.cursors[1]
+	if !ok || !ce.active || ce.surfaceID != 20 || ce.hx != 7 || ce.hy != 4 || ce.w != 24 || ce.h != 24 {
+		t.Fatalf("cursor entry = %+v, want active 24x24 surface 20 hotspot (7,4)", ce)
+	}
+
+	// Client clears its cursor (set_cursor with surface 0).
+	h.shell.applyEvent(shellEvent{kind: evCursorSet, clientID: 1, cursorOn: false})
+	if h.shell.cursors[1].active {
+		t.Error("cursor still active after clear")
+	}
+
+	// Client disappears: its cursor goes too.
+	h.shell.applyEvent(shellEvent{kind: evClientGone, clientID: 1})
+	if _, ok := h.shell.cursors[1]; ok {
+		t.Error("cursor outlived its client")
+	}
+}

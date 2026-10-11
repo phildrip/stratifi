@@ -53,10 +53,17 @@ type Client struct {
 
 	serial atomic.Uint32
 
-	pointerID    uint32
-	closed       atomic.Bool
-	keyboardID   uint32
-	dataDeviceID uint32
+	pointerID uint32
+
+	// Cursor: the surface the client set via wl_pointer.set_cursor (0 =
+	// none, use the compositor default) and its hotspot.
+	cursorSurface uint32
+	cursorHX      int32
+	cursorHY      int32
+	hasCursor     bool
+	closed        atomic.Bool
+	keyboardID    uint32
+	dataDeviceID  uint32
 
 	capture *CaptureState
 }
@@ -131,9 +138,16 @@ func (c *Client) Run() error {
 			}
 		}
 
-		// Flush all generated events back to the client
-		if err := c.conn.Flush(); err != nil {
-			return fmt.Errorf("flush error: %w", err)
+		// Flush all generated events back to the client. The writer is
+		// shared with other goroutines that send to this client (focus-time
+		// clipboard offers, compositor-driven configures), all of which use
+		// it under c.mu; take the same lock so this batch flush cannot race
+		// their writes.
+		c.mu.Lock()
+		flushErr := c.conn.Flush()
+		c.mu.Unlock()
+		if flushErr != nil {
+			return fmt.Errorf("flush error: %w", flushErr)
 		}
 	}
 }
@@ -448,10 +462,18 @@ func (c *Client) HandleWlBufferDestroy(senderID uint32) error {
 
 func (c *Client) HandleWlSurfaceDestroy(senderID uint32) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.unregisterObject(senderID)
 	c.surfaces.mutate(senderID, func(sf *Surface) { sf.Active = false })
+	wasCursor := c.hasCursor && c.cursorSurface == senderID
+	if wasCursor {
+		c.hasCursor = false
+		c.cursorSurface = 0
+	}
+	c.mu.Unlock()
+
+	if wasCursor {
+		c.emitCursor()
+	}
 	return nil
 }
 
@@ -539,6 +561,14 @@ func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	// Subsurfaces: a desync child applies on its own commit; a sync child
 	// applies when its parent commits.
 	c.applySubsurfaceCommit(senderID)
+
+	// A cursor surface's commit may have changed its image or size.
+	c.mu.Lock()
+	isCursor := c.hasCursor && c.cursorSurface == senderID
+	c.mu.Unlock()
+	if isCursor {
+		c.emitCursor()
+	}
 
 	// Notify compositor of surface update outside of c.mu
 	if c.server.onCommit != nil {
@@ -1070,7 +1100,42 @@ func (c *Client) HandleWlSeatRelease(senderID uint32) error {
 // --- WlPointerHandler ---
 
 func (c *Client) HandleWlPointerSetCursor(senderID uint32, serial uint32, surface uint32, hotspotX int32, hotspotY int32) error {
+	c.mu.Lock()
+	if surface == 0 {
+		c.hasCursor = false
+		c.cursorSurface = 0
+	} else {
+		c.hasCursor = true
+		c.cursorSurface = surface
+		c.cursorHX, c.cursorHY = hotspotX, hotspotY
+	}
+	c.mu.Unlock()
+	c.emitCursor()
 	return nil
+}
+
+// emitCursor reports the client's current cursor to the compositor. Fired on
+// set_cursor and whenever the cursor surface commits (its image or size may
+// have changed). Reads state under the lock, calls out unlocked.
+func (c *Client) emitCursor() {
+	c.mu.Lock()
+	active := c.hasCursor
+	surface := c.cursorSurface
+	hx, hy := c.cursorHX, c.cursorHY
+	var w, h int32
+	if active {
+		w, h, active = c.surfaceSize(surface)
+		if !active {
+			// Cursor surface has no buffer yet; report the hotspot so the
+			// compositor can keep it but renders nothing until mapped.
+			w, h = 0, 0
+		}
+	}
+	c.mu.Unlock()
+
+	if c.server.onCursor != nil {
+		c.server.onCursor(c.ID(), surface, hx, hy, w, h, active)
+	}
 }
 
 func (c *Client) HandleWlPointerRelease(senderID uint32) error {

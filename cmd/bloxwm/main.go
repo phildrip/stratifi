@@ -12,6 +12,7 @@ import (
 	"bloxwm/internal/backend/nested"
 	"bloxwm/internal/compositor"
 	"bloxwm/internal/config"
+	"bloxwm/internal/cursor"
 	"bloxwm/internal/input"
 	"bloxwm/internal/layout"
 	"bloxwm/internal/server"
@@ -54,6 +55,7 @@ const (
 	evPopupAdded
 	evSubsurfaceAdded
 	evSubsurfaceGone
+	evCursorSet
 	evWorkspaceSwitch
 	evWorkspaceMove
 	evColumnNext
@@ -68,6 +70,7 @@ type shellEvent struct {
 	popupID         uint32
 	px, py, pw, ph  int32
 	ssOrder         int32
+	cursorOn        bool
 	wsIndex         int
 	clientID        uint32
 	surfaceID       uint32
@@ -495,6 +498,19 @@ func main() {
 		events <- shellEvent{kind: evSubsurfaceGone, clientID: clientID, surfaceID: surfaceID}
 	})
 
+	srv.SetOnCursor(func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool) {
+		events <- shellEvent{
+			kind:      evCursorSet,
+			clientID:  clientID,
+			surfaceID: surfaceID,
+			px:        hx,
+			py:        hy,
+			pw:        w,
+			ph:        h,
+			cursorOn:  active,
+		}
+	})
+
 	srv.SetOnCommit(func(s *server.Surface) {
 		select {
 		case events <- shellEvent{kind: evCommitted, clientID: s.ClientID, surfaceID: s.ID}:
@@ -517,6 +533,16 @@ func main() {
 	// The actor's scene state. It owns windows/surfaceToWin/activeWin;
 	// client lookup and focus requests are injected so the shell is
 	// testable without a live server (see shell_test.go).
+	// Compositor-owned cursor. A reserved client id (0, which real clients
+	// never get) routes the default cursor image through the SAME blit path
+	// as client surfaces, so no renderer change is needed.
+	const cursorClientID uint32 = 0
+	const defaultCursorSurfaceID uint32 = 1
+	defaultCursor, cursorErr := cursor.Load("left_ptr", 24)
+	if cursorErr != nil {
+		fmt.Printf("[!] default cursor unavailable (%v): pointer invisible over chrome\n", cursorErr)
+	}
+
 	shell := newShellState(
 		workspaces, outputBounds, &sceneInfo,
 		func(clientID uint32) shellClient {
@@ -575,9 +601,42 @@ func main() {
 				Popup: true,
 			})
 		}
+		// Cursor is drawn topmost: the hovered client's shape if it set
+		// one, else the compositor default (a themed arrow).
+		if defaultCursor != nil || len(shell.cursors) > 0 {
+			cx, cy := router.CursorPosition()
+			srcClient, srcSurface := cursorClientID, defaultCursorSurfaceID
+			var hx, hy, w, h int32
+			if defaultCursor != nil {
+				hx, hy, w, h = defaultCursor.HotX, defaultCursor.HotY, defaultCursor.W, defaultCursor.H
+			}
+			if hc := router.HoverClient(); hc != 0 {
+				if ce, ok := shell.cursors[hc]; ok && ce.active && ce.w > 0 {
+					srcClient, srcSurface = ce.clientID, ce.surfaceID
+					hx, hy, w, h = ce.hx, ce.hy, ce.w, ce.h
+				}
+			}
+			if w > 0 && h > 0 {
+				dst = append(dst, compositor.SceneWindow{
+					ClientID:  srcClient,
+					SurfaceID: srcSurface,
+					Rect: compositor.Rect{
+						X: int32(cx) - hx, Y: int32(cy) - hy, W: w, H: h,
+					},
+					Popup: true,
+				})
+			}
+		}
 		return dst
 	})
 	frameLoop.SetSnapshot(func(clientID, surfaceID uint32, dst []byte) (int, int32, int32, int32, bool) {
+		if clientID == cursorClientID {
+			if defaultCursor == nil {
+				return 0, 0, 0, 0, false
+			}
+			n := copy(dst, defaultCursor.Pixels)
+			return n, defaultCursor.W, defaultCursor.H, defaultCursor.Stride(), n > 0
+		}
 		client := srv.GetClient(clientID)
 		if client == nil {
 			return 0, 0, 0, 0, false
@@ -585,6 +644,12 @@ func main() {
 		return client.SnapshotSurfaceBuffer(surfaceID, dst)
 	})
 	frameLoop.SetInfo(func(clientID, surfaceID uint32) (int32, int32, int32, bool) {
+		if clientID == cursorClientID {
+			if defaultCursor == nil {
+				return 0, 0, 0, false
+			}
+			return defaultCursor.W, defaultCursor.H, defaultCursor.Stride(), true
+		}
 		client := srv.GetClient(clientID)
 		if client == nil {
 			return 0, 0, 0, false

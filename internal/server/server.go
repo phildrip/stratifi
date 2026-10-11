@@ -23,6 +23,7 @@ type Server struct {
 	onPopupMapped    func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
 	onSubsurface     func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)
 	onSubsurfaceGone func(clientID, surfaceID uint32)
+	onCursor         func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)
 	onClientDestroy  func(clientID uint32)
 	closed           atomic.Bool
 
@@ -152,6 +153,14 @@ func (s *Server) SetOnSubsurface(fn func(clientID, surfaceID, parentSurfaceID ui
 // so the shell can drop its scene entry.
 func (s *Server) SetOnSubsurfaceGone(fn func(clientID, surfaceID uint32)) {
 	s.onSubsurfaceGone = fn
+}
+
+// SetOnCursor registers a callback for the client's pointer cursor: the
+// wl_surface id it set via wl_pointer.set_cursor (0 = none, use the
+// compositor default), the hotspot, and the current image size. active is
+// false when the client cleared its cursor or the surface is unmapped.
+func (s *Server) SetOnCursor(fn func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)) {
+	s.onCursor = fn
 }
 
 // Run accepts incoming client connections until closed.

@@ -116,3 +116,34 @@ func BenchmarkRouterProcessEvent(b *testing.B) {
 		router.ProcessEvent(ev)
 	}
 }
+
+// TestRouterCursorStateIsReadable: the compositor actor reads the cursor
+// position and hovered client from another goroutine, so both must be
+// exposed race-free.
+func TestRouterCursorStateIsReadable(t *testing.T) {
+	lookup := func(x, y float64) (WindowInfo, bool) {
+		if x >= 100 && x < 500 && y >= 100 && y < 400 {
+			return WindowInfo{WinID: 42, ClientID: 7, SurfaceID: 10,
+				Rect: layout.Rect{X: 100, Y: 100, W: 400, H: 300}}, true
+		}
+		return WindowInfo{}, false
+	}
+	router := NewRouter(lookup, func(uint32) *server.Client { return nil }, nil)
+
+	router.HandlePointerMotion(0, 250, 260)
+	if x, y := router.CursorPosition(); x != 250 || y != 260 {
+		t.Errorf("cursor = (%.0f,%.0f), want (250,260)", x, y)
+	}
+	if got := router.HoverClient(); got != 7 {
+		t.Errorf("hovered client = %d, want 7", got)
+	}
+
+	// Moving off the window clears the hovered client but keeps position.
+	router.HandlePointerMotion(0, 10, 10)
+	if got := router.HoverClient(); got != 0 {
+		t.Errorf("hovered client = %d, want 0 after leaving", got)
+	}
+	if x, y := router.CursorPosition(); x != 10 || y != 10 {
+		t.Errorf("cursor = (%.0f,%.0f), want (10,10)", x, y)
+	}
+}

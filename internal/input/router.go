@@ -1,6 +1,9 @@
 package input
 
 import (
+	"math"
+	"sync/atomic"
+
 	"bloxwm/internal/layout"
 	"bloxwm/internal/server"
 )
@@ -20,8 +23,13 @@ type WindowInfo struct {
 // goroutine (ProcessEvent / SetFocus from there); cross-goroutine focus
 // changes queue through focusReq.
 type Router struct {
-	cursorX float64
-	cursorY float64
+	// Cursor position and the hovered client are read by the compositor
+	// actor goroutine every frame while being written on the input
+	// consumer goroutine: store them atomically (float64 bits in a
+	// uint64) so the read is race-free.
+	cursorX atomic.Uint64
+	cursorY atomic.Uint64
+	hovered atomic.Uint32
 
 	hoverWinID     layout.WindowID
 	hoverClientID  uint32
@@ -68,8 +76,18 @@ func NewRouter(
 
 // CursorPosition returns the current global cursor coordinates.
 func (r *Router) CursorPosition() (float64, float64) {
-	return r.cursorX, r.cursorY
+	return math.Float64frombits(r.cursorX.Load()), math.Float64frombits(r.cursorY.Load())
 }
+
+// setCursor stores the cursor position atomically.
+func (r *Router) setCursor(x, y float64) {
+	r.cursorX.Store(math.Float64bits(x))
+	r.cursorY.Store(math.Float64bits(y))
+}
+
+// HoverClient returns the client id currently under the pointer (0 = none).
+// The actor reads it to pick the cursor image the hovered client set.
+func (r *Router) HoverClient() uint32 { return r.hovered.Load() }
 
 // FocusWindowID returns the currently focused window ID.
 func (r *Router) FocusWindowID() layout.WindowID {
@@ -129,7 +147,8 @@ func (r *Router) ProcessEvent(ev InputEvent) {
 
 	switch ev.Type {
 	case EventPointerMotion:
-		r.HandlePointerMotion(timeMs, r.cursorX+ev.X, r.cursorY+ev.Y)
+		cx, cy := r.CursorPosition()
+		r.HandlePointerMotion(timeMs, cx+ev.X, cy+ev.Y)
 	case EventPointerMotionAbsolute:
 		r.HandlePointerMotion(timeMs, ev.X, ev.Y)
 	case EventPointerButton:
@@ -160,8 +179,7 @@ func (r *Router) RequestFocus(winID layout.WindowID, clientID, surfaceID, toplev
 
 // HandlePointerMotion processes absolute pointer position changes.
 func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
-	r.cursorX = x
-	r.cursorY = y
+	r.setCursor(x, y)
 
 	info, hit := r.lookupWindow(x, y)
 
@@ -178,6 +196,7 @@ func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 			r.hoverWinID = info.WinID
 			r.hoverClientID = info.ClientID
 			r.hoverSurfaceID = info.SurfaceID
+			r.hovered.Store(info.ClientID)
 
 			newClient := r.getClient(info.ClientID)
 			if newClient != nil {
@@ -189,6 +208,7 @@ func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 			r.hoverWinID = 0
 			r.hoverClientID = 0
 			r.hoverSurfaceID = 0
+			r.hovered.Store(0)
 		}
 		return
 	}
@@ -207,7 +227,8 @@ func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 // HandlePointerButton processes button press and release events.
 func (r *Router) HandlePointerButton(timeMs uint32, button, state uint32) {
 	if state == ButtonStatePressed {
-		info, hit := r.lookupWindow(r.cursorX, r.cursorY)
+		cx, cy := r.CursorPosition()
+		info, hit := r.lookupWindow(cx, cy)
 		if hit && info.WinID != r.focusWinID {
 			r.SetFocus(info.WinID, info.ClientID, info.SurfaceID, info.ToplevelID)
 		}
