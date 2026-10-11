@@ -26,7 +26,6 @@ func startStubBus(t *testing.T) *stubBus {
 	t.Cleanup(func() { _ = ln.Close() })
 
 	sb := &stubBus{ln: ln, gotCalls: make(chan []byte, 8)}
-	t.Cleanup(func() { close(sb.gotCalls) })
 	go sb.serve()
 	return sb
 }

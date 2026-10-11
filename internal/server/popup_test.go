@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,10 +29,13 @@ func TestXdgPopupLifecycle(t *testing.T) {
 		clientID, popupID, surfaceID uint32
 		fired                        bool
 	}
+	var mappedMu sync.Mutex // the callback runs on the server goroutine
 	srv.SetOnPopupMapped(func(clientID, popupID, surfaceID, parentXdg uint32, x, y, w, h int32) {
+		mappedMu.Lock()
 		mapped.fired = true
 		mapped.clientID, mapped.popupID, mapped.surfaceID = clientID, popupID, surfaceID
 		mapped.x, mapped.y, mapped.w, mapped.h = x, y, w, h
+		mappedMu.Unlock()
 	})
 	srv.SetOnToplevel(func(c *Client, _ *XdgToplevel, xdgSurfaceID uint32) {}) // suppress default configure
 
@@ -158,9 +162,17 @@ func TestXdgPopupLifecycle(t *testing.T) {
 		t.Errorf("configure = (%d,%d %dx%d), want (80,28 100x32)", confX, confY, confW, confH)
 	}
 	deadline = time.Now().Add(time.Second)
-	for time.Now().Before(deadline) && !mapped.fired {
+	for {
+		mappedMu.Lock()
+		fired := mapped.fired
+		mappedMu.Unlock()
+		if fired || time.Now().After(deadline) {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
+	mappedMu.Lock()
+	defer mappedMu.Unlock()
 	if !mapped.fired {
 		t.Fatal("onPopupMapped did not fire")
 	}

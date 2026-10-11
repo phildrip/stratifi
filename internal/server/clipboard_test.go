@@ -129,17 +129,18 @@ func TestClipboardCopyPaste(t *testing.T) {
 		_ = w.WriteUint32(3)
 	})
 	sendMsg(t, fdR, &w, 3, 1, func() { _ = w.WriteUint32(4); _ = w.WriteUint32(5) })
-	// The server processes messages on its own goroutine: wait until the
-	// data device registration lands before the focus handshake.
+	// The server processes messages on its own goroutine: wait for the data
+	// device to register, then take the offer. GiveClipboardOffer is
+	// synchronized (locks the client) and returns 0 until registration, so
+	// polling it is race-free and sends nothing until it succeeds.
+	var offer uint32
 	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && reader.dataDeviceID == 0 {
+	for time.Now().Before(deadline) {
+		if offer = reader.GiveClipboardOffer(); offer != 0 {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if reader.dataDeviceID == 0 {
-		t.Fatal("reader data device never registered")
-	}
-	// Simulate focus handshake: the compositor hands the reader an offer.
-	offer := reader.GiveClipboardOffer()
 	if offer == 0 {
 		t.Fatal("no clipboard offer given to the pasting client")
 	}
