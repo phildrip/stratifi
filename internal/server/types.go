@@ -37,6 +37,8 @@ const (
 	ObjLayerSurface
 	ObjXdgOutputManager
 	ObjXdgOutput
+	ObjIdleNotifier
+	ObjIdleNotification
 
 	// Screen capture protocol objects (ext-image-copy-capture-v1).
 	ObjCaptureSourceManagerOutput

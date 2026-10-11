@@ -488,6 +488,7 @@ func main() {
 				time.Sleep(1 * time.Millisecond)
 				continue
 			}
+			srv.NotifyInputActivity() // feed idle timers (ext-idle-notify)
 			for i := 0; i < n; i++ {
 				router.ProcessEvent(batch[i])
 			}

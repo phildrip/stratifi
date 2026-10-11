@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"stratifi/internal/wire"
 )
@@ -15,16 +16,22 @@ type Server struct {
 	clientMu   sync.RWMutex
 	nextClient atomic.Uint32
 
-	onCommit           func(s *Surface)
-	onToplevel         func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
-	onToplevelMeta     func(clientID, toplevelID uint32, title, appID string)
-	selectionMu        sync.Mutex
-	selection          Selection // compositor clipboard: last set_selection wins
-	onPopup            func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
-	onPopupMapped      func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
-	onSubsurface       func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)
-	onSubsurfaceGone   func(clientID, surfaceID uint32)
-	onCursor           func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)
+	onCommit         func(s *Surface)
+	onToplevel       func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	onToplevelMeta   func(clientID, toplevelID uint32, title, appID string)
+	selectionMu      sync.Mutex
+	selection        Selection // compositor clipboard: last set_selection wins
+	onPopup          func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
+	onPopupMapped    func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
+	onSubsurface     func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)
+	onSubsurfaceGone func(clientID, surfaceID uint32)
+	onCursor         func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)
+
+	// Idle notifications (ext-idle-notify-v1): timers over global input
+	// activity, so idle daemons can lock/blank the session.
+	idleMu             sync.Mutex
+	idleNotifs         []idleNotif
+	lastActivity       time.Time
 	onLayerSurface     func(info LayerSurfaceInfo)
 	onLayerSurfaceGone func(clientID, surfaceID uint32)
 	onClientDestroy    func(clientID uint32)
@@ -66,11 +73,13 @@ func NewServer(socketName string) (*Server, error) {
 		return nil, fmt.Errorf("failed to create wire server: %w", err)
 	}
 
-	return &Server{
+	s := &Server{
 		wireServer: ws,
 		clients:    make(map[uint32]*Client),
 		keymapFD:   -1,
-	}, nil
+	}
+	go s.runIdleTimers()
+	return s, nil
 }
 
 // SetKeymap configures the shared keymap FD and size distributed to clients via wl_keyboard.
@@ -177,6 +186,105 @@ func (s *Server) SetOnLayerSurfaceGone(fn func(clientID, surfaceID uint32)) {
 	s.onLayerSurfaceGone = fn
 }
 
+type idleNotif struct {
+	client   *Client
+	objectID uint32
+	timeout  time.Duration
+	idled    bool
+}
+
+// NotifyInputActivity resets the idle timers and immediately reports resumed
+// to any notification that had fired — resumed is a consequence of activity,
+// so it cannot wait for the next poll (which may land past the timeout). The
+// compositor calls this on any input event.
+func (s *Server) NotifyInputActivity() {
+	s.idleMu.Lock()
+	s.lastActivity = time.Now()
+	type fire struct {
+		c  *Client
+		id uint32
+	}
+	var resumed []fire
+	for i := range s.idleNotifs {
+		if s.idleNotifs[i].idled {
+			s.idleNotifs[i].idled = false
+			resumed = append(resumed, fire{s.idleNotifs[i].client, s.idleNotifs[i].objectID})
+		}
+	}
+	s.idleMu.Unlock()
+	for _, f := range resumed {
+		f.c.sendIdleNotification(f.id, false)
+	}
+}
+
+func (s *Server) addIdleNotif(c *Client, objectID uint32, timeoutMs uint32) {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	if s.lastActivity.IsZero() {
+		s.lastActivity = time.Now()
+	}
+	s.idleNotifs = append(s.idleNotifs, idleNotif{
+		client: c, objectID: objectID, timeout: time.Duration(timeoutMs) * time.Millisecond,
+	})
+}
+
+func (s *Server) removeIdleNotif(objectID uint32) {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	out := s.idleNotifs[:0]
+	for _, n := range s.idleNotifs {
+		if n.objectID != objectID {
+			out = append(out, n)
+		}
+	}
+	s.idleNotifs = out
+}
+
+// dropClientIdle removes a disconnecting client's notifications (and clears
+// any it owns) so the ticker never sends to a dead connection.
+func (s *Server) dropClientIdle(clientID uint32) {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	out := s.idleNotifs[:0]
+	for _, n := range s.idleNotifs {
+		if n.client.ID() != clientID {
+			out = append(out, n)
+		}
+	}
+	s.idleNotifs = out
+}
+
+// runIdleTimers fires idled/resumed on registered notifications. Started once
+// per server; exits when the server closes.
+func (s *Server) runIdleTimers() {
+	t := time.NewTicker(200 * time.Millisecond)
+	defer t.Stop()
+	for range t.C {
+		if s.closed.Load() {
+			return
+		}
+		s.idleMu.Lock()
+		idleFor := time.Since(s.lastActivity)
+		type fire struct {
+			c     *Client
+			id    uint32
+			idled bool
+		}
+		var fires []fire
+		for i := range s.idleNotifs {
+			n := &s.idleNotifs[i]
+			if !n.idled && idleFor >= n.timeout {
+				n.idled = true
+				fires = append(fires, fire{n.client, n.objectID, true})
+			}
+		}
+		s.idleMu.Unlock()
+		for _, f := range fires {
+			f.c.sendIdleNotification(f.id, f.idled)
+		}
+	}
+}
+
 // SetOnCursor registers a callback for the client's pointer cursor: the
 // wl_surface id it set via wl_pointer.set_cursor (0 = none, use the
 // compositor default), the hotspot, and the current image size. active is
@@ -210,6 +318,7 @@ func (s *Server) Run() error {
 			s.clientMu.Lock()
 			delete(s.clients, id)
 			s.clientMu.Unlock()
+			s.dropClientIdle(id)
 			if s.onClientDestroy != nil {
 				s.onClientDestroy(id)
 			}

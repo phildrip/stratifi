@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"stratifi/internal/protocol/capture"
+	"stratifi/internal/protocol/idlenotify"
 	"stratifi/internal/protocol/layershell"
 	"stratifi/internal/protocol/wayland"
 	"stratifi/internal/protocol/xdgoutput"
@@ -26,6 +27,7 @@ const (
 	GlobalDataDeviceManager uint32 = 7
 	GlobalLayerShell        uint32 = 10
 	GlobalXdgOutputManager  uint32 = 11
+	GlobalIdleNotifier      uint32 = 12
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -195,6 +197,12 @@ var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) erro
 	ObjXdgOutput: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return xdgoutput.DispatchZxdgOutputV1(r, h, c)
 	},
+	ObjIdleNotifier: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return idlenotify.DispatchExtIdleNotifierV1(r, h, c)
+	},
+	ObjIdleNotification: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return idlenotify.DispatchExtIdleNotificationV1(r, h, c)
+	},
 	ObjSubsurface: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubsurface(r, h, c) },
 	ObjDataDeviceManager: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return wayland.DispatchWlDataDeviceManager(r, h, c)
@@ -290,6 +298,9 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalXdgOutputManager, "zxdg_output_manager_v1", 3); err != nil {
 		return err
 	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalIdleNotifier, "ext_idle_notifier_v1", 2); err != nil {
+		return err
+	}
 	return wayland.SendWlRegistryGlobal(w, registryID, GlobalDataDeviceManager, "wl_data_device_manager", 3)
 }
 
@@ -333,6 +344,8 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		c.registerObject(id, ObjLayerShell)
 	case GlobalXdgOutputManager:
 		c.registerObject(id, ObjXdgOutputManager)
+	case GlobalIdleNotifier:
+		c.registerObject(id, ObjIdleNotifier)
 	case GlobalDataDeviceManager:
 		c.registerObject(id, ObjDataDeviceManager)
 	case GlobalOutputImageCaptureSourceManager:
@@ -1639,6 +1652,54 @@ func (c *Client) HandleZwlrLayerSurfaceV1Destroy(senderID uint32) error {
 		c.server.onLayerSurfaceGone(c.ID(), surfaceID)
 	}
 	return nil
+}
+
+// --- ExtIdleNotifierV1Handler / ExtIdleNotificationV1Handler ---
+
+func (c *Client) HandleExtIdleNotifierV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleExtIdleNotifierV1GetIdleNotification(senderID, id, timeout, seat uint32) error {
+	c.mu.Lock()
+	c.registerObject(id, ObjIdleNotification)
+	c.mu.Unlock()
+	c.server.addIdleNotif(c, id, timeout)
+	return nil
+}
+
+func (c *Client) HandleExtIdleNotifierV1GetInputIdleNotification(senderID, id, timeout, seat uint32) error {
+	// The input-idle variant ignores idle inhibitors; we have none, so it is
+	// the same as the plain notification.
+	return c.HandleExtIdleNotifierV1GetIdleNotification(senderID, id, timeout, seat)
+}
+
+func (c *Client) HandleExtIdleNotificationV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	c.server.removeIdleNotif(senderID)
+	return nil
+}
+
+// sendIdleNotification delivers idled/resumed to the client owning a
+// notification.
+func (c *Client) sendIdleNotification(objectID uint32, idled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	if idled {
+		_ = idlenotify.SendExtIdleNotificationV1Idled(w, objectID)
+	} else {
+		_ = idlenotify.SendExtIdleNotificationV1Resumed(w, objectID)
+	}
+	_ = c.conn.Flush()
 }
 
 // --- ZxdgOutputManagerV1Handler / ZxdgOutputV1Handler ---
