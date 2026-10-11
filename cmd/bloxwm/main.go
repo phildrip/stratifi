@@ -15,6 +15,7 @@ import (
 	"bloxwm/internal/input"
 	"bloxwm/internal/layout"
 	"bloxwm/internal/server"
+	"bloxwm/internal/session"
 	"golang.org/x/sys/unix"
 )
 
@@ -222,6 +223,15 @@ func main() {
 		case "spawn":
 			if len(args) == 0 {
 				return
+			}
+			// When supervised, ask the session supervisor to spawn: the
+			// child becomes ITS child, so a compositor restart does not
+			// kill it. Otherwise exec directly (standalone behaviour).
+			if sock := os.Getenv("BLOXWM_SESSION_SOCKET"); sock != "" {
+				if _, err := session.SendSpawn(sock, args); err == nil {
+					return
+				}
+				fmt.Fprintf(os.Stderr, "[-] session spawn failed; exec'ing directly\n")
 			}
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
