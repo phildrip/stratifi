@@ -48,7 +48,7 @@ type WindowTable struct {
 Never allocate slices inside event loops:
 
 ```go
-// Pre-allocated ring buffer for libinput events
+// Pre-allocated ring buffer for input events (evdev/nested)
 type InputRingBuffer struct {
     Events [1024]InputEvent
     Head   uint32
