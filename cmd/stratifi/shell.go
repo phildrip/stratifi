@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"stratifi/internal/input"
+	"stratifi/internal/ipc"
 	"stratifi/internal/layout"
 )
 
@@ -53,6 +54,7 @@ type shellState struct {
 	layers map[layerKey]*layerEntry
 
 	sceneInfo    *atomic.Pointer[[]input.WindowInfo]
+	launcher     *atomic.Pointer[[]ipc.Window]
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
 }
@@ -61,6 +63,7 @@ func newShellState(
 	workspaces *layout.Workspaces,
 	output layout.Rect,
 	sceneInfo *atomic.Pointer[[]input.WindowInfo],
+	launcher *atomic.Pointer[[]ipc.Window],
 	clientOf func(clientID uint32) shellClient,
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32),
 ) *shellState {
@@ -75,6 +78,7 @@ func newShellState(
 		cursors:      make(map[uint32]cursorEntry),
 		layers:       make(map[layerKey]*layerEntry),
 		sceneInfo:    sceneInfo,
+		launcher:     launcher,
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
 	}
@@ -130,6 +134,21 @@ func (s *shellState) publishScene() {
 		list = append(list, input.WindowInfo{ClientID: p.clientID, SurfaceID: p.surfaceID, Rect: p.rect})
 	}
 	s.sceneInfo.Store(&list)
+	s.publishLauncher()
+}
+
+// publishLauncher stores a lock-free window list (id + labels) for the IPC
+// launcher. All windows are listed, across workspaces, so the switcher can
+// jump anywhere; a window on another workspace is switched to on focus.
+func (s *shellState) publishLauncher() {
+	if s.launcher == nil {
+		return
+	}
+	list := make([]ipc.Window, 0, len(s.windows))
+	for _, m := range s.windows {
+		list = append(list, ipc.Window{WinID: uint32(m.WinID), AppID: m.AppID, Title: m.Title})
+	}
+	s.launcher.Store(&list)
 }
 
 // focusActive points keyboard focus at the active window. The router owns
@@ -416,6 +435,29 @@ func (s *shellState) applyEvent(ev shellEvent) {
 
 	case evFullscreen:
 		s.toggleFullscreen()
+
+	case evWindowMeta:
+		// Titles/app-ids arrive after the window is mapped: update the
+		// mapping and refresh the launcher list.
+		for _, m := range s.windows {
+			if m.ToplevelID == ev.toplevelID && m.ClientID == ev.clientID {
+				m.Title = ev.title
+				m.AppID = ev.appID
+			}
+		}
+		s.publishLauncher()
+
+	case evFocusWindow:
+		if _, ok := s.windows[ev.winID]; !ok {
+			return
+		}
+		// Jump to the window's workspace if it lives elsewhere.
+		if ws := s.engine.WorkspaceOf(ev.winID); ws != 0 && ws != uint32(s.workspaces.ActiveID()) {
+			s.workspaces.SwitchTo(layout.WorkspaceID(ws))
+		}
+		s.activeWin = ev.winID
+		s.relayoutAll()
+		s.focusActive()
 
 	case evFocusWindowUp:
 		s.focusWithinColumn(-1)

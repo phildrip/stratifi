@@ -15,6 +15,7 @@ import (
 	"stratifi/internal/config"
 	"stratifi/internal/cursor"
 	"stratifi/internal/input"
+	"stratifi/internal/ipc"
 	"stratifi/internal/layout"
 	"stratifi/internal/server"
 	"stratifi/internal/session"
@@ -59,6 +60,8 @@ const (
 	evLayerAdded
 	evLayerGone
 	evFullscreen
+	evFocusWindow
+	evWindowMeta
 	evFocusWindowUp
 	evFocusWindowDown
 	evMoveWindowUp
@@ -95,6 +98,25 @@ type shellEvent struct {
 	winID           layout.WindowID
 	title           string
 	appID           string
+}
+
+// launcherIPC adapts the lock-free window snapshot and the actor's event
+// channel to the ipc.Handler interface.
+type launcherIPC struct {
+	list  *atomic.Pointer[[]ipc.Window]
+	focus func(winID uint32)
+}
+
+func (l launcherIPC) Windows() []ipc.Window {
+	if p := l.list.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+func (l launcherIPC) Focus(winID uint32) bool {
+	l.focus(winID)
+	return true
 }
 
 func main() {
@@ -162,6 +184,7 @@ func main() {
 	// of touching owner state directly; focus moves queue through its own
 	// channel.
 	var sceneInfo atomic.Pointer[[]input.WindowInfo]
+	var launcherList atomic.Pointer[[]ipc.Window]
 	var srv *server.Server
 	var frameLoop *compositor.FrameLoop
 
@@ -497,6 +520,16 @@ func main() {
 		}
 	})
 
+	srv.SetOnToplevelMeta(func(clientID, toplevelID uint32, title, appID string) {
+		events <- shellEvent{
+			kind:       evWindowMeta,
+			clientID:   clientID,
+			toplevelID: toplevelID,
+			title:      title,
+			appID:      appID,
+		}
+	})
+
 	srv.SetOnPopupMapped(func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32) {
 		events <- shellEvent{
 			kind:         evPopupAdded,
@@ -595,7 +628,7 @@ func main() {
 	}
 
 	shell := newShellState(
-		workspaces, outputBounds, &sceneInfo,
+		workspaces, outputBounds, &sceneInfo, &launcherList,
 		func(clientID uint32) shellClient {
 			if srv == nil {
 				return nil
@@ -738,6 +771,23 @@ func main() {
 		}
 		return client.SurfaceBufferInfo(surfaceID)
 	})
+
+	// Control channel for out-of-process helpers (the launcher). Windows is
+	// a lock-free snapshot the actor publishes; Focus queues onto the actor.
+	ipcStop, err := ipc.Serve("", launcherIPC{
+		list: &launcherList,
+		focus: func(winID uint32) {
+			select {
+			case events <- shellEvent{kind: evFocusWindow, winID: layout.WindowID(winID)}:
+			default:
+			}
+		},
+	})
+	if err != nil {
+		fmt.Printf("[!] launcher IPC unavailable: %v\n", err)
+	} else {
+		defer ipcStop()
+	}
 
 	// Server run loop.
 	go func() {

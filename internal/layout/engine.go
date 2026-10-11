@@ -230,6 +230,16 @@ func (e *Engine) WindowPos(id WindowID) (col, row int, ok bool) {
 	return 0, 0, false
 }
 
+// WorkspaceOf returns the workspace tag of the column holding id, or 0 if
+// the window is unknown.
+func (e *Engine) WorkspaceOf(id WindowID) uint32 {
+	col, _, ok := e.WindowPos(id)
+	if !ok {
+		return 0
+	}
+	return e.Columns[col].Workspace
+}
+
 // MoveWindowWithinColumn reorders id by delta rows inside its column,
 // clamped to the column bounds. Returns false when id is unknown or the
 // move would leave the column. Height weights follow the reorder so the

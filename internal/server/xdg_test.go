@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,5 +182,104 @@ func TestXdgShellToplevelLifecycle(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatalf("timeout waiting for committed surface")
+	}
+}
+
+// TestToplevelMetaCallback: set_title/set_app_id after mapping reach the
+// compositor via onToplevelMeta (needed for window titles in the launcher).
+func TestToplevelMetaCallback(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "wayland-meta-0")
+	srv, err := NewServer(sockPath)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var titles []string
+	srv.SetOnToplevelMeta(func(clientID, toplevelID uint32, title, appID string) {
+		mu.Lock()
+		titles = append(titles, title+"|"+appID)
+		mu.Unlock()
+	})
+	srv.SetOnToplevel(func(c *Client, _ *XdgToplevel, xdgSurfaceID uint32) {})
+	go func() { _ = srv.Run() }()
+	time.Sleep(30 * time.Millisecond)
+
+	netConn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer netConn.Close()
+	rawConn, _ := netConn.(*net.UnixConn).SyscallConn()
+	var fd int
+	_ = rawConn.Control(func(f uintptr) { fd = int(f) })
+
+	var w wire.Writer
+	var sb [1024]byte
+	var sfds [4]int
+	w.Init(sb[:], sfds[:])
+	send := func(msgs ...func()) {
+		w.Reset()
+		for _, m := range msgs {
+			m()
+		}
+		if err := unix.Sendmsg(fd, w.Bytes(), nil, nil, 0); err != nil {
+			t.Fatalf("Sendmsg: %v", err)
+		}
+	}
+	msg := func(obj uint32, op uint16, fill func()) func() {
+		return func() {
+			s := w.BeginMessage(obj, op)
+			fill()
+			if err := w.EndMessage(s, obj, op); err != nil {
+				t.Fatalf("EndMessage: %v", err)
+			}
+		}
+	}
+	const compID, wmID = 5, 6
+	const surf, xdgSurf, top = 10, 11, 12
+	send(
+		msg(1, 1, func() { _ = w.WriteUint32(2) }),
+		msg(2, 0, func() {
+			_ = w.WriteUint32(GlobalCompositor)
+			_ = w.WriteString("wl_compositor")
+			_ = w.WriteUint32(4)
+			_ = w.WriteUint32(compID)
+		}),
+		msg(2, 0, func() {
+			_ = w.WriteUint32(GlobalXdgWmBase)
+			_ = w.WriteString("xdg_wm_base")
+			_ = w.WriteUint32(3)
+			_ = w.WriteUint32(wmID)
+		}),
+		msg(compID, 0, func() { _ = w.WriteUint32(surf) }),
+		msg(wmID, 2, func() { _ = w.WriteUint32(xdgSurf); _ = w.WriteUint32(surf) }),
+		msg(xdgSurf, 1, func() { _ = w.WriteUint32(top) }),
+	)
+	for i := 0; i < 200 && srv.GetClient(1) == nil; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	// xdg_toplevel.set_title (op 2) and set_app_id (op 3).
+	send(
+		msg(top, 2, func() { _ = w.WriteString("~/git/stratifi") }),
+		msg(top, 3, func() { _ = w.WriteString("foot") }),
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(titles)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	got := append([]string(nil), titles...)
+	mu.Unlock()
+	if len(got) == 0 || got[len(got)-1] != "~/git/stratifi|foot" {
+		t.Errorf("meta = %v, want last = ~/git/stratifi|foot", got)
 	}
 }

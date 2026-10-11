@@ -17,6 +17,7 @@ type Server struct {
 
 	onCommit           func(s *Surface)
 	onToplevel         func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	onToplevelMeta     func(clientID, toplevelID uint32, title, appID string)
 	selectionMu        sync.Mutex
 	selection          Selection // compositor clipboard: last set_selection wins
 	onPopup            func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
@@ -91,6 +92,12 @@ func (s *Server) SetOnCommit(fn func(s *Surface)) {
 // SetOnToplevel registers a callback invoked whenever a client requests a toplevel window.
 func (s *Server) SetOnToplevel(fn func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)) {
 	s.onToplevel = fn
+}
+
+// SetOnToplevelMeta registers a callback for title/app-id changes after a
+// toplevel is created (clients set them a moment after mapping).
+func (s *Server) SetOnToplevelMeta(fn func(clientID, toplevelID uint32, title, appID string)) {
+	s.onToplevelMeta = fn
 }
 
 // SetOnClientDestroy registers a callback invoked when a client disconnects.

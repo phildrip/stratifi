@@ -1006,25 +1006,40 @@ func (c *Client) HandleXdgToplevelSetParent(senderID uint32, parent uint32) erro
 
 func (c *Client) HandleXdgToplevelSetTitle(senderID uint32, title string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) {
 		if x.Active {
 			x.Title = title
 		}
 	})
+	c.mu.Unlock()
+	c.notifyToplevelMeta(senderID)
 	return nil
+}
+
+// notifyToplevelMeta reports a toplevel's current title/app-id to the shell
+// (clients set them a moment after the window is created).
+func (c *Client) notifyToplevelMeta(toplevelID uint32) {
+	c.mu.Lock()
+	top, ok := c.xdgToplevels.get(toplevelID)
+	var title, appID string
+	if ok {
+		title, appID = top.Title, top.AppID
+	}
+	c.mu.Unlock()
+	if ok && c.server.onToplevelMeta != nil {
+		c.server.onToplevelMeta(c.ID(), toplevelID, title, appID)
+	}
 }
 
 func (c *Client) HandleXdgToplevelSetAppId(senderID uint32, appId string) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	c.xdgToplevels.mutate(senderID, func(x *XdgToplevel) {
 		if x.Active {
 			x.AppID = appId
 		}
 	})
+	c.mu.Unlock()
+	c.notifyToplevelMeta(senderID)
 	return nil
 }
 

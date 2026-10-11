@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"stratifi/internal/input"
+	"stratifi/internal/ipc"
 	"stratifi/internal/layout"
 )
 
@@ -33,6 +34,7 @@ type shellHarness struct {
 	focus     *[]focusCall
 	client    *fakeClient
 	sceneInfo *atomic.Pointer[[]input.WindowInfo]
+	launcher  *atomic.Pointer[[]ipc.Window]
 }
 
 func newShellHarness() *shellHarness {
@@ -41,9 +43,10 @@ func newShellHarness() *shellHarness {
 		focus:     &[]focusCall{},
 		client:    &fakeClient{surfaceID: 3},
 		sceneInfo: &atomic.Pointer[[]input.WindowInfo]{},
+		launcher:  &atomic.Pointer[[]ipc.Window]{},
 	}
 	h.shell = newShellState(
-		workspaces, layout.Rect{X: 12, Y: 12, W: 1256, H: 696}, h.sceneInfo,
+		workspaces, layout.Rect{X: 12, Y: 12, W: 1256, H: 696}, h.sceneInfo, h.launcher,
 		func(uint32) shellClient { return h.client },
 		func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32) {
 			*h.focus = append(*h.focus, focusCall{winID, clientID, surfaceID})
@@ -675,5 +678,67 @@ func TestShellLayerReservesTilingSpace(t *testing.T) {
 	}
 	if got := h.shell.windows[h.shell.activeWin].Rect; got != full {
 		t.Errorf("after removing bar: window rect %+v, want %+v", got, full)
+	}
+}
+
+// TestShellPublishesLauncherList: the IPC launcher reads a lock-free window
+// list (id + app id + title) published by the actor.
+func TestShellPublishesLauncherList(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(shellEvent{
+		kind: evWindowAdded, clientID: 1, xdgSurfaceID: 16, toplevelID: 17,
+		title: "~/git/stratifi", appID: "foot",
+	})
+	list := h.launcher.Load()
+	if list == nil || len(*list) != 1 {
+		t.Fatalf("launcher list = %v, want 1 entry", list)
+	}
+	w := (*list)[0]
+	if w.AppID != "foot" || w.Title != "~/git/stratifi" || w.WinID == 0 {
+		t.Errorf("entry = %+v, want foot / ~/git/stratifi", w)
+	}
+}
+
+// TestShellFocusWindowSwitchesWorkspace: focusing a window on another
+// workspace brings that workspace forward first.
+func TestShellFocusWindowSwitchesWorkspace(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	w0 := h.shell.activeWin
+	// Move w0 to workspace 2, then add w1 on workspace 1 (now active).
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceMove, wsIndex: 2})
+	h.shell.applyEvent(windowAddedEvent(1, 18, 19))
+	w1 := h.shell.activeWin
+	if w1 == w0 {
+		t.Fatal("second window did not become active")
+	}
+	// Focus the window that lives on workspace 2.
+	h.shell.applyEvent(shellEvent{kind: evFocusWindow, winID: w0})
+	if h.shell.activeWin != w0 {
+		t.Errorf("active window = %d, want %d", h.shell.activeWin, w0)
+	}
+	if !h.shell.workspaces.Visible(w0) {
+		t.Error("focus did not switch to the window's workspace")
+	}
+	if h.shell.workspaces.Visible(w1) {
+		t.Error("workspace 1 should no longer be visible")
+	}
+}
+
+// TestShellUpdatesWindowTitle: set_title/set_app_id after mapping reach the
+// mapping and the launcher list (clients set them a moment after mapping).
+func TestShellUpdatesWindowTitle(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	h.shell.applyEvent(shellEvent{
+		kind: evWindowMeta, clientID: 1, toplevelID: 17, title: "~/git/stratifi", appID: "foot",
+	})
+	m := h.shell.windows[h.shell.activeWin]
+	if m.Title != "~/git/stratifi" || m.AppID != "foot" {
+		t.Errorf("mapping = %q/%q, want title/appID updated", m.Title, m.AppID)
+	}
+	list := h.launcher.Load()
+	if list == nil || len(*list) != 1 || (*list)[0].Title != "~/git/stratifi" {
+		t.Errorf("launcher list = %v, want the updated title", list)
 	}
 }
