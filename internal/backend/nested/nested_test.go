@@ -12,7 +12,7 @@ import (
 
 // TestRunEventLoopNotifiesOnParentDisconnect: when the parent's socket ends
 // without an xdg_toplevel.close, the event loop must exit AND tell the
-// caller — otherwise bloxwm keeps running with a dead parent.
+// caller — otherwise stratifi keeps running with a dead parent.
 func TestRunEventLoopNotifiesOnParentDisconnect(t *testing.T) {
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM, 0)
 	if err != nil {

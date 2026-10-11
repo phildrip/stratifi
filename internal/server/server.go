@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"bloxwm/internal/wire"
+	"stratifi/internal/wire"
 )
 
 // Server coordinates Wayland client connections and top-level compositor state.
@@ -50,7 +50,7 @@ func (s *Server) SetOutput(o Output) { s.output = o }
 
 // Output returns the configured virtual output geometry. Zero values
 // default to the historical 960x640@60 demo geometry so existing callers
-// keep working until the compositor core (bloxwm-o2x) owns real outputs.
+// keep working until the compositor core (stratifi-o2x) owns real outputs.
 func (s *Server) Output() Output {
 	if s.output.Width == 0 || s.output.Height == 0 {
 		return Output{Width: 960, Height: 640, RefreshHz: 60}

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"bloxwm/internal/protocol/wayland"
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/protocol/wayland"
+	"stratifi/internal/wire"
 )
 
 // Callbacks for input and window events from the parent compositor.
@@ -267,11 +267,11 @@ func (b *Backend) initProtocol() error {
 
 	// Set title & app_id
 	start = b.writer.BeginMessage(b.toplevelID, 2) // set_title
-	_ = b.writer.WriteString("bloxwm compositor")
+	_ = b.writer.WriteString("stratifi compositor")
 	_ = b.writer.EndMessage(start, b.toplevelID, 2)
 
 	start = b.writer.BeginMessage(b.toplevelID, 3) // set_app_id
-	_ = b.writer.WriteString("bloxwm")
+	_ = b.writer.WriteString("stratifi")
 	_ = b.writer.EndMessage(start, b.toplevelID, 3)
 
 	// Initial commit to request configure
@@ -318,7 +318,7 @@ func (b *Backend) initProtocol() error {
 	}
 
 	// Create memfd framebuffer
-	memFD, err := unix.MemfdCreate("bloxwm-framebuffer", 0)
+	memFD, err := unix.MemfdCreate("stratifi-framebuffer", 0)
 	if err != nil {
 		return fmt.Errorf("memfd create error: %w", err)
 	}

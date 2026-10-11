@@ -1,6 +1,6 @@
 // Package dbus implements a minimal pure Go D-Bus client sufficient for the
 // xdg-desktop-portal ScreenCast flow used by the compositor's screen-sharing
-// bridge (bloxwm-bro).
+// bridge (stratifi-bro).
 //
 // Wire format per the D-Bus specification:
 //   - Little-endian; all alignment offsets are relative to the message start.

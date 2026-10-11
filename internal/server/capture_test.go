@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/protocol/wayland"
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/protocol/wayland"
+	"stratifi/internal/wire"
 )
 
 // fakeFrameGrabber fills the target with a deterministic gradient.
@@ -87,7 +87,7 @@ func (cc *captureTestClient) send() {
 // sendPool creates a wl_shm pool backed by a memfd and returns its mapping.
 func (cc *captureTestClient) sendPool(shmID uint32, poolID uint32, size int) []byte {
 	cc.t.Helper()
-	fd, err := unix.MemfdCreate("bloxwm-capture-test", 0)
+	fd, err := unix.MemfdCreate("stratifi-capture-test", 0)
 	if err != nil {
 		cc.t.Fatalf("MemfdCreate: %v", err)
 	}
@@ -137,7 +137,7 @@ func (cc *captureTestClient) recvAll(timeoutMs int) {
 // bind managers, source, session negotiation (buffer_size/shm_format/done),
 // then frame attach → capture → ready with verified pixel contents.
 func TestCaptureSessionFullFrame(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-capture-test-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-capture-test-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -339,7 +339,7 @@ func (g grabRecordingGrabber) GrabFramebuffer(dst []byte, width, height, stride 
 
 // TestCaptureSessionStopped guards the stopped-session error path.
 func TestCaptureSessionStopped(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-capstop-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-capstop-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
@@ -395,7 +395,7 @@ var _ FrameGrabber = fakeFrameGrabber{}
 // TestOutputGeometryIsSingleSource pins that wl_output advertisement and
 // capture session buffer_size both derive from Server.SetOutput.
 func TestOutputGeometryIsSingleSource(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-outgeom-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-outgeom-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}

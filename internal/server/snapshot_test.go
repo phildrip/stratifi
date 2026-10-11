@@ -18,7 +18,7 @@ func makeSnapshotClient(t testing.TB) (*Client, *ShmPool) {
 	c.pools.init()
 
 	// Real memfd-backed pool so the munmap path is exercised for real.
-	fd, err := unix.MemfdCreate("bloxwm-snapshot-test", 0)
+	fd, err := unix.MemfdCreate("stratifi-snapshot-test", 0)
 	if err != nil {
 		t.Fatalf("MemfdCreate: %v", err)
 	}

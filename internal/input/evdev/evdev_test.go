@@ -4,8 +4,8 @@ import (
 	"testing"
 	"unsafe"
 
-	"bloxwm/internal/input"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/input"
 )
 
 func TestKernelInputEventSize(t *testing.T) {

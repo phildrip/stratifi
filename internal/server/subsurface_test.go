@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/wire"
 )
 
 type ssEmit struct {

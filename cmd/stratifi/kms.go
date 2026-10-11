@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 
-	"bloxwm/internal/backend/kms"
-	"bloxwm/internal/compositor"
-	"bloxwm/internal/input"
-	"bloxwm/internal/input/evdev"
+	"stratifi/internal/backend/kms"
+	"stratifi/internal/compositor"
+	"stratifi/internal/input"
+	"stratifi/internal/input/evdev"
 )
 
 // kmsDisplay is the bare-metal output: a KMS scanout dumb buffer that the

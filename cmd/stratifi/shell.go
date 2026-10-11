@@ -5,8 +5,8 @@ import (
 	"sort"
 	"sync/atomic"
 
-	"bloxwm/internal/input"
-	"bloxwm/internal/layout"
+	"stratifi/internal/input"
+	"stratifi/internal/layout"
 )
 
 // shellClient is the subset of a Wayland client the shell drives while

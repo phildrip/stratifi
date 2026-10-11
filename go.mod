@@ -1,4 +1,4 @@
-module bloxwm
+module stratifi
 
 go 1.26.0
 

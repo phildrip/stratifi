@@ -96,7 +96,7 @@ func generateGo(p Protocol, pkgName string) ([]byte, error) {
 	fmt.Fprintf(&buf, "package %s\n\n", pkgName)
 	fmt.Fprintf(&buf, "import (\n")
 	fmt.Fprintf(&buf, "\t\"fmt\"\n")
-	fmt.Fprintf(&buf, "\t\"bloxwm/internal/wire\"\n")
+	fmt.Fprintf(&buf, "\t\"stratifi/internal/wire\"\n")
 	fmt.Fprintf(&buf, ")\n\n")
 
 	for _, iface := range p.Interfaces {

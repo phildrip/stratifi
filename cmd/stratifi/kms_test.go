@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"bloxwm/internal/backend/kms"
+	"stratifi/internal/backend/kms"
 )
 
 // TestKmsDisplayOutputMethods: the scanout-backed Output must report the

@@ -1,6 +1,6 @@
-# AI Agent Guide (bloxwm)
+# AI Agent Guide (stratifi)
 
-This is the repository for **bloxwm**, a modern, block-based Wayland window manager and compositor written in Go with Data-Oriented Design principles.
+This is the repository for **stratifi**, a modern, block-based Wayland window manager and compositor written in Go with Data-Oriented Design principles.
 
 This file outlines the operating principles for AI agents and human contributors, indexes the architectural standards in `skills/`, and documents issue tracking with `bd` (Beads).
 
@@ -24,7 +24,7 @@ Detailed architectural and engineering standards are organized under `skills/`:
 | :--- | :--- |
 | **[`skills/general-guidelines.md`](skills/general-guidelines.md)** | Universal rules of engagement, testing philosophy, refactoring boundaries, and PR protocols. |
 | **[`skills/backend-architecture.md`](skills/backend-architecture.md)** | Go architecture, `pkg/errors` stack preservation, small interfaces, identifier naming, and pragmatic SRP. |
-| **[`skills/data-oriented-design.md`](skills/data-oriented-design.md)** | **Core bloxwm Tenet:** SlotMaps, generational indices, SoA/AoS cache optimization, ring buffers, and zero-allocation hot paths. |
+| **[`skills/data-oriented-design.md`](skills/data-oriented-design.md)** | **Core stratifi Tenet:** SlotMaps, generational indices, SoA/AoS cache optimization, ring buffers, and zero-allocation hot paths. |
 
 ---
 

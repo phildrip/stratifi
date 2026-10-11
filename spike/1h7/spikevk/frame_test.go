@@ -95,7 +95,7 @@ func TestFrameCompositorSize(t *testing.T) {
 	t.Logf("1280x720 pure-Go frame (clear+copy+readback): %v", elapsed)
 }
 
-// TestFallbackAbsentLoader is the acceptance half of bloxwm-1h7: with no
+// TestFallbackAbsentLoader is the acceptance half of stratifi-1h7: with no
 // loader present, resolution fails cleanly and the binary is alive to take
 // the CPU path. loaderFrom is the same code path with injected names.
 func TestFallbackAbsentLoader(t *testing.T) {

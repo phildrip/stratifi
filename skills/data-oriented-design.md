@@ -1,6 +1,6 @@
-# Data-Oriented Design (DOD) Guidelines for bloxwm
+# Data-Oriented Design (DOD) Guidelines for stratifi
 
-`bloxwm` is a Wayland compositor and window manager. Compositors are **soft real-time interactive graphics engines**. To achieve fluid 120Hz/144Hz/240Hz frame rates and responsive mouse/touchpad gesture tracking without micro-stutters or GC latency spikes in Go, **Data-Oriented Design (DOD) is mandatory across the core loop**.
+`stratifi` is a Wayland compositor and window manager. Compositors are **soft real-time interactive graphics engines**. To achieve fluid 120Hz/144Hz/240Hz frame rates and responsive mouse/touchpad gesture tracking without micro-stutters or GC latency spikes in Go, **Data-Oriented Design (DOD) is mandatory across the core loop**.
 
 ---
 
@@ -14,7 +14,7 @@ Go's concurrent mark-and-sweep GC is fast, but it must trace every pointer on th
 
 ---
 
-## 2. Key Architecture Patterns for `bloxwm`
+## 2. Key Architecture Patterns for `stratifi`
 
 ### A. SlotMaps and Generational Indices (No Pointer References)
 Never store pointers between compositor entities. Use compact, generational indices:

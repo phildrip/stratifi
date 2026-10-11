@@ -5,8 +5,8 @@ import (
 	"strconv"
 )
 
-// EnvDeviceIndex returns BLOXWM_VK_DEVICE or "".
-func EnvDeviceIndex() string { return os.Getenv("BLOXWM_VK_DEVICE") }
+// EnvDeviceIndex returns STRATIFI_VK_DEVICE or "".
+func EnvDeviceIndex() string { return os.Getenv("STRATIFI_VK_DEVICE") }
 
 // parseInt parses a non-negative decimal integer, or -1.
 func parseInt(s string) int {

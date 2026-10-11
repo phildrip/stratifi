@@ -3,7 +3,7 @@ package pipewire
 import (
 	"testing"
 
-	"bloxwm/internal/pipewire/spa"
+	"stratifi/internal/pipewire/spa"
 )
 
 // TestHeaderRoundTrip builds a message, decodes it, and verifies the layout.

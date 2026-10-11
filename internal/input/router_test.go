@@ -3,8 +3,8 @@ package input
 import (
 	"testing"
 
-	"bloxwm/internal/layout"
-	"bloxwm/internal/server"
+	"stratifi/internal/layout"
+	"stratifi/internal/server"
 )
 
 func TestRouterPointerMotionAndFocus(t *testing.T) {

@@ -1,5 +1,5 @@
 // Package pipewire implements the minimal pure Go PipeWire native-protocol
-// client the compositor needs for screen sharing (bloxwm-0oy).
+// client the compositor needs for screen sharing (stratifi-0oy).
 //
 // Framing (pw protocol-native): each packet is a 16-byte header
 // {id u32, opcode u32, size u32, seq u32} followed by the pod body; the

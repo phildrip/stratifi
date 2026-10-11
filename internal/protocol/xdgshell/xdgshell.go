@@ -3,8 +3,8 @@
 package xdgshell
 
 import (
-	"bloxwm/internal/wire"
 	"fmt"
+	"stratifi/internal/wire"
 )
 
 // xdg_wm_base interface (version 7)

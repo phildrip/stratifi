@@ -9,15 +9,15 @@ import (
 	"syscall"
 	"time"
 
-	"bloxwm/internal/backend/nested"
-	"bloxwm/internal/compositor"
-	"bloxwm/internal/config"
-	"bloxwm/internal/cursor"
-	"bloxwm/internal/input"
-	"bloxwm/internal/layout"
-	"bloxwm/internal/server"
-	"bloxwm/internal/session"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/backend/nested"
+	"stratifi/internal/compositor"
+	"stratifi/internal/config"
+	"stratifi/internal/cursor"
+	"stratifi/internal/input"
+	"stratifi/internal/layout"
+	"stratifi/internal/server"
+	"stratifi/internal/session"
 )
 
 // WindowMapping ties a layout slot to its client's Wayland objects.
@@ -99,7 +99,7 @@ type shellEvent struct {
 
 func main() {
 	fmt.Println("=================================================================")
-	fmt.Println("                     Starting bloxwm                             ")
+	fmt.Println("                     Starting stratifi                             ")
 	fmt.Println("       Data-Oriented Wayland Window Manager & Compositor        ")
 	fmt.Println("=================================================================")
 
@@ -107,13 +107,13 @@ func main() {
 	outputH := int32(720)
 
 	// The Wayland socket we serve; spawned clients are pointed at it.
-	const socketName = "wayland-blox-0"
+	const socketName = "wayland-stratifi-0"
 
-	// Bare-metal output: BLOXWM_KMS=1 opens the DRM card directly instead of
+	// Bare-metal output: STRATIFI_KMS=1 opens the DRM card directly instead of
 	// nesting in a parent compositor. Requires DRM master (run from a VT).
 	// Output dimensions then come from the connector's preferred mode, and
 	// input arrives from evdev rather than parent Wayland events.
-	useKMS := os.Getenv("BLOXWM_KMS") == "1"
+	useKMS := os.Getenv("STRATIFI_KMS") == "1"
 	var kmsDisp *kmsDisplay
 	if useKMS {
 		var err error
@@ -251,7 +251,7 @@ func main() {
 			// When supervised, ask the session supervisor to spawn: the
 			// child becomes ITS child, so a compositor restart does not
 			// kill it. Otherwise exec directly (standalone behaviour).
-			if sock := os.Getenv("BLOXWM_SESSION_SOCKET"); sock != "" {
+			if sock := os.Getenv("STRATIFI_SESSION_SOCKET"); sock != "" {
 				if _, err := session.SendSpawn(sock, args); err == nil {
 					return
 				}
@@ -259,7 +259,7 @@ func main() {
 			}
 			cmd := exec.Command(args[0], args[1:]...)
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			// Children are bloxwm clients, not the parent's: point them at
+			// Children are stratifi clients, not the parent's: point them at
 			// our socket explicitly. Replace (not append) WAYLAND_DISPLAY —
 			// a duplicate leaves the old value winning.
 			env := os.Environ()
@@ -417,7 +417,7 @@ func main() {
 		BorderWidth:    engine.Config.BorderWidth,
 		TitlebarHeight: engine.Config.TitlebarHeight,
 	})
-	if os.Getenv("BLOXWM_GPU") == "1" {
+	if os.Getenv("STRATIFI_GPU") == "1" {
 		if useKMS {
 			// GPU renders straight into scanout memory; flip presents it.
 			// No bridge, no readback, no CPU pixels on this path.
@@ -471,10 +471,10 @@ func main() {
 		}
 	}()
 
-	// 5. Initialize bloxwm Wayland Server
+	// 5. Initialize stratifi Wayland Server
 	srv, err = server.NewServer(socketName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] Failed to start bloxwm server: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[-] Failed to start stratifi server: %v\n", err)
 		os.Exit(1)
 	}
 	defer srv.Close()
@@ -574,7 +574,7 @@ func main() {
 		events <- shellEvent{kind: evClientGone, clientID: clientID}
 	})
 
-	fmt.Printf("[+] bloxwm is active on socket: %s\n", srv.SocketPath())
+	fmt.Printf("[+] stratifi is active on socket: %s\n", srv.SocketPath())
 	fmt.Printf("[+] Run clients with: WAYLAND_DISPLAY=%s foot\n", socketName)
 
 	// ACTOR GOROUTINE: owns all scene state (windows, surfaceToWin,
@@ -768,11 +768,11 @@ func main() {
 			frameLoop.RenderOnce() // owner goroutine: single-owner discipline
 
 		case <-exitCh:
-			fmt.Println("[*] Shutting down bloxwm...")
+			fmt.Println("[*] Shutting down stratifi...")
 			return
 
 		case <-sigCh:
-			fmt.Println("[*] Shutting down bloxwm...")
+			fmt.Println("[*] Shutting down stratifi...")
 			return
 		}
 	}

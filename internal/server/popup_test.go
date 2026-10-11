@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/wire"
 )
 
 // TestXdgPopupLifecycle drives the popup protocol end to end with a real

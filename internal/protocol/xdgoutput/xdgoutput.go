@@ -3,8 +3,8 @@
 package xdgoutput
 
 import (
-	"bloxwm/internal/wire"
 	"fmt"
+	"stratifi/internal/wire"
 )
 
 // zxdg_output_manager_v1 interface (version 3)

@@ -10,7 +10,7 @@ import (
 )
 
 func TestSocketClientServerRoundTripWithFD(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-test-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

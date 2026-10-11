@@ -1,8 +1,8 @@
 // Package compositor implements the frame loop that assembles the
 // compositor pipeline: scene snapshot → clear/border/titlebar/blit →
-// present (bloxwm-o2x).
+// present (stratifi-o2x).
 //
-// Ownership model (proven live in cmd/bloxwm): exactly ONE goroutine — the
+// Ownership model (proven live in cmd/stratifi): exactly ONE goroutine — the
 // frame loop — touches the output framebuffer. Scene state is snapshotted
 // under the caller's lock; rendering is lock-free. Render requests coalesce
 // on a size-1 channel: stale frames are dropped, the newest scene renders.
@@ -49,7 +49,7 @@ type FrameConfig struct {
 	TitlebarHeight int32
 }
 
-// DefaultConfig matches bloxwm's current chrome.
+// DefaultConfig matches stratifi's current chrome.
 var DefaultConfig = FrameConfig{
 	BorderWidth:    2,
 	TitlebarHeight: 24,
@@ -194,7 +194,7 @@ func (fl *FrameLoop) copyHook(clientID, surfaceID uint32, dst []byte) (n int, ok
 }
 
 // Executor materializes a DrawList onto the frame loop's output. The CPU
-// blitter is the shm fallback; the Vulkan executor (bloxwm-o2x phase 3)
+// blitter is the shm fallback; the Vulkan executor (stratifi-o2x phase 3)
 // consumes the same flat records as draw calls.
 type Executor interface {
 	Execute(dl *DrawList, avail AvailFn, copyFn CopyFn)

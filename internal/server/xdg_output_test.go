@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/wire"
 )
 
 // TestXdgOutputInfo: a client that binds zxdg_output_manager_v1 and requests
@@ -125,7 +125,7 @@ func TestXdgOutputInfo(t *testing.T) {
 	if !gotSize || lw != 1280 || lh != 720 {
 		t.Errorf("logical_size = %dx%d (got=%v), want 1280x720", lw, lh, gotSize)
 	}
-	if !gotName || name != "BLOXWM-1" {
-		t.Errorf("name = %q (got=%v), want BLOXWM-1", name, gotName)
+	if !gotName || name != "STRATIFI-1" {
+		t.Errorf("name = %q (got=%v), want STRATIFI-1", name, gotName)
 	}
 }

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"bloxwm/internal/render/vulkan"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/render/vulkan"
 )
 
 // vulkanExecutor materializes DrawList records as GPU draw calls.

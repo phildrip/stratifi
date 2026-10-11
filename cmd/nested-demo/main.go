@@ -7,9 +7,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"bloxwm/internal/protocol/wayland"
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/protocol/wayland"
+	"stratifi/internal/wire"
 )
 
 var nextID uint32 = 1
@@ -173,12 +173,12 @@ func main() {
 
 	// Set title
 	start = w.BeginMessage(xdgToplevelID, 2) // xdg_toplevel.set_title
-	_ = w.WriteString("bloxwm nested compositor spike")
+	_ = w.WriteString("stratifi nested compositor spike")
 	_ = w.EndMessage(start, xdgToplevelID, 2)
 
 	// Set app_id
 	start = w.BeginMessage(xdgToplevelID, 3) // xdg_toplevel.set_app_id
-	_ = w.WriteString("bloxwm")
+	_ = w.WriteString("stratifi")
 	_ = w.EndMessage(start, xdgToplevelID, 3)
 
 	// Commit initial state to trigger configure
@@ -241,7 +241,7 @@ func main() {
 	stride := width * 4
 	poolSize := int(stride * height)
 
-	memFD, err := unix.MemfdCreate("bloxwm-nested-frame", 0)
+	memFD, err := unix.MemfdCreate("stratifi-nested-frame", 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[-] MemfdCreate failed: %v\n", err)
 		os.Exit(1)
@@ -361,9 +361,9 @@ func main() {
 	}
 
 	fmt.Println("=================================================================")
-	fmt.Println("  SUCCESS! BLOXWM NESTED WINDOW IS LIVE ON YOUR SWAY DESKTOP!   ")
+	fmt.Println("  SUCCESS! STRATIFI NESTED WINDOW IS LIVE ON YOUR SWAY DESKTOP!   ")
 	fmt.Println("  Look at your screen: A 960x640 window titled                   ")
-	fmt.Println("  'bloxwm nested compositor spike' is showing our Blox layout!    ")
+	fmt.Println("  'stratifi nested compositor spike' is showing our Blox layout!    ")
 	fmt.Println("=================================================================")
 	fmt.Println("[*] Running event loop (responds to pings). Press Ctrl+C when done.")
 

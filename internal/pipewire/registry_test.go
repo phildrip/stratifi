@@ -3,7 +3,7 @@ package pipewire
 import (
 	"testing"
 
-	"bloxwm/internal/pipewire/spa"
+	"stratifi/internal/pipewire/spa"
 )
 
 // buildGlobalEvent builds a registry global event pod the way the daemon
@@ -93,8 +93,8 @@ func TestUpdateClientPropertiesDictCount(t *testing.T) {
 	_ = err // Connect to /dev/null is allowed to fail; we build offline below.
 
 	id := ClientIdentity{
-		ApplicationName: "bloxwm",
-		Binary:          "bloxwm",
+		ApplicationName: "stratifi",
+		Binary:          "stratifi",
 		User:            "tester",
 		Host:            "testhost",
 		Language:        "C",

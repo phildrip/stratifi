@@ -3,8 +3,8 @@
 package wayland
 
 import (
-	"bloxwm/internal/wire"
 	"fmt"
+	"stratifi/internal/wire"
 )
 
 // wl_display interface (version 1)

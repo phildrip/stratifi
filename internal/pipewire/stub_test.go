@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/pipewire/spa"
+	"stratifi/internal/pipewire/spa"
 )
 
 // stubDaemon is a deterministic PipeWire server stub implementing exactly
 // the client connect path, replicating the empirical behaviors observed on
-// the live daemon (see bloxwm-d2f):
+// the live daemon (see stratifi-d2f):
 //   - protocol v3 framing (opcode in word 2 top byte, size in low 24 bits)
 //   - Hello demarshal = Struct{Int(PW_VERSION_CORE=4)}
 //   - client.update_properties accepted on PW_ID_CLIENT=1

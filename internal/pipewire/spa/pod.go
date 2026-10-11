@@ -1,5 +1,5 @@
 // Package spa marshals SPA PODs (Simple Plugin API Plain Old Data), the
-// parameter format PipeWire uses for stream negotiation (bloxwm-0oy).
+// parameter format PipeWire uses for stream negotiation (stratifi-0oy).
 //
 // POD layout (spa/pod.h): 8-byte header {uint32 bodySize, uint32 type} then
 // the body; every pod is 8-aligned. Container headers (Struct/Object) cover

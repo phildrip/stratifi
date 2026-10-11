@@ -1,4 +1,4 @@
-# bloxwm-1h7 spike — FFI + runtime Vulkan loading
+# stratifi-1h7 spike — FFI + runtime Vulkan loading
 
 Prototypes answering the spike's questions with measurements. Do NOT wire
 these into the build; they are evidence for the go/no-go.
@@ -78,7 +78,7 @@ has sType 0 and is invalid — pass nil; image-view swizzle `{0,0,0,0}` is
 identity, `{0,1,2,3}` is `{IDENTITY,R,G,B}` (validation caught both, plus a
 destroy-order gap now covered by `Close`).
 
-## Step 4 — batch to zero allocs (bloxwm-ewo, NOT draw batching)
+## Step 4 — batch to zero allocs (stratifi-ewo, NOT draw batching)
 
 `BenchmarkTexturedFrame`: **15.4 ms, 0 B / 0 allocs per 1280×720 frame**
 (down from 10 allocs), pixels still exact.

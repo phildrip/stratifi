@@ -110,7 +110,7 @@ func (s *Supervisor) handleControl(conn net.Conn) {
 }
 
 // SendSpawn asks a running supervisor to spawn argv. Returns the child pid.
-// Used by the compositor's spawn action when BLOXWM_SESSION_SOCKET is set.
+// Used by the compositor's spawn action when STRATIFI_SESSION_SOCKET is set.
 func SendSpawn(socketPath string, argv []string) (int, error) {
 	if len(argv) == 0 {
 		return 0, fmt.Errorf("spawn: empty argv")

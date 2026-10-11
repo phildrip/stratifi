@@ -3,8 +3,8 @@
 package capture
 
 import (
-	"bloxwm/internal/wire"
 	"fmt"
+	"stratifi/internal/wire"
 )
 
 // ext_image_capture_source_v1 interface (version 1)

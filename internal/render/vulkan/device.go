@@ -11,21 +11,21 @@ static int init_vulkan_context(VkContext* ctx) {
 
     VkApplicationInfo appInfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "bloxwm-vulkan",
+        .pApplicationName = "stratifi-vulkan",
         .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
-        .pEngineName = "bloxwm",
+        .pEngineName = "stratifi",
         .engineVersion = VK_MAKE_VERSION(0, 1, 0),
         .apiVersion = VK_API_VERSION_1_3,
     };
 
-    // Optional validation (BLOXWM_VK_VALIDATION=1 + VK_LAYER_PATH): catches
+    // Optional validation (STRATIFI_VK_VALIDATION=1 + VK_LAYER_PATH): catches
     // layout and sync bugs the silent paths hide.
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
     VkInstanceCreateInfo instInfo = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         .pApplicationInfo = &appInfo,
     };
-    if (getenv("BLOXWM_VK_VALIDATION") != NULL) {
+    if (getenv("STRATIFI_VK_VALIDATION") != NULL) {
         instInfo.enabledLayerCount = 1;
         instInfo.ppEnabledLayerNames = &validationLayer;
     }
@@ -47,7 +47,7 @@ static int init_vulkan_context(VkContext* ctx) {
         return -1;
     }
     int devIdx = 0;
-    const char* sel = getenv("BLOXWM_VK_DEVICE");
+    const char* sel = getenv("STRATIFI_VK_DEVICE");
     if (sel) devIdx = atoi(sel);
     if (devIdx < 0 || devIdx >= (int)devCount) devIdx = 0;
     ctx->pdev = devices[devIdx];

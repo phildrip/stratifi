@@ -3,8 +3,8 @@
 package layershell
 
 import (
-	"bloxwm/internal/wire"
 	"fmt"
+	"stratifi/internal/wire"
 )
 
 // zwlr_layer_shell_v1 interface (version 5)

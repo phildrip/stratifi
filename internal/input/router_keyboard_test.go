@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/layout"
-	"bloxwm/internal/server"
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/layout"
+	"stratifi/internal/server"
+	"stratifi/internal/wire"
 )
 
 // readWireFrames reads available frames from fd within timeout, returning
@@ -118,7 +118,7 @@ func keyboardClient(t *testing.T) (*server.Server, *server.Client, int, uint32) 
 
 // TestRouterRoutesKeysToFocusedClient: a key is dropped when nothing has
 // focus, and delivered as wl_keyboard.key once a window is focused. Pins the
-// router half of the "typing does nothing" bug (bloxwm-o2x): the router only
+// router half of the "typing does nothing" bug (stratifi-o2x): the router only
 // forwards keys to its focused client, so the compositor must focus a window
 // when it appears.
 func TestRouterRoutesKeysToFocusedClient(t *testing.T) {

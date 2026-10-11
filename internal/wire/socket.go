@@ -21,7 +21,7 @@ type Server struct {
 }
 
 // Listen creates and binds a new Wayland UNIX domain socket.
-// If socketName is relative (e.g. "wayland-blox-0"), it is placed in $XDG_RUNTIME_DIR.
+// If socketName is relative (e.g. "wayland-stratifi-0"), it is placed in $XDG_RUNTIME_DIR.
 func Listen(socketName string) (*Server, error) {
 	var sockPath string
 	if filepath.IsAbs(socketName) {

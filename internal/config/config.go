@@ -221,8 +221,8 @@ func errEmpty() error          { return &pxErr{"empty value"} }
 func errNotInt(s string) error { return &pxErr{"not an integer: " + s} }
 func errRange(s string) error  { return &pxErr{"out of range: " + s} }
 
-// FindConfigPath locates the user configuration: $XDG_CONFIG_HOME/bloxwm/
-// config, else ~/.config/bloxwm/config. A missing file is fine (defaults);
+// FindConfigPath locates the user configuration: $XDG_CONFIG_HOME/stratifi/
+// config, else ~/.config/stratifi/config. A missing file is fine (defaults);
 // the caller distinguishes by loading only if it exists.
 func FindConfigPath() string {
 	dir := os.Getenv("XDG_CONFIG_HOME")
@@ -233,7 +233,7 @@ func FindConfigPath() string {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "bloxwm", "config")
+	return filepath.Join(dir, "stratifi", "config")
 }
 
 // LoadFile parses path, or returns defaults (and no error) when the file

@@ -114,7 +114,7 @@ func OpenInstance(loader *Loader) (*GraphicsContext, error) {
 		PApplicationInfo: &app,
 	}
 	var layerName []byte
-	if os.Getenv("BLOXWM_VK_VALIDATION") != "" {
+	if os.Getenv("STRATIFI_VK_VALIDATION") != "" {
 		layerName = acByte("VK_LAYER_KHRONOS_validation")
 		layerPtr := &layerName[0]
 		info.EnabledLayerCount = 1
@@ -231,7 +231,7 @@ func (ctx *GraphicsContext) resolve(loader *Loader) error {
 	return nil
 }
 
-// pickPhysicalDevice enumerates devices, honours BLOXWM_VK_DEVICE and reads
+// pickPhysicalDevice enumerates devices, honours STRATIFI_VK_DEVICE and reads
 // the device name through the layout-asserted properties array.
 func (ctx *GraphicsContext) pickPhysicalDevice() error {
 	var count uint32

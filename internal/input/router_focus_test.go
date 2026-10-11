@@ -3,12 +3,12 @@ package input
 import (
 	"testing"
 
-	"bloxwm/internal/layout"
-	"bloxwm/internal/server"
+	"stratifi/internal/layout"
+	"stratifi/internal/server"
 )
 
 // TestRouterRequestFocusQueue pins the cross-goroutine focus command path
-// (bloxwm-5xj): RequestFocus queues; the next ProcessEvent applies it on
+// (stratifi-5xj): RequestFocus queues; the next ProcessEvent applies it on
 // the router's own loop — no direct cross-goroutine calls.
 func TestRouterRequestFocusQueue(t *testing.T) {
 	r := NewRouter(

@@ -4,8 +4,8 @@ import (
 	"math"
 	"sync/atomic"
 
-	"bloxwm/internal/layout"
-	"bloxwm/internal/server"
+	"stratifi/internal/layout"
+	"stratifi/internal/server"
 )
 
 // WindowInfo provides spatial and protocol routing targets for a window.

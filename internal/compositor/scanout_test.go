@@ -3,7 +3,7 @@ package compositor
 import (
 	"testing"
 
-	"bloxwm/internal/backend/kms"
+	"stratifi/internal/backend/kms"
 )
 
 // fakeInner records Execute calls for the ScanoutExecutor test.

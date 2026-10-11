@@ -1,6 +1,6 @@
 package server
 
-// Typed ID-indexed stores for the client's protocol entities (bloxwm-aos
+// Typed ID-indexed stores for the client's protocol entities (stratifi-aos
 // phase 2). Each store is a flat slice with an id->index map, giving O(1)
 // lookup/insert/destroy while keeping data contiguous for enumeration.
 // Mutations are guarded by the owning Client's mutex (same discipline as

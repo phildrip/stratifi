@@ -3,7 +3,7 @@ package vulkan
 import (
 	"testing"
 
-	"bloxwm/internal/backend/kms"
+	"stratifi/internal/backend/kms"
 )
 
 // TestImportScanoutAsTarget proves the zero-copy scanout path: a KMS dumb

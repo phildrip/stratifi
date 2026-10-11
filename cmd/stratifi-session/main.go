@@ -1,9 +1,9 @@
-// Command bloxwm-session supervises a bloxwm compositor and the clients it
+// Command stratifi-session supervises a stratifi compositor and the clients it
 // spawns, so restarting the compositor does not take down the session.
 //
 // Usage:
 //
-//	bloxwm-session [--socket PATH] [--display NAME] -- bloxwm [args...]
+//	stratifi-session [--socket PATH] [--display NAME] -- stratifi [args...]
 //
 // It sets WAYLAND_DISPLAY for children, listens on a control socket, starts
 // the compositor as its child, restarts it on exit, and spawns clients on
@@ -17,34 +17,34 @@ import (
 	"os"
 	"path/filepath"
 
-	"bloxwm/internal/session"
+	"stratifi/internal/session"
 )
 
 func main() {
 	var (
-		socket  = flag.String("socket", "", "control socket path (default $XDG_RUNTIME_DIR/bloxwm-session.sock)")
-		display = flag.String("display", "wayland-blox-0", "WAYLAND_DISPLAY value exported to children")
+		socket  = flag.String("socket", "", "control socket path (default $XDG_RUNTIME_DIR/stratifi-session.sock)")
+		display = flag.String("display", "wayland-stratifi-0", "WAYLAND_DISPLAY value exported to children")
 		maxRst  = flag.Int("max-restarts", 10, "give up after this many compositor restarts (0 = unlimited)")
 	)
 	flag.Parse()
 
 	comp := flag.Args()
 	if len(comp) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: bloxwm-session [flags] -- <compositor> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: stratifi-session [flags] -- <compositor> [args...]")
 		os.Exit(2)
 	}
 
 	sock := *socket
 	if sock == "" {
-		sock = filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "bloxwm-session.sock")
+		sock = filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "stratifi-session.sock")
 	}
 
 	// The compositor keeps the inherited WAYLAND_DISPLAY (its PARENT's, in
 	// nested mode) and is told where the control socket is. Spawned clients
 	// instead point at OUR display (the compositor's socket).
-	compEnv := setEnv(os.Environ(), "BLOXWM_SESSION_SOCKET", sock)
+	compEnv := setEnv(os.Environ(), "STRATIFI_SESSION_SOCKET", sock)
 	clientEnv := setEnv(os.Environ(), "WAYLAND_DISPLAY", *display)
-	clientEnv = setEnv(clientEnv, "BLOXWM_SESSION_SOCKET", sock)
+	clientEnv = setEnv(clientEnv, "STRATIFI_SESSION_SOCKET", sock)
 
 	s := session.New(comp, compEnv)
 	s.SetClientEnv(clientEnv)

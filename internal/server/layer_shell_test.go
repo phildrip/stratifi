@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/wire"
 )
 
 // TestLayerSurfaceLifecycle drives zwlr_layer_shell_v1 end to end with a

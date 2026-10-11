@@ -9,8 +9,8 @@ import (
 func TestDictEncodingRoundTrip(t *testing.T) {
 	var w Writer
 	start := w.BeginDict()
-	w.DictEntry("handle_token", "bloxwm_token_1")
-	w.DictEntry("session_handle_token", "bloxwm_session_1")
+	w.DictEntry("handle_token", "stratifi_token_1")
+	w.DictEntry("session_handle_token", "stratifi_session_1")
 	w.FinishDict(start)
 
 	dict := w.Bytes()

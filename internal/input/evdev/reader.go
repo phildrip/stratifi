@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"bloxwm/internal/input"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/input"
 )
 
 // EvdevPump monitors /dev/input/event* devices using epoll and streams

@@ -3,7 +3,7 @@ package vulkan
 import (
 	"testing"
 
-	"bloxwm/internal/backend/kms"
+	"stratifi/internal/backend/kms"
 )
 
 // TestRenderToScanoutBuffer proves zero-copy scanout: Vulkan renders a frame

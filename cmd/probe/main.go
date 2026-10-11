@@ -22,9 +22,9 @@ static int probe_vulkan(VkProbeResult* result) {
 
     VkApplicationInfo appInfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "bloxwm-probe",
+        .pApplicationName = "stratifi-probe",
         .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
-        .pEngineName = "bloxwm",
+        .pEngineName = "stratifi",
         .engineVersion = VK_MAKE_VERSION(0, 1, 0),
         .apiVersion = VK_API_VERSION_1_3,
     };
@@ -206,7 +206,7 @@ func probeVulkan() error {
 }
 
 func main() {
-	fmt.Println("=== bloxwm Hardware & Graphics Probe ===")
+	fmt.Println("=== stratifi Hardware & Graphics Probe ===")
 
 	cardPath := "/dev/dri/card1"
 	if _, err := os.Stat(cardPath); os.IsNotExist(err) {

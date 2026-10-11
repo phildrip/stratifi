@@ -1,5 +1,5 @@
 // Package portal bridges the compositor to xdg-desktop-portal's ScreenCast
-// interface, the Firefox/WebRTC screen-sharing path (bloxwm-bro).
+// interface, the Firefox/WebRTC screen-sharing path (stratifi-bro).
 //
 // Portal flow (xdg-desktop-portal ScreenCast v1):
 //  1. CreateSession(a{sv}) → o request_handle; session appears as an object
@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"strconv"
 
-	dbus "bloxwm/internal/portal/dbus"
+	dbus "stratifi/internal/portal/dbus"
 )
 
 // Portal drives ScreenCast sessions on one bus connection.
@@ -48,7 +48,7 @@ func (e *PortalError) Error() string {
 // CreateSession opens a new ScreenCast session and returns its object path.
 func (p *Portal) CreateSession() (string, error) {
 	p.counter++
-	token := "bloxwm_session_" + strconv.Itoa(p.counter)
+	token := "stratifi_session_" + strconv.Itoa(p.counter)
 
 	msg := &dbus.Msg{
 		Type:        dbus.TypeMethodCall,
@@ -81,7 +81,7 @@ func (p *Portal) CreateSession() (string, error) {
 // embedded in the frame (metadata=0, cursor_mode=1).
 func (p *Portal) SelectSources(sessionHandle string) (string, error) {
 	p.counter++
-	token := "bloxwm_select_" + strconv.Itoa(p.counter)
+	token := "stratifi_select_" + strconv.Itoa(p.counter)
 
 	msg := &dbus.Msg{
 		Type:        dbus.TypeMethodCall,
@@ -118,7 +118,7 @@ func (p *Portal) SelectSources(sessionHandle string) (string, error) {
 // compositor listens on.
 func (p *Portal) Start(sessionHandle, parentWindow string) (string, error) {
 	p.counter++
-	token := "bloxwm_start_" + strconv.Itoa(p.counter)
+	token := "stratifi_start_" + strconv.Itoa(p.counter)
 
 	msg := &dbus.Msg{
 		Type:        dbus.TypeMethodCall,

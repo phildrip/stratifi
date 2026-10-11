@@ -26,7 +26,7 @@ func DefaultXKBKeymap() (int, uint32, error) {
 	}
 
 	size := len(out)
-	fd, err := unix.MemfdCreate("bloxwm-xkb-keymap", unix.MFD_CLOEXEC)
+	fd, err := unix.MemfdCreate("stratifi-xkb-keymap", unix.MFD_CLOEXEC)
 	if err != nil {
 		return -1, 0, fmt.Errorf("memfd create error: %w", err)
 	}

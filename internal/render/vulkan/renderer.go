@@ -631,7 +631,7 @@ static int wait_frame(VkRenderer* r, uint64_t timeoutNs) {
     return (int)vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, timeoutNs);
 }
 
-// --- CPU-upload textures (bloxwm-o2x phase 3) ---
+// --- CPU-upload textures (stratifi-o2x phase 3) ---
 //
 // Client content is shm (memfd, not dmabuf), so the GPU path uploads via
 // host-visible linear images: memcpy into mapped memory, then a command

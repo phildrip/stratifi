@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/wire"
 )
 
 // clipboardPair spins up the server + two real clients (writer, reader),

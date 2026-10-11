@@ -3,7 +3,7 @@ package input
 import (
 	"testing"
 
-	"bloxwm/internal/input/gesture"
+	"stratifi/internal/input/gesture"
 )
 
 // feedSwipe drives a 3-finger horizontal swipe through the router's raw MT

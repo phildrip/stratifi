@@ -9,8 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"bloxwm/internal/pipewire/spa"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/pipewire/spa"
 )
 
 // Conn is a PipeWire native-protocol connection to the pw daemon.
@@ -130,7 +130,7 @@ func identityFromEnv() ClientIdentity {
 		lang = "C"
 	}
 	return ClientIdentity{
-		ApplicationName: "bloxwm",
+		ApplicationName: "stratifi",
 		Binary:          filepath.Base(os.Args[0]),
 		User:            userName,
 		Host:            host,

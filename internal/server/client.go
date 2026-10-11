@@ -6,13 +6,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"bloxwm/internal/protocol/capture"
-	"bloxwm/internal/protocol/layershell"
-	"bloxwm/internal/protocol/wayland"
-	"bloxwm/internal/protocol/xdgoutput"
-	"bloxwm/internal/protocol/xdgshell"
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/protocol/capture"
+	"stratifi/internal/protocol/layershell"
+	"stratifi/internal/protocol/wayland"
+	"stratifi/internal/protocol/xdgoutput"
+	"stratifi/internal/protocol/xdgshell"
+	"stratifi/internal/wire"
 )
 
 // Global numeric IDs advertised to clients via wl_registry.
@@ -313,14 +313,14 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 	case GlobalOutput:
 		c.registerObject(id, ObjOutput)
 		w := c.conn.WriterRef()
-		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "bloxwm", "bloxwm-display", 0)
+		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "stratifi", "stratifi-display", 0)
 		_ = wayland.SendWlOutputScale(w, id, 1)
 		out := c.server.Output()
 		_ = wayland.SendWlOutputMode(w, id, 0x3,
 			int32(out.Width), int32(out.Height), int32(out.RefreshHz*1000))
 		// v4: clients (waybar et al.) match bars to outputs by name.
-		_ = wayland.SendWlOutputName(w, id, "BLOXWM-1")
-		_ = wayland.SendWlOutputDescription(w, id, "bloxwm output 1")
+		_ = wayland.SendWlOutputName(w, id, "STRATIFI-1")
+		_ = wayland.SendWlOutputDescription(w, id, "stratifi output 1")
 		_ = wayland.SendWlOutputDone(w, id)
 	case GlobalSeat:
 		c.registerObject(id, ObjSeat)
@@ -919,7 +919,7 @@ func (c *Client) HandleXdgSurfaceGetToplevel(senderID uint32, id uint32) error {
 func (c *Client) HandleXdgSurfaceGetPopup(senderID uint32, id uint32, parent uint32, positioner uint32) error {
 	c.mu.Lock()
 
-	if os.Getenv("BLOXWM_TRACE") != "" {
+	if os.Getenv("STRATIFI_TRACE") != "" {
 		fmt.Printf("[popup] get_popup popup=%d parent=%d positioner=%d surface=%d\n", id, parent, positioner, c.xdgSurfaceSurfaceID(senderID))
 	}
 	c.registerObject(id, ObjXdgPopup)
@@ -950,7 +950,7 @@ func (c *Client) HandleXdgPopupDestroy(senderID uint32) error {
 // dismisses it (compositor policy) — recorded so the scene can trigger
 // dismissal on outside clicks.
 func (c *Client) HandleXdgPopupGrab(senderID uint32, seat uint32, serial uint32) error {
-	if os.Getenv("BLOXWM_TRACE") != "" {
+	if os.Getenv("STRATIFI_TRACE") != "" {
 		fmt.Printf("[popup] grab popup=%d seat=%d serial=%d\n", senderID, seat, serial)
 	}
 	c.mu.Lock()
@@ -1644,8 +1644,8 @@ func (c *Client) HandleZxdgOutputManagerV1GetXdgOutput(senderID, id, output uint
 	// (waybar et al.) match panels to outputs.
 	_ = xdgoutput.SendZxdgOutputV1LogicalPosition(w, id, 0, 0)
 	_ = xdgoutput.SendZxdgOutputV1LogicalSize(w, id, int32(out.Width), int32(out.Height))
-	_ = xdgoutput.SendZxdgOutputV1Name(w, id, "BLOXWM-1")
-	_ = xdgoutput.SendZxdgOutputV1Description(w, id, "bloxwm output 1")
+	_ = xdgoutput.SendZxdgOutputV1Name(w, id, "STRATIFI-1")
+	_ = xdgoutput.SendZxdgOutputV1Description(w, id, "stratifi output 1")
 	_ = xdgoutput.SendZxdgOutputV1Done(w, id)
 	_ = c.conn.Flush()
 	c.mu.Unlock()

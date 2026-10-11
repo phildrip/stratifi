@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/protocol/wayland"
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/protocol/wayland"
+	"stratifi/internal/wire"
 )
 
 func TestServerClientRoundTrip(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-server-test-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-server-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestSurfaceCommitReentrancy(t *testing.T) {
 
 // TestClientLifecycleDestroy verifies that onClientDestroy is invoked when a client terminates.
 func TestClientLifecycleDestroy(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-destroy-test-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-destroy-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

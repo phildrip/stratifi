@@ -3,7 +3,7 @@ package pipewire
 import (
 	"fmt"
 
-	"bloxwm/internal/pipewire/spa"
+	"stratifi/internal/pipewire/spa"
 )
 
 // Registry event opcodes.

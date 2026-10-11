@@ -9,7 +9,7 @@ package input
 // callback on the input-consumer goroutine, like keybindings, so the
 // compositor can route them to the actor with a channel send.
 
-import "bloxwm/internal/input/gesture"
+import "stratifi/internal/input/gesture"
 
 // Linux MT event codes (linux/input-event-codes.h).
 const (

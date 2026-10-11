@@ -5,7 +5,7 @@ import (
 )
 
 // BenchmarkFrameLoopTwoWindows is the assembled-loop zero-alloc gate
-// (bloxwm-o2x): scene snapshot + clear + chrome + blit + present on a
+// (stratifi-o2x): scene snapshot + clear + chrome + blit + present on a
 // memory output must run at 0 allocs/op once the renderer goroutine owns
 // its scratch.
 func BenchmarkFrameLoopTwoWindows(b *testing.B) {

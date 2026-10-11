@@ -4,8 +4,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"bloxwm/internal/input"
-	"bloxwm/internal/layout"
+	"stratifi/internal/input"
+	"stratifi/internal/layout"
 )
 
 type fakeClient struct {

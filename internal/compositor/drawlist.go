@@ -1,7 +1,7 @@
 package compositor
 
 import (
-	"bloxwm/internal/render"
+	"stratifi/internal/render"
 )
 
 // Quad is one solid-color rectangle: the flat record behind Clear,

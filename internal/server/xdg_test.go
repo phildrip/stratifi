@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"bloxwm/internal/wire"
 	"golang.org/x/sys/unix"
+	"stratifi/internal/wire"
 )
 
 func TestXdgShellToplevelLifecycle(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "bloxwm-xdg-test-*")
+	tempDir, err := os.MkdirTemp("", "stratifi-xdg-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
@@ -98,11 +98,11 @@ func TestXdgShellToplevelLifecycle(t *testing.T) {
 
 	// 7. Set title and app_id
 	start = w.BeginMessage(30, 2) // xdg_toplevel.set_title
-	_ = w.WriteString("bloxwm terminal")
+	_ = w.WriteString("stratifi terminal")
 	_ = w.EndMessage(start, 30, 2)
 
 	start = w.BeginMessage(30, 3) // xdg_toplevel.set_app_id
-	_ = w.WriteString("org.bloxwm.term")
+	_ = w.WriteString("org.stratifi.term")
 	_ = w.EndMessage(start, 30, 3)
 
 	if err := unix.Sendmsg(rawFD, w.Bytes(), nil, nil, 0); err != nil {

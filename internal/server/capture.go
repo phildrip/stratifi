@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"bloxwm/internal/protocol/capture"
-	"bloxwm/internal/protocol/wayland"
+	"stratifi/internal/protocol/capture"
+	"stratifi/internal/protocol/wayland"
 )
 
 // FrameGrabber supplies compositor framebuffer pixels for capture sessions.
@@ -241,11 +241,11 @@ func (c *Client) HandleExtImageCopyCaptureFrameV1Capture(senderID uint32) error 
 	// Release the client lock: the grab may take milliseconds (Vulkan
 	// readback) and must not block concurrent client traffic.
 	//
-	// OWNERSHIP CONTRACT (bloxwm-aos audit): this is safe today because
+	// OWNERSHIP CONTRACT (stratifi-aos audit): this is safe today because
 	// dispatch is strictly serial per client — the pool cannot be unmapped
 	// (WlShmPoolDestroy) while the grabber writes, since both run on this
 	// client's single dispatch goroutine. When the compositor core
-	// (bloxwm-o2x) drives grabs from the render thread, the pool MUST be
+	// (stratifi-o2x) drives grabs from the render thread, the pool MUST be
 	// pinned for the grab's duration (refcount or per-grab lease) before
 	// calling the grabber outside dispatch; WlShmPoolDestroy must refuse
 	// to unmap pinned pools.

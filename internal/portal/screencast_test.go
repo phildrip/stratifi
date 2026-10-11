@@ -3,7 +3,7 @@ package portal
 import (
 	"testing"
 
-	dbus "bloxwm/internal/portal/dbus"
+	dbus "stratifi/internal/portal/dbus"
 )
 
 // buildStartResponse encodes (u code, a{sv} results) with one stream,
