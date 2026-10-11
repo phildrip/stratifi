@@ -151,6 +151,30 @@ type Selection struct {
 	MimeTypes []string // types offered, order = preference
 }
 
+// Subsurface is one wl_subsurface: a child surface composited relative to
+// its parent wl_surface. Position is parent-relative. Sync defers state
+// application until the parent surface commits (the protocol default);
+// Desync applies on the subsurface's own commit.
+type Subsurface struct {
+	ID        uint32
+	SurfaceID uint32 // the child wl_surface
+	ParentID  uint32 // the parent wl_surface object id
+	X, Y      int32  // current position, relative to the parent surface origin
+
+	PendingX, PendingY int32 // set_position writes here
+	HasPending         bool
+
+	Sync   bool // true = synchronized (default)
+	Active bool
+
+	// Last emitted state, so a parent's repeated commits do not spam the
+	// actor with identical updates.
+	lastX, lastY, lastW, lastH int32
+	lastMapped                 bool
+	lastOrder                  int32
+	emitted                    bool
+}
+
 // XdgPositioner accumulates the xdg_positioner state a client assembles
 // before requesting a popup placement.
 type XdgPositioner struct {

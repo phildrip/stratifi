@@ -367,3 +367,96 @@ func TestShellWorkspaceCycle(t *testing.T) {
 		t.Fatalf("ws1 scene = %d windows, want 1", len(*list))
 	}
 }
+
+// TestShellSubsurfacePlacesAndFollowsParent: a subsurface sits at its offset
+// from the parent window's body, and follows the parent when the layout
+// moves it.
+func TestShellSubsurfacePlacesAndFollowsParent(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17)) // parent surface id 3
+	parent := h.shell.activeWin
+
+	h.shell.applyEvent(shellEvent{
+		kind:            evSubsurfaceAdded,
+		clientID:        1,
+		surfaceID:       70,
+		parentSurfaceID: 3,
+		px:              10,
+		py:              20,
+		pw:              64,
+		ph:              64,
+	})
+
+	body := h.shell.bodyRectOf(parent)
+	subs := h.shell.visibleSubsurfaces()
+	if len(subs) != 1 {
+		t.Fatalf("visible subsurfaces = %d, want 1", len(subs))
+	}
+	want := layout.Rect{X: body.X + 10, Y: body.Y + 20, W: 64, H: 64}
+	if subs[0].rect != want {
+		t.Errorf("subsurface rect = %+v, want %+v", subs[0].rect, want)
+	}
+
+	// Adding a second window reflows the column: the parent shrinks and the
+	// subsurface must move with it (offset preserved).
+	h.shell.applyEvent(windowAddedEvent(1, 18, 19))
+	newBody := h.shell.bodyRectOf(parent)
+	if newBody == body {
+		t.Skip("layout did not move the parent; nothing to verify")
+	}
+	subs = h.shell.visibleSubsurfaces()
+	want = layout.Rect{X: newBody.X + 10, Y: newBody.Y + 20, W: 64, H: 64}
+	if subs[0].rect != want {
+		t.Errorf("after reflow: rect = %+v, want %+v", subs[0].rect, want)
+	}
+}
+
+// TestShellSubsurfaceDroppedWithParentOrClient: subsurfaces whose parent
+// window is unknown, or whose client vanished, never render.
+func TestShellSubsurfaceDroppedWithParentOrClient(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+
+	// Unknown parent surface: dropped.
+	h.shell.applyEvent(shellEvent{
+		kind: evSubsurfaceAdded, clientID: 1, surfaceID: 70,
+		parentSurfaceID: 999, px: 1, py: 1, pw: 8, ph: 8,
+	})
+	if len(h.shell.subsurfaces) != 0 {
+		t.Fatal("subsurface with unknown parent was registered")
+	}
+
+	// Real parent, then the client dies: the subsurface goes with it.
+	h.shell.applyEvent(shellEvent{
+		kind: evSubsurfaceAdded, clientID: 1, surfaceID: 70,
+		parentSurfaceID: 3, px: 1, py: 1, pw: 8, ph: 8,
+	})
+	if len(h.shell.subsurfaces) != 1 {
+		t.Fatal("subsurface not registered")
+	}
+	h.shell.applyEvent(shellEvent{kind: evClientGone, clientID: 1})
+	if len(h.shell.subsurfaces) != 0 {
+		t.Error("subsurface outlived its client")
+	}
+}
+
+// TestShellSubsurfaceOrder: siblings render bottom-to-top by stack order.
+func TestShellSubsurfaceOrder(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 16, 17))
+	h.shell.applyEvent(shellEvent{
+		kind: evSubsurfaceAdded, clientID: 1, surfaceID: 70, parentSurfaceID: 3,
+		px: 0, py: 0, pw: 32, ph: 32, ssOrder: 1,
+	})
+	h.shell.applyEvent(shellEvent{
+		kind: evSubsurfaceAdded, clientID: 1, surfaceID: 71, parentSurfaceID: 3,
+		px: 0, py: 0, pw: 32, ph: 32, ssOrder: 0,
+	})
+	subs := h.shell.visibleSubsurfaces()
+	if len(subs) != 2 {
+		t.Fatalf("subsurfaces = %d, want 2", len(subs))
+	}
+	if subs[0].surfaceID != 71 || subs[1].surfaceID != 70 {
+		t.Errorf("order = [%d %d], want [71 70] (order 0 first)", subs[0].surfaceID, subs[1].surfaceID)
+	}
+}

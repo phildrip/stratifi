@@ -15,14 +15,16 @@ type Server struct {
 	clientMu   sync.RWMutex
 	nextClient atomic.Uint32
 
-	onCommit        func(s *Surface)
-	onToplevel      func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
-	selectionMu     sync.Mutex
-	selection       Selection // compositor clipboard: last set_selection wins
-	onPopup         func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
-	onPopupMapped   func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
-	onClientDestroy func(clientID uint32)
-	closed          atomic.Bool
+	onCommit         func(s *Surface)
+	onToplevel       func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
+	selectionMu      sync.Mutex
+	selection        Selection // compositor clipboard: last set_selection wins
+	onPopup          func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)
+	onPopupMapped    func(clientID, popupID, surfaceID, parentXdgSurfaceID uint32, x, y, w, h int32)
+	onSubsurface     func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)
+	onSubsurfaceGone func(clientID, surfaceID uint32)
+	onClientDestroy  func(clientID uint32)
+	closed           atomic.Bool
 
 	keymapFD   int
 	keymapSize uint32
@@ -136,6 +138,20 @@ func (s *Server) onPopupCreated(c *Client, popupID, surfaceID, parentXdgSurfaceI
 	if s.onPopup != nil {
 		s.onPopup(c, popupID, surfaceID, parentXdgSurfaceID)
 	}
+}
+
+// SetOnSubsurface registers a callback when a subsurface's state is applied:
+// its position (parent-surface-relative), current buffer size, and stack
+// order among its parent's subsurfaces (bottom = 0). Fired on the
+// subsurface's own commit when desync, or the parent's commit when sync.
+func (s *Server) SetOnSubsurface(fn func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32)) {
+	s.onSubsurface = fn
+}
+
+// SetOnSubsurfaceGone registers a callback when a subsurface is destroyed,
+// so the shell can drop its scene entry.
+func (s *Server) SetOnSubsurfaceGone(fn func(clientID, surfaceID uint32)) {
+	s.onSubsurfaceGone = fn
 }
 
 // Run accepts incoming client connections until closed.

@@ -52,6 +52,8 @@ const (
 	evFocusNext
 	evFocusPrev
 	evPopupAdded
+	evSubsurfaceAdded
+	evSubsurfaceGone
 	evWorkspaceSwitch
 	evWorkspaceMove
 	evColumnNext
@@ -62,17 +64,19 @@ const (
 
 // shellEvent is one message to the owner goroutine.
 type shellEvent struct {
-	kind           evKind
-	popupID        uint32
-	px, py, pw, ph int32
-	wsIndex        int
-	clientID       uint32
-	surfaceID      uint32
-	xdgSurfaceID   uint32
-	toplevelID     uint32
-	winID          layout.WindowID
-	title          string
-	appID          string
+	kind            evKind
+	popupID         uint32
+	px, py, pw, ph  int32
+	ssOrder         int32
+	wsIndex         int
+	clientID        uint32
+	surfaceID       uint32
+	parentSurfaceID uint32
+	xdgSurfaceID    uint32
+	toplevelID      uint32
+	winID           layout.WindowID
+	title           string
+	appID           string
 }
 
 func main() {
@@ -473,6 +477,24 @@ func main() {
 		}
 	})
 
+	srv.SetOnSubsurface(func(clientID, surfaceID, parentSurfaceID uint32, x, y, w, h, order int32) {
+		events <- shellEvent{
+			kind:            evSubsurfaceAdded,
+			clientID:        clientID,
+			surfaceID:       surfaceID,
+			parentSurfaceID: parentSurfaceID,
+			px:              x,
+			py:              y,
+			pw:              w,
+			ph:              h,
+			ssOrder:         order,
+		}
+	})
+
+	srv.SetOnSubsurfaceGone(func(clientID, surfaceID uint32) {
+		events <- shellEvent{kind: evSubsurfaceGone, clientID: clientID, surfaceID: surfaceID}
+	})
+
 	srv.SetOnCommit(func(s *server.Surface) {
 		select {
 		case events <- shellEvent{kind: evCommitted, clientID: s.ClientID, surfaceID: s.ID}:
@@ -525,6 +547,18 @@ func main() {
 					X: m.Rect.X, Y: m.Rect.Y, W: m.Rect.W, H: m.Rect.H,
 				},
 				Active: m.WinID == shell.activeWin,
+			})
+		}
+		// Subsurfaces render above their parent window and below popups,
+		// borderless, at offsets from the parent's body origin.
+		for _, ss := range shell.visibleSubsurfaces() {
+			dst = append(dst, compositor.SceneWindow{
+				ClientID:  ss.clientID,
+				SurfaceID: ss.surfaceID,
+				Rect: compositor.Rect{
+					X: ss.rect.X, Y: ss.rect.Y, W: ss.rect.W, H: ss.rect.H,
+				},
+				Popup: true, // borderless overlay, same draw path as popups
 			})
 		}
 		// Popups render above windows, borderless, at their placed rects.

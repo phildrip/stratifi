@@ -37,6 +37,10 @@ type shellState struct {
 	// body from the configure geometry the server computed.
 	popups map[popupKey]*popupEntry
 
+	// Subsurfaces keyed by (clientID, child surface id): composited at an
+	// offset from the parent window's body, above it, below popups.
+	subsurfaces map[subsurfaceKey]*subsurfaceEntry
+
 	sceneInfo    *atomic.Pointer[[]input.WindowInfo]
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
@@ -56,6 +60,7 @@ func newShellState(
 		windows:      make(map[layout.WindowID]*WindowMapping),
 		surfaceToWin: make(map[objRef]layout.WindowID),
 		popups:       make(map[popupKey]*popupEntry),
+		subsurfaces:  make(map[subsurfaceKey]*subsurfaceEntry),
 		sceneInfo:    sceneInfo,
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
@@ -218,6 +223,32 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 		s.publishScene()
 
+	case evSubsurfaceAdded:
+		// Position is relative to the parent SURFACE origin, which is the
+		// window's client-body origin (inside border + titlebar). Store the
+		// offset relative to the body so a relayout repositions it too.
+		winID, ok := s.surfaceToWin[objRef{ev.clientID, ev.parentSurfaceID}]
+		if !ok {
+			return // parent window gone: drop
+		}
+		s.subsurfaces[subsurfaceKey{ev.clientID, ev.surfaceID}] = &subsurfaceEntry{
+			clientID:  ev.clientID,
+			surfaceID: ev.surfaceID,
+			parentWin: winID,
+			ox:        ev.px,
+			oy:        ev.py,
+			w:         ev.pw,
+			h:         ev.ph,
+			order:     ev.ssOrder,
+		}
+		fmt.Printf("[+] Subsurface: client=%d surface=%d parent_win=%d offset=(%d,%d) size=%dx%d order=%d\n",
+			ev.clientID, ev.surfaceID, winID, ev.px, ev.py, ev.pw, ev.ph, ev.ssOrder)
+		s.publishScene()
+
+	case evSubsurfaceGone:
+		delete(s.subsurfaces, subsurfaceKey{ev.clientID, ev.surfaceID})
+		s.publishScene()
+
 	case evCommitted:
 		if winID, ok := s.surfaceToWin[objRef{ev.clientID, ev.surfaceID}]; ok {
 			if m, exists := s.windows[winID]; exists {
@@ -248,6 +279,12 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		for key, p := range s.popups {
 			if p.clientID == ev.clientID {
 				delete(s.popups, key)
+			}
+		}
+		// Subsurfaces die with their client too.
+		for key, ss := range s.subsurfaces {
+			if ss.clientID == ev.clientID {
+				delete(s.subsurfaces, key)
 			}
 		}
 
@@ -349,6 +386,84 @@ type popupEntry struct {
 	surfaceID  uint32
 	parentWin  layout.WindowID
 	x, y, w, h int32
+}
+
+// subsurfaceKey scopes subsurface lookups by client and child surface id.
+type subsurfaceKey struct {
+	clientID  uint32
+	surfaceID uint32
+}
+
+// subsurfaceEntry is the actor's record of one wl_subsurface: which window
+// it belongs to, its offset from that window's body origin, its size, and
+// its stack order among the parent's subsurfaces.
+type subsurfaceEntry struct {
+	clientID  uint32
+	surfaceID uint32
+	parentWin layout.WindowID
+	ox, oy    int32 // offset from the parent body origin
+	w, h      int32
+	order     int32
+}
+
+// bodyRectOf returns a window's client-body rectangle inside the output
+// (inside the border and titlebar), or zero if the window is unknown.
+func (s *shellState) bodyRectOf(winID layout.WindowID) layout.Rect {
+	m, ok := s.windows[winID]
+	if !ok {
+		return layout.Rect{}
+	}
+	bw := s.engine.Config.BorderWidth
+	th := s.engine.Config.TitlebarHeight
+	return layout.Rect{
+		X: m.Rect.X + bw,
+		Y: m.Rect.Y + bw + th,
+		W: m.Rect.W - 2*bw,
+		H: m.Rect.H - bw - th - bw,
+	}
+}
+
+// subsurfacePlacement is one subsurface resolved to an absolute output rect
+// (parent body origin + stored offset), ready for the scene.
+type subsurfacePlacement struct {
+	clientID, surfaceID uint32
+	parentWin           layout.WindowID
+	rect                layout.Rect
+	order               int32
+}
+
+// visibleSubsurfaces returns the subsurfaces on visible workspaces, resolved
+// to output rects and ordered bottom-to-top within each parent. The scene fn
+// and tests both read placement through this.
+func (s *shellState) visibleSubsurfaces() []subsurfacePlacement {
+	subs := make([]*subsurfaceEntry, 0, len(s.subsurfaces))
+	for _, ss := range s.subsurfaces {
+		if !s.workspaces.Visible(ss.parentWin) {
+			continue
+		}
+		if ss.w < 2 || ss.h < 2 {
+			continue // unmapped noise
+		}
+		subs = append(subs, ss)
+	}
+	sort.Slice(subs, func(i, j int) bool {
+		if subs[i].parentWin != subs[j].parentWin {
+			return subs[i].parentWin < subs[j].parentWin
+		}
+		return subs[i].order < subs[j].order
+	})
+	out := make([]subsurfacePlacement, 0, len(subs))
+	for _, ss := range subs {
+		body := s.bodyRectOf(ss.parentWin)
+		out = append(out, subsurfacePlacement{
+			clientID:  ss.clientID,
+			surfaceID: ss.surfaceID,
+			parentWin: ss.parentWin,
+			rect:      layout.Rect{X: body.X + ss.ox, Y: body.Y + ss.oy, W: ss.w, H: ss.h},
+			order:     ss.order,
+		})
+	}
+	return out
 }
 
 // popupParentBody maps a parent xdg_surface to its window's client-body

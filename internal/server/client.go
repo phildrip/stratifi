@@ -43,7 +43,13 @@ type Client struct {
 	xdgToplevels   xdgStore[XdgToplevel]
 	xdgPositioners xdgStore[XdgPositioner]
 	xdgPopups      xdgStore[XdgPopup]
+	subsurfaces    xdgStore[Subsurface]
 	dataSources    xdgStore[DataSource]
+
+	// subsurfaceOrder maps a parent wl_surface id to the ordered list of
+	// its subsurface object ids (bottom to top). place_above/below reorder
+	// this list; the actor renders in this order.
+	subsurfaceOrder map[uint32][]uint32
 
 	serial atomic.Uint32
 
@@ -530,11 +536,73 @@ func (c *Client) HandleWlSurfaceCommit(senderID uint32) error {
 	// wl_surface; find the popup role registered for that surface.
 	c.configurePendingPopups(senderID)
 
+	// Subsurfaces: a desync child applies on its own commit; a sync child
+	// applies when its parent commits.
+	c.applySubsurfaceCommit(senderID)
+
 	// Notify compositor of surface update outside of c.mu
 	if c.server.onCommit != nil {
 		c.server.onSurfaceCommitted(&surfCopy)
 	}
 	return nil
+}
+
+// applySubsurfaceCommit propagates a wl_surface.commit to any subsurface
+// role: the committing surface may itself be a desync child (apply now) or
+// a parent (flush its sync children). Emits happen after the lock drops.
+func (c *Client) applySubsurfaceCommit(surfaceID uint32) {
+	type emit struct {
+		surfaceID, parentID uint32
+		x, y, w, h, order   int32
+	}
+	var emits []emit
+
+	c.mu.Lock()
+	for i := range c.subsurfaces.items {
+		ss := &c.subsurfaces.items[i].rec
+		if !ss.Active {
+			continue
+		}
+		child := ss.SurfaceID == surfaceID && !ss.Sync
+		parent := ss.ParentID == surfaceID && ss.Sync
+		if !child && !parent {
+			continue
+		}
+		if ss.HasPending {
+			ss.X, ss.Y = ss.PendingX, ss.PendingY
+			ss.HasPending = false
+		}
+		w, h, mapped := c.surfaceSize(ss.SurfaceID)
+		order := c.subsurfaceOrderOf(ss.ID, ss.ParentID)
+		if ss.emitted && ss.lastX == ss.X && ss.lastY == ss.Y &&
+			ss.lastW == w && ss.lastH == h && ss.lastMapped == mapped && ss.lastOrder == order {
+			continue // nothing changed; do not spam the actor
+		}
+		ss.lastX, ss.lastY, ss.lastW, ss.lastH = ss.X, ss.Y, w, h
+		ss.lastMapped, ss.lastOrder, ss.emitted = mapped, order, true
+		emits = append(emits, emit{ss.SurfaceID, ss.ParentID, ss.X, ss.Y, w, h, order})
+	}
+	c.mu.Unlock()
+
+	if c.server.onSubsurface == nil {
+		return
+	}
+	for _, e := range emits {
+		c.server.onSubsurface(c.ID(), e.surfaceID, e.parentID, e.x, e.y, e.w, e.h, e.order)
+	}
+}
+
+// surfaceSize returns the current buffer dimensions of a wl_surface.
+func (c *Client) surfaceSize(surfaceID uint32) (int32, int32, bool) {
+	sf, ok := c.surfaces.get(surfaceID)
+	if !ok || sf.Current.AttachedBufferID == 0 {
+		return 0, 0, false
+	}
+	buf, ok := c.buffers.get(sf.Current.AttachedBufferID)
+	if !ok {
+		return 0, 0, false
+	}
+	return buf.Width, buf.Height, true
 }
 
 // (The popup's own xdg_surface id was recorded in XdgPopup.XdgSurfaceID at
@@ -1241,6 +1309,18 @@ func (c *Client) HandleWlSubcompositorGetSubsurface(senderID uint32, id uint32, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.registerObject(id, ObjSubsurface)
+	c.subsurfaces.add(id, Subsurface{
+		ID:        id,
+		SurfaceID: surface,
+		ParentID:  parent,
+		Sync:      true, // protocol default: synchronized
+		Active:    true,
+	})
+	if c.subsurfaceOrder == nil {
+		c.subsurfaceOrder = make(map[uint32][]uint32)
+	}
+	// New subsurfaces go on top of the parent's stack.
+	c.subsurfaceOrder[parent] = append(c.subsurfaceOrder[parent], id)
 	return nil
 }
 
@@ -1248,29 +1328,115 @@ func (c *Client) HandleWlSubcompositorGetSubsurface(senderID uint32, id uint32, 
 
 func (c *Client) HandleWlSubsurfaceDestroy(senderID uint32) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var surfaceID uint32
+	var gone bool
+	if ss, ok := c.subsurfaces.get(senderID); ok {
+		surfaceID = ss.SurfaceID
+		c.subsurfaceOrder[ss.ParentID] = removeUint32(c.subsurfaceOrder[ss.ParentID], senderID)
+		gone = true
+	}
+	c.subsurfaces.remove(senderID)
 	c.unregisterObject(senderID)
+	c.mu.Unlock()
+
+	if gone && c.server.onSubsurfaceGone != nil {
+		c.server.onSubsurfaceGone(c.ID(), surfaceID)
+	}
 	return nil
 }
 
 func (c *Client) HandleWlSubsurfaceSetPosition(senderID uint32, x int32, y int32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Takes effect on the next commit of the subsurface (synchronized
+	// subsurfaces defer to the parent's commit).
+	c.subsurfaces.mutate(senderID, func(ss *Subsurface) {
+		ss.PendingX, ss.PendingY = x, y
+		ss.HasPending = true
+	})
 	return nil
 }
 
 func (c *Client) HandleWlSubsurfacePlaceAbove(senderID uint32, sibling uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reorderSubsurface(senderID, sibling, true)
 	return nil
 }
 
 func (c *Client) HandleWlSubsurfacePlaceBelow(senderID uint32, sibling uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reorderSubsurface(senderID, sibling, false)
 	return nil
 }
 
 func (c *Client) HandleWlSubsurfaceSetSync(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.subsurfaces.mutate(senderID, func(ss *Subsurface) { ss.Sync = true })
 	return nil
 }
 
 func (c *Client) HandleWlSubsurfaceSetDesync(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.subsurfaces.mutate(senderID, func(ss *Subsurface) { ss.Sync = false })
 	return nil
+}
+
+// reorderSubsurface moves senderID next to sibling in the parent's stack.
+func (c *Client) reorderSubsurface(senderID, sibling uint32, above bool) {
+	ss, ok := c.subsurfaces.get(senderID)
+	if !ok {
+		return
+	}
+	list := c.subsurfaceOrder[ss.ParentID]
+	// Remove the mover.
+	list = removeUint32(list, senderID)
+	// Find the sibling's position in the trimmed list.
+	idx := indexUint32(list, sibling)
+	if idx < 0 {
+		// Sibling unknown: keep the mover at the end.
+		c.subsurfaceOrder[ss.ParentID] = append(list, senderID)
+		return
+	}
+	pos := idx + 1 // above
+	if !above {
+		pos = idx
+	}
+	list = append(list, 0)
+	copy(list[pos+1:], list[pos:])
+	list[pos] = senderID
+	c.subsurfaceOrder[ss.ParentID] = list
+}
+
+func removeUint32(s []uint32, v uint32) []uint32 {
+	for i, x := range s {
+		if x == v {
+			return append(s[:i], s[i+1:]...)
+		}
+	}
+	return s
+}
+
+func indexUint32(s []uint32, v uint32) int {
+	for i, x := range s {
+		if x == v {
+			return i
+		}
+	}
+	return -1
+}
+
+// subsurfaceOrderOf returns the stack index of a subsurface object id.
+func (c *Client) subsurfaceOrderOf(id, parent uint32) int32 {
+	for i, x := range c.subsurfaceOrder[parent] {
+		if x == id {
+			return int32(i)
+		}
+	}
+	return 0
 }
 
 // --- WlDataDeviceManagerHandler ---
