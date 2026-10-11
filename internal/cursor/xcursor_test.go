@@ -121,3 +121,16 @@ func TestThemeDirRespectsEnv(t *testing.T) {
 		t.Errorf("ThemeDir = %q, want %q", got, want)
 	}
 }
+
+func TestDefaultSize(t *testing.T) {
+	t.Setenv("XCURSOR_SIZE", "32")
+	if got := DefaultSize(); got != 32 {
+		t.Errorf("DefaultSize = %d, want 32", got)
+	}
+	for _, bad := range []string{"", "0", "-5", "abc", "9999"} {
+		t.Setenv("XCURSOR_SIZE", bad)
+		if got := DefaultSize(); got != 24 {
+			t.Errorf("DefaultSize(%q) = %d, want 24 fallback", bad, got)
+		}
+	}
+}

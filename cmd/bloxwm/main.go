@@ -538,7 +538,7 @@ func main() {
 	// as client surfaces, so no renderer change is needed.
 	const cursorClientID uint32 = 0
 	const defaultCursorSurfaceID uint32 = 1
-	defaultCursor, cursorErr := cursor.Load("left_ptr", 24)
+	defaultCursor, cursorErr := cursor.Load("left_ptr", cursor.DefaultSize())
 	if cursorErr != nil {
 		fmt.Printf("[!] default cursor unavailable (%v): pointer invisible over chrome\n", cursorErr)
 	}

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -94,6 +95,17 @@ func Parse(data []byte, want int) (*Image, error) {
 	px := make([]byte, n)
 	copy(px, data[p+36:p+36+n])
 	return &Image{Pixels: px, W: int32(w), H: int32(h), HotX: int32(xhot), HotY: int32(yhot)}, nil
+}
+
+// DefaultSize returns the preferred cursor size: $XCURSOR_SIZE when it is a
+// sane positive integer, else 24 (the conventional default).
+func DefaultSize() int {
+	if s := os.Getenv("XCURSOR_SIZE"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 512 {
+			return n
+		}
+	}
+	return 24
 }
 
 // Load reads a named cursor from the resolved theme, e.g. Load("left_ptr", 24).
