@@ -1,7 +1,8 @@
 # Positioning: Stratifi vs. the Wayland Tiling Compositors
 
-Companion to [`manifesto.md`](manifesto.md). The point of this document is to make the
-delta crisp. Scrollable columns alone are not a differentiator — niri already did that,
+Companion to [`manifesto.md`](manifesto.md) and
+[`architecture-landscape.md`](architecture-landscape.md). The point of this document is to
+make the delta crisp. Scrollable columns alone are not a differentiator — niri already did that,
 and did it well. Stratifi has to earn its place on axes niri, sway, and river do not
 occupy simultaneously.
 
