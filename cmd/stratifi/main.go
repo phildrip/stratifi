@@ -102,6 +102,25 @@ type shellEvent struct {
 	appID           string
 }
 
+// knownActions are the binding actions the compositor accepts. Kept as data
+// (not a switch) so docs can be checked against it (see TestReadmeListsAllActions).
+var knownActions = []string{
+	"close", "quit", "spawn", "focus_next", "focus_prev",
+	"workspace", "move_to_workspace", "focus_col_next", "focus_col_prev",
+	"workspace_next", "workspace_prev", "column_next", "column_prev", "overview",
+	"fullscreen", "focus_window_up", "focus_window_down",
+	"move_window_up", "move_window_down", "move_col_left", "move_col_right",
+}
+
+func isKnownAction(a string) bool {
+	for _, x := range knownActions {
+		if x == a {
+			return true
+		}
+	}
+	return false
+}
+
 // applySessionEnv advertises this compositor as a Wayland desktop session so
 // clients, toolkits and portals behave correctly (XDG_SESSION_TYPE,
 // XDG_CURRENT_DESKTOP). Existing values are kept — a nested run should not
@@ -302,13 +321,7 @@ func main() {
 			os.Exit(1)
 		}
 		seenCombo[key] = true
-		switch pb.Action {
-		case "close", "quit", "spawn", "focus_next", "focus_prev",
-			"workspace", "move_to_workspace", "focus_col_next", "focus_col_prev",
-			"workspace_next", "workspace_prev", "column_next", "column_prev", "overview",
-			"fullscreen", "focus_window_up", "focus_window_down",
-			"move_window_up", "move_window_down", "move_col_left", "move_col_right":
-		default:
+		if !isKnownAction(pb.Action) {
 			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
 			os.Exit(1)
 		}

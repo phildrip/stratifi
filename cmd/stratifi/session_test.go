@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"stratifi/internal/desktop"
@@ -46,5 +47,20 @@ func TestSessionDesktopEntry(t *testing.T) {
 	}
 	if len(e.Exec) == 0 || e.Exec[0] != "stratifi-session" {
 		t.Errorf("Exec = %q, want [stratifi-session]", e.Exec)
+	}
+}
+
+// TestReadmeListsAllActions keeps the docs honest: every action the config
+// validator accepts must appear in the README's action table.
+func TestReadmeListsAllActions(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	readme := string(data)
+	for _, a := range knownActions {
+		if !strings.Contains(readme, a) {
+			t.Errorf("README does not mention action %q", a)
+		}
 	}
 }
