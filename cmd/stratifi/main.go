@@ -172,9 +172,10 @@ func applySessionEnv() {
 // grabRequest is one screen-capture frame request, served on the actor
 // goroutine (the frame loop's single owner).
 type grabRequest struct {
-	dst          []byte
-	w, h, stride int32
-	done         chan error
+	dst              []byte
+	regionX, regionY int32
+	w, h, stride     int32
+	done             chan error
 }
 
 // captureGrabber implements server.FrameGrabber by rendezvousing with the
@@ -184,10 +185,10 @@ type captureGrabber struct {
 	req chan grabRequest
 }
 
-func (g *captureGrabber) GrabFramebuffer(dst []byte, w, h, stride int32) error {
+func (g *captureGrabber) GrabFramebuffer(dst []byte, x, y, w, h, stride int32) error {
 	done := make(chan error, 1)
 	select {
-	case g.req <- grabRequest{dst: dst, w: w, h: h, stride: stride, done: done}:
+	case g.req <- grabRequest{dst: dst, regionX: x, regionY: y, w: w, h: h, stride: stride, done: done}:
 	case <-time.After(2 * time.Second):
 		return fmt.Errorf("capture: compositor busy")
 	}
@@ -951,6 +952,19 @@ func main() {
 		return out
 	})
 
+	// A window's on-screen rectangle (for toplevel capture sources) comes from
+	// the actor's published hit-test snapshot (visible windows).
+	srv.SetToplevelGeometry(func(key uint32) (int32, int32, int32, int32, bool) {
+		if p := sceneInfo.Load(); p != nil {
+			for _, info := range *p {
+				if uint32(info.WinID) == key {
+					return info.Rect.X, info.Rect.Y, info.Rect.W, info.Rect.H, true
+				}
+			}
+		}
+		return 0, 0, 0, 0, false
+	})
+
 	// Screen capture: the actor owns the frame loop, so grabs are served
 	// there (never concurrently with rendering).
 	grabReqs := make(chan grabRequest, 4)
@@ -985,7 +999,7 @@ func main() {
 			frameLoop.RenderOnce() // owner goroutine: single-owner discipline
 
 		case gr := <-grabReqs:
-			gr.done <- frameLoop.GrabFrame(gr.dst, gr.w, gr.h, gr.stride)
+			gr.done <- frameLoop.GrabFrame(gr.dst, gr.regionX, gr.regionY, gr.w, gr.h, gr.stride)
 
 		case <-exitCh:
 			fmt.Println("[*] Shutting down stratifi...")

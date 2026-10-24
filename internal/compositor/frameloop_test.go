@@ -237,7 +237,7 @@ func TestFrameLoopGrabFrame(t *testing.T) {
 	}, nil)
 
 	dst := make([]byte, 80*60*4)
-	if err := fl.GrabFrame(dst, 80, 60, 80*4); err != nil {
+	if err := fl.GrabFrame(dst, 0, 0, 80, 60, 80*4); err != nil {
 		t.Fatalf("GrabFrame: %v", err)
 	}
 	if !bytes.Equal(dst, out.Pixels()) {
@@ -252,16 +252,39 @@ func TestFrameLoopGrabFrame(t *testing.T) {
 func TestCopyFrameGuards(t *testing.T) {
 	src := make([]byte, 32*16*4)
 	dst := make([]byte, 32*16*4)
-	if err := CopyFrame(src, 32*4, 32, 16, dst, 32, 16, 32*4); err != nil {
+	if err := CopyFrame(src, 32*4, 32, 16, 0, 0, dst, 32, 16, 32*4); err != nil {
 		t.Fatalf("valid copy: %v", err)
 	}
 	for name, err := range map[string]error{
-		"zero-size":     CopyFrame(src, 32*4, 32, 16, dst, 0, 16, 32*4),
-		"short-stride":  CopyFrame(src, 32*4, 32, 16, dst, 32, 16, 16),
-		"dst-too-small": CopyFrame(src, 32*4, 32, 16, dst[:16], 32, 16, 32*4),
+		"zero-size":     CopyFrame(src, 32*4, 32, 16, 0, 0, dst, 0, 16, 32*4),
+		"short-stride":  CopyFrame(src, 32*4, 32, 16, 0, 0, dst, 32, 16, 16),
+		"dst-too-small": CopyFrame(src, 32*4, 32, 16, 0, 0, dst[:16], 32, 16, 32*4),
 	} {
 		if err == nil {
 			t.Errorf("%s: expected error", name)
 		}
+	}
+}
+
+// TestCopyFrameRegion: a toplevel capture grabs the window's sub-rectangle.
+func TestCopyFrameRegion(t *testing.T) {
+	// 8x4 source, each pixel = its x in the low byte.
+	const sw, sh = 8, 4
+	src := make([]byte, sw*sh*4)
+	for y := 0; y < sh; y++ {
+		for x := 0; x < sw; x++ {
+			src[(y*sw+x)*4] = byte(x)
+		}
+	}
+	dst := make([]byte, 3*2*4)
+	if err := CopyFrame(src, sw*4, sw, sh, 2, 1, dst, 3, 2, 3*4); err != nil {
+		t.Fatalf("region copy: %v", err)
+	}
+	// dst[0] is source (2,1) -> x=2; dst[1] is (3,1) -> x=3.
+	if dst[0] != 2 || dst[4] != 3 {
+		t.Errorf("region copy wrong: got %d,%d want 2,3", dst[0], dst[4])
+	}
+	if err := CopyFrame(src, sw*4, sw, sh, 100, 100, dst, 3, 2, 3*4); err == nil {
+		t.Error("region outside the output accepted")
 	}
 }

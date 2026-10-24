@@ -169,34 +169,45 @@ func (fl *FrameLoop) Drain() {
 // dst (tightly packed, dstStride bytes per row) for screen capture. It runs on
 // the frame-loop goroutine (single owner): the capture path reaches it via the
 // owner, never concurrently with Run.
-func (fl *FrameLoop) GrabFrame(dst []byte, w, h, dstStride int32) error {
+func (fl *FrameLoop) GrabFrame(dst []byte, x, y, w, h, dstStride int32) error {
 	fl.RenderOnce()
-	return CopyFrame(fl.out.Pixels(), fl.out.Stride(), fl.out.Width(), fl.out.Height(), dst, w, h, dstStride)
+	return CopyFrame(fl.out.Pixels(), fl.out.Stride(), fl.out.Width(), fl.out.Height(),
+		x, y, dst, w, h, dstStride)
 }
 
 // CopyFrame copies the overlapping region of a source frame (srcStride,
 // srcW×srcH) into dst (tightly packed, dstStride). It is 1:1 — capture
 // requests the output geometry — and never reads or writes out of bounds.
-func CopyFrame(src []byte, srcStride, srcW, srcH int32, dst []byte, w, h, dstStride int32) error {
+func CopyFrame(src []byte, srcStride, srcW, srcH, srcX, srcY int32, dst []byte, w, h, dstStride int32) error {
 	if w <= 0 || h <= 0 || dstStride < w*4 {
 		return fmt.Errorf("capture: bad target geometry %dx%d stride %d", w, h, dstStride)
 	}
-	rows, cols := h, w
-	if rows > srcH {
-		rows = srcH
+	if srcX < 0 {
+		srcX = 0
 	}
-	if cols > srcW {
-		cols = srcW
+	if srcY < 0 {
+		srcY = 0
+	}
+	rows, cols := h, w
+	if max := srcH - srcY; rows > max {
+		rows = max
+	}
+	if max := srcW - srcX; cols > max {
+		cols = max
+	}
+	if rows <= 0 || cols <= 0 {
+		return fmt.Errorf("capture: region (%d,%d %dx%d) outside the %dx%d output", srcX, srcY, w, h, srcW, srcH)
 	}
 	rowBytes := int(cols) * 4
 	if int(rows)*int(dstStride) > len(dst) {
 		return fmt.Errorf("capture: dst too small (%d bytes) for %dx%d stride %d", len(dst), w, h, dstStride)
 	}
-	if int(rows)*int(srcStride) > len(src) {
-		return fmt.Errorf("capture: src too small (%d bytes)", len(src))
+	if int(srcY+rows)*int(srcStride) > len(src) {
+		return fmt.Errorf("capture: src too small (%d bytes) for region", len(src))
 	}
-	for y := int32(0); y < rows; y++ {
-		copy(dst[y*dstStride:y*dstStride+int32(rowBytes)], src[y*srcStride:y*srcStride+int32(rowBytes)])
+	for ry := int32(0); ry < rows; ry++ {
+		sOff := (srcY+ry)*srcStride + srcX*4
+		copy(dst[ry*dstStride:ry*dstStride+int32(rowBytes)], src[sOff:sOff+int32(rowBytes)])
 	}
 	return nil
 }

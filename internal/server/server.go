@@ -20,6 +20,7 @@ type Server struct {
 	onToplevel       func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
 	onToplevelMeta   func(clientID, toplevelID uint32, title, appID string)
 	toplevelProvider func() []Toplevel
+	toplevelGeometry func(key uint32) (x, y, w, h int32, ok bool)
 	selectionMu      sync.Mutex
 	selection        Selection // compositor clipboard: last set_selection wins
 	onPopup          func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)

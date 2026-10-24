@@ -15,7 +15,7 @@ import (
 // fakeFrameGrabber fills the target with a deterministic gradient.
 type fakeFrameGrabber struct{}
 
-func (fakeFrameGrabber) GrabFramebuffer(dst []byte, width, height int32, stride int32) error {
+func (fakeFrameGrabber) GrabFramebuffer(dst []byte, _x, _y, width, height int32, stride int32) error {
 	if stride*height > int32(len(dst)) {
 		return ErrFrameGrabberOverflow
 	}
@@ -328,8 +328,8 @@ type grabRecordingGrabber struct {
 	ch chan<- struct{}
 }
 
-func (g grabRecordingGrabber) GrabFramebuffer(dst []byte, width, height, stride int32) error {
-	err := fakeFrameGrabber{}.GrabFramebuffer(dst, width, height, stride)
+func (g grabRecordingGrabber) GrabFramebuffer(dst []byte, x, y, width, height, stride int32) error {
+	err := fakeFrameGrabber{}.GrabFramebuffer(dst, x, y, width, height, stride)
 	select {
 	case g.ch <- struct{}{}:
 	default:

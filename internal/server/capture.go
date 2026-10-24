@@ -9,16 +9,19 @@ import (
 )
 
 // FrameGrabber supplies compositor framebuffer pixels for capture sessions.
-// dst receives tightly packed BGRA pixel data for the region.
+// dst receives tightly packed BGRA pixel data for the (x,y,width,height)
+// region of the output — (0,0) for a whole-output source, or the window's
+// rectangle for a toplevel source.
 type FrameGrabber interface {
-	GrabFramebuffer(dst []byte, width, height int32, stride int32) error
+	GrabFramebuffer(dst []byte, x, y, width, height, stride int32) error
 }
 
 // captureSource tracks an ext_image_capture_source_v1 object and the output
 // it resolves to.
 type captureSource struct {
-	ID       uint32
-	OutputID uint32 // wl_output object id backing this source
+	ID          uint32
+	OutputID    uint32 // wl_output object id backing this source
+	ToplevelKey uint32 // non-zero: capture this window (strategy: region grab)
 }
 
 // captureSession is an ext_image_copy_capture_session_v1 bound to a source.
@@ -26,6 +29,8 @@ type captureSession struct {
 	ID       uint32
 	SourceID uint32
 	Stopped  bool
+	// region of the output this session captures (0,0 for a whole output).
+	X, Y int32
 }
 
 // captureFrame is an ext_image_copy_capture_frame_v1 in flight.
@@ -59,6 +64,21 @@ func (s *Server) SetFrameGrabber(g FrameGrabber) {
 	s.captureGrabber = g
 }
 
+// SetToplevelGeometry registers a reader for a window's on-screen rectangle
+// (used to size and locate a toplevel capture source). Absent windows report
+// ok=false.
+func (s *Server) SetToplevelGeometry(fn func(key uint32) (x, y, w, h int32, ok bool)) {
+	s.toplevelGeometry = fn
+}
+
+// toplevelRect resolves a window's on-screen rectangle, if known.
+func (s *Server) toplevelRect(key uint32) (int32, int32, int32, int32, bool) {
+	if s.toplevelGeometry == nil {
+		return 0, 0, 0, 0, false
+	}
+	return s.toplevelGeometry(key)
+}
+
 // outputResolution reads the compositor's virtual output geometry — the
 // same source wl_output advertisement uses (Server.Output()).
 func (s *Server) outputResolution() (uint32, uint32) {
@@ -87,10 +107,16 @@ func (c *Client) HandleExtOutputImageCaptureSourceManagerV1Destroy(senderID uint
 // --- ext_foreign_toplevel_image_capture_source_manager_v1 ---
 
 func (c *Client) HandleExtForeignToplevelImageCaptureSourceManagerV1CreateSource(senderID uint32, id uint32, toplevelHandle uint32) error {
-	// Window-capture sources resolve through the toplevel handle registry;
-	// the compositor does not yet expose ext-foreign-toplevel-list, so
-	// creating a source without a resolvable handle is a protocol error.
-	return fmt.Errorf("foreign toplevel capture sources not yet supported (handle %d)", toplevelHandle)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Resolve the client's toplevel handle to the compositor's window key.
+	key, ok := c.toplevelKeys[toplevelHandle]
+	if !ok {
+		return fmt.Errorf("capture source for unknown toplevel handle %d", toplevelHandle)
+	}
+	c.registerObject(id, ObjCaptureSource)
+	c.capture.sources[id] = &captureSource{ID: id, ToplevelKey: key}
+	return nil
 }
 
 func (c *Client) HandleExtForeignToplevelImageCaptureSourceManagerV1Destroy(senderID uint32) error {
@@ -121,11 +147,21 @@ func (c *Client) HandleExtImageCopyCaptureManagerV1CreateSession(senderID uint32
 		return fmt.Errorf("capture session for unknown source %d", source)
 	}
 
+	sess := &captureSession{ID: id, SourceID: src.ID}
 	c.registerObject(id, ObjCaptureSession)
-	c.capture.sessions[id] = &captureSession{ID: id, SourceID: src.ID}
+	c.capture.sessions[id] = sess
 
 	w := c.conn.WriterRef()
 	sW, sH := c.server.outputResolution()
+	if src.ToplevelKey != 0 {
+		// A window source: report (and later capture) the window's rectangle.
+		if x, y, ww, hh, ok := c.server.toplevelRect(src.ToplevelKey); ok {
+			sess.X, sess.Y, sW, sH = x, y, uint32(ww), uint32(hh)
+		} else {
+			// Window is gone: tear the session down with no source.
+			sW, sH = 0, 0
+		}
+	}
 	if err := capture.SendExtImageCopyCaptureSessionV1BufferSize(w, id, sW, sH); err != nil {
 		return err
 	}
@@ -237,7 +273,12 @@ func (c *Client) HandleExtImageCopyCaptureFrameV1Capture(senderID uint32) error 
 		return fmt.Errorf("capture buffer %d pool %d missing", frame.BufferID, buf.PoolID)
 	}
 	grabber := c.server.captureGrabber
+	sess := c.capture.sessions[frame.Session]
 	bufWidth, bufHeight, bufStride := buf.Width, buf.Height, buf.Stride
+	var regionX, regionY int32
+	if sess != nil {
+		regionX, regionY = sess.X, sess.Y
+	}
 	// Release the client lock: the grab may take milliseconds (Vulkan
 	// readback) and must not block concurrent client traffic.
 	//
@@ -254,7 +295,7 @@ func (c *Client) HandleExtImageCopyCaptureFrameV1Capture(senderID uint32) error 
 	var failReason uint32
 	if grabber == nil {
 		failReason = uint32(uint32(capture.ExtImageCopyCaptureFrameV1FailureReasonUnknown))
-	} else if err := grabber.GrabFramebuffer(pool.Data[buf.Offset:], int32(bufWidth), int32(bufHeight), int32(bufStride)); err != nil {
+	} else if err := grabber.GrabFramebuffer(pool.Data[buf.Offset:], regionX, regionY, int32(bufWidth), int32(bufHeight), int32(bufStride)); err != nil {
 		failReason = uint32(uint32(capture.ExtImageCopyCaptureFrameV1FailureReasonBufferConstraints))
 	}
 

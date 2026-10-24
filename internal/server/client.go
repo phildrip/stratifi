@@ -19,17 +19,18 @@ import (
 
 // Global numeric IDs advertised to clients via wl_registry.
 const (
-	GlobalCompositor          uint32 = 1
-	GlobalShm                 uint32 = 2
-	GlobalXdgWmBase           uint32 = 3
-	GlobalOutput              uint32 = 4
-	GlobalSeat                uint32 = 5
-	GlobalSubcompositor       uint32 = 6
-	GlobalDataDeviceManager   uint32 = 7
-	GlobalLayerShell          uint32 = 10
-	GlobalXdgOutputManager    uint32 = 11
-	GlobalIdleNotifier        uint32 = 12
-	GlobalForeignToplevelList uint32 = 13
+	GlobalCompositor                               uint32 = 1
+	GlobalShm                                      uint32 = 2
+	GlobalXdgWmBase                                uint32 = 3
+	GlobalOutput                                   uint32 = 4
+	GlobalSeat                                     uint32 = 5
+	GlobalSubcompositor                            uint32 = 6
+	GlobalDataDeviceManager                        uint32 = 7
+	GlobalLayerShell                               uint32 = 10
+	GlobalXdgOutputManager                         uint32 = 11
+	GlobalIdleNotifier                             uint32 = 12
+	GlobalForeignToplevelList                      uint32 = 13
+	GlobalForeignToplevelImageCaptureSourceManager uint32 = 14
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -327,6 +328,10 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 		foreigntoplevel.ExtForeignToplevelListV1Interface, 1); err != nil {
 		return err
 	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalForeignToplevelImageCaptureSourceManager,
+		capture.ExtForeignToplevelImageCaptureSourceManagerV1Interface, 1); err != nil {
+		return err
+	}
 	return wayland.SendWlRegistryGlobal(w, registryID, GlobalDataDeviceManager, "wl_data_device_manager", 3)
 }
 
@@ -375,6 +380,8 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 	case GlobalForeignToplevelList:
 		c.registerObject(id, ObjForeignToplevelList)
 		c.addToplevelList(id)
+	case GlobalForeignToplevelImageCaptureSourceManager:
+		c.registerObject(id, ObjCaptureSourceManagerToplevel)
 	case GlobalDataDeviceManager:
 		c.registerObject(id, ObjDataDeviceManager)
 	case GlobalOutputImageCaptureSourceManager:
