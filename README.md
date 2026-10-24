@@ -164,6 +164,23 @@ Hot paths must be **0 allocs/op** and `scripts/check-allocs.sh` fails the gate
 if any regresses (see `skills/data-oriented-design.md`); CI runs the same
 suite. Live bring-up smoke test: `scripts/nested-dev.sh smoke`.
 
+## Screen sharing (browser video calls)
+
+The compositor implements `ext-image-copy-capture-v1`; `xdg-desktop-portal-wlr`
+drives it and streams over PipeWire. Enable it once with a portal config
+(`~/.config/xdg-desktop-portal/stratifi-portals.conf`):
+
+```ini
+[preferred]
+org.freedesktop.impl.portal.ScreenCast=wlr;
+org.freedesktop.impl.portal.Screenshot=wlr;
+default=gtk;
+```
+
+Requirements: `pipewire`, `xdg-desktop-portal`, `xdg-desktop-portal-wlr`, and a
+`pipewire` session. Whole-output sharing works; **per-window** sharing needs
+`ext-foreign-toplevel-list-v1` (tracked, not yet implemented).
+
 ## Architecture
 
 - `cmd/stratifi` — the compositor: actor goroutine owning all scene state,

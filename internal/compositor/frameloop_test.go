@@ -1,6 +1,7 @@
 package compositor
 
 import (
+	"bytes"
 	"sync"
 	"testing"
 )
@@ -223,5 +224,44 @@ func TestFrameLoopNilSnapshotFallsBack(t *testing.T) {
 	fl.RenderOnce() // must not panic
 	if px := out.pixel(50, 60); px != PlaceholderColor {
 		t.Errorf("placeholder pixel = %08x, want %08x", px, PlaceholderColor)
+	}
+}
+
+// TestFrameLoopGrabFrame: a capture grab renders the scene and returns exactly
+// the output framebuffer (this is what the screen-share frame path consumes).
+func TestFrameLoopGrabFrame(t *testing.T) {
+	out := newFakeOutput(80, 60)
+	fl := NewFrameLoop(out, func(dst []SceneWindow) []SceneWindow {
+		return append(dst, SceneWindow{ClientID: 1, SurfaceID: 1,
+			Rect: Rect{X: 0, Y: 0, W: 80, H: 60}, Active: true})
+	}, nil)
+
+	dst := make([]byte, 80*60*4)
+	if err := fl.GrabFrame(dst, 80, 60, 80*4); err != nil {
+		t.Fatalf("GrabFrame: %v", err)
+	}
+	if !bytes.Equal(dst, out.Pixels()) {
+		t.Error("grab does not match the output framebuffer")
+	}
+	// Window chrome is present (a border pixel is not the background).
+	if dst[0] == 0 && dst[1] == 0 && dst[2] == 0 {
+		t.Error("grab looks unrendered (all zero)")
+	}
+}
+
+func TestCopyFrameGuards(t *testing.T) {
+	src := make([]byte, 32*16*4)
+	dst := make([]byte, 32*16*4)
+	if err := CopyFrame(src, 32*4, 32, 16, dst, 32, 16, 32*4); err != nil {
+		t.Fatalf("valid copy: %v", err)
+	}
+	for name, err := range map[string]error{
+		"zero-size":     CopyFrame(src, 32*4, 32, 16, dst, 0, 16, 32*4),
+		"short-stride":  CopyFrame(src, 32*4, 32, 16, dst, 32, 16, 16),
+		"dst-too-small": CopyFrame(src, 32*4, 32, 16, dst[:16], 32, 16, 32*4),
+	} {
+		if err == nil {
+			t.Errorf("%s: expected error", name)
+		}
 	}
 }

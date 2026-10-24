@@ -169,6 +169,36 @@ func applySessionEnv() {
 	}
 }
 
+// grabRequest is one screen-capture frame request, served on the actor
+// goroutine (the frame loop's single owner).
+type grabRequest struct {
+	dst          []byte
+	w, h, stride int32
+	done         chan error
+}
+
+// captureGrabber implements server.FrameGrabber by rendezvousing with the
+// actor goroutine. GrabFramebuffer runs on a client dispatch goroutine, so it
+// must not touch the framebuffer directly — only the owner may.
+type captureGrabber struct {
+	req chan grabRequest
+}
+
+func (g *captureGrabber) GrabFramebuffer(dst []byte, w, h, stride int32) error {
+	done := make(chan error, 1)
+	select {
+	case g.req <- grabRequest{dst: dst, w: w, h: h, stride: stride, done: done}:
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("capture: compositor busy")
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(2 * time.Second):
+		return fmt.Errorf("capture: frame timeout")
+	}
+}
+
 // socketName is the Wayland socket we serve; spawned clients point at it.
 const socketName = "wayland-stratifi-0"
 
@@ -588,6 +618,11 @@ func main() {
 	}
 	defer srv.Close()
 
+	// Advertise the REAL output geometry: wl_output, zxdg_output and the
+	// capture session buffer_size all read it. Without this they fall back
+	// to the server default (960x640) and clients lay out for the wrong size.
+	srv.SetOutput(server.Output{Width: uint32(outputW), Height: uint32(outputH), RefreshHz: 60})
+
 	if kmFD, kmSize, err := server.DefaultXKBKeymap(); err == nil {
 		srv.SetKeymap(kmFD, kmSize)
 		defer unix.Close(kmFD)
@@ -889,6 +924,11 @@ func main() {
 		defer ipcStop()
 	}
 
+	// Screen capture: the actor owns the frame loop, so grabs are served
+	// there (never concurrently with rendering).
+	grabReqs := make(chan grabRequest, 4)
+	srv.SetFrameGrabber(&captureGrabber{req: grabReqs})
+
 	// Server run loop.
 	go func() {
 		if err := srv.Run(); err != nil {
@@ -916,6 +956,9 @@ func main() {
 
 		case <-renderTick:
 			frameLoop.RenderOnce() // owner goroutine: single-owner discipline
+
+		case gr := <-grabReqs:
+			gr.done <- frameLoop.GrabFrame(gr.dst, gr.w, gr.h, gr.stride)
 
 		case <-exitCh:
 			fmt.Println("[*] Shutting down stratifi...")

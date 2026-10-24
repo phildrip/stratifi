@@ -13,6 +13,7 @@
 package compositor
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -164,6 +165,42 @@ func (fl *FrameLoop) Drain() {
 // The renderer goroutine is the only caller in production; test callers
 // substitute for it, which is safe because RenderOnce itself is not
 // concurrent-safe by design — single-owner discipline is external.
+// GrabFrame renders the current scene and copies the output framebuffer into
+// dst (tightly packed, dstStride bytes per row) for screen capture. It runs on
+// the frame-loop goroutine (single owner): the capture path reaches it via the
+// owner, never concurrently with Run.
+func (fl *FrameLoop) GrabFrame(dst []byte, w, h, dstStride int32) error {
+	fl.RenderOnce()
+	return CopyFrame(fl.out.Pixels(), fl.out.Stride(), fl.out.Width(), fl.out.Height(), dst, w, h, dstStride)
+}
+
+// CopyFrame copies the overlapping region of a source frame (srcStride,
+// srcW×srcH) into dst (tightly packed, dstStride). It is 1:1 — capture
+// requests the output geometry — and never reads or writes out of bounds.
+func CopyFrame(src []byte, srcStride, srcW, srcH int32, dst []byte, w, h, dstStride int32) error {
+	if w <= 0 || h <= 0 || dstStride < w*4 {
+		return fmt.Errorf("capture: bad target geometry %dx%d stride %d", w, h, dstStride)
+	}
+	rows, cols := h, w
+	if rows > srcH {
+		rows = srcH
+	}
+	if cols > srcW {
+		cols = srcW
+	}
+	rowBytes := int(cols) * 4
+	if int(rows)*int(dstStride) > len(dst) {
+		return fmt.Errorf("capture: dst too small (%d bytes) for %dx%d stride %d", len(dst), w, h, dstStride)
+	}
+	if int(rows)*int(srcStride) > len(src) {
+		return fmt.Errorf("capture: src too small (%d bytes)", len(src))
+	}
+	for y := int32(0); y < rows; y++ {
+		copy(dst[y*dstStride:y*dstStride+int32(rowBytes)], src[y*srcStride:y*srcStride+int32(rowBytes)])
+	}
+	return nil
+}
+
 func (fl *FrameLoop) RenderOnce() {
 	fl.sceneBuf = fl.scene(fl.sceneBuf[:0])
 	scene := fl.sceneBuf

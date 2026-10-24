@@ -301,6 +301,15 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalIdleNotifier, "ext_idle_notifier_v1", 2); err != nil {
 		return err
 	}
+	// Screen/window capture (browser screen sharing via xdg-desktop-portal).
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutputImageCaptureSourceManager,
+		capture.ExtOutputImageCaptureSourceManagerV1Interface, 1); err != nil {
+		return err
+	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalImageCopyCaptureManager,
+		capture.ExtImageCopyCaptureManagerV1Interface, 1); err != nil {
+		return err
+	}
 	return wayland.SendWlRegistryGlobal(w, registryID, GlobalDataDeviceManager, "wl_data_device_manager", 3)
 }
 
