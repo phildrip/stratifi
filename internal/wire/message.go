@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+
+	"stratifi/internal/alignio"
 )
 
 // HeaderSize is the fixed 8-byte header for every Wayland wire message.
@@ -104,7 +106,7 @@ func (r *Reader) ReadBytes() ([]byte, error) {
 	}
 
 	// Calculate padded length to 32-bit (4-byte) boundary
-	paddedLen := (int(length) + 3) &^ 3
+	paddedLen := alignio.AlignUp(int(length), 4)
 	if len(r.buf)-r.offset < paddedLen {
 		return nil, fmt.Errorf("buffer too short for bytes: need %d, have %d", paddedLen, len(r.buf)-r.offset)
 	}
@@ -210,7 +212,7 @@ func (w *Writer) WriteFixed(v Fixed) error {
 // WriteString appends a NUL-terminated string with 32-bit padding.
 func (w *Writer) WriteString(s string) error {
 	sLen := len(s) + 1 // including trailing NUL
-	paddedLen := (sLen + 3) &^ 3
+	paddedLen := alignio.AlignUp(sLen, 4)
 	totalNeed := 4 + paddedLen
 
 	if len(w.buf)-w.offset < totalNeed {

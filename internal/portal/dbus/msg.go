@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"stratifi/internal/alignio"
 	"strings"
 )
 
@@ -85,11 +86,7 @@ func (w *Writer) Reset() { w.buf = w.buf[:0] }
 func (w *Writer) Bytes() []byte { return w.buf }
 
 // Align pads to an n-byte boundary relative to the message start.
-func (w *Writer) Align(n int) {
-	for len(w.buf)%n != 0 {
-		w.buf = append(w.buf, 0)
-	}
-}
+func (w *Writer) Align(n int) { w.buf = alignio.PadTo(w.buf, n) }
 
 // PutByte appends one raw byte (no alignment). Named PutByte to avoid the
 // io.ByteWriter signature convention this package does not follow.

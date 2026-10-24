@@ -8,6 +8,7 @@ package spa
 
 import (
 	"fmt"
+	"stratifi/internal/alignio"
 )
 
 // POD type ids (spa/utils/type.h).
@@ -122,11 +123,7 @@ func (b *Builder) Bytes() []byte { return b.buf }
 // Len returns the current byte count.
 func (b *Builder) Len() int { return len(b.buf) }
 
-func (b *Builder) pad8() {
-	for len(b.buf)%8 != 0 {
-		b.buf = append(b.buf, 0)
-	}
-}
+func (b *Builder) pad8() { b.buf = alignio.PadTo(b.buf, 8) }
 
 func (b *Builder) u32(v uint32) {
 	b.buf = append(b.buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
