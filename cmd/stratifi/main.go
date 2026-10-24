@@ -102,6 +102,23 @@ type shellEvent struct {
 	appID           string
 }
 
+// applySessionEnv advertises this compositor as a Wayland desktop session so
+// clients, toolkits and portals behave correctly (XDG_SESSION_TYPE,
+// XDG_CURRENT_DESKTOP). Existing values are kept — a nested run should not
+// clobber the outer session's identity.
+func applySessionEnv() {
+	for k, v := range map[string]string{
+		"XDG_SESSION_TYPE":    "wayland",
+		"XDG_CURRENT_DESKTOP": "stratifi",
+		"XDG_SESSION_DESKTOP": "stratifi",
+		"XDG_SESSION_CLASS":   "user",
+	} {
+		if os.Getenv(k) == "" {
+			_ = os.Setenv(k, v)
+		}
+	}
+}
+
 // socketName is the Wayland socket we serve; spawned clients point at it.
 const socketName = "wayland-stratifi-0"
 
@@ -171,6 +188,8 @@ func main() {
 	fmt.Println("                     Starting stratifi                             ")
 	fmt.Println("       Data-Oriented Wayland Window Manager & Compositor        ")
 	fmt.Println("=================================================================")
+
+	applySessionEnv()
 
 	outputW := int32(1280)
 	outputH := int32(720)

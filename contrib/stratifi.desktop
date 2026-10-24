@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Stratifi
+Comment=Stratifi — a layered Wayland compositor
+Exec=stratifi-session
+Type=Application
+DesktopNames=stratifi

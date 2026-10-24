@@ -52,6 +52,17 @@ func Scan() []Entry {
 	return out
 }
 
+// ParseFile parses a single .desktop file (used by tools and tests; Scan is
+// the directory-walking entry point).
+func ParseFile(path string) (Entry, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Entry{}, false
+	}
+	defer f.Close()
+	return parse(f, filepath.Base(path))
+}
+
 // load parses one .desktop file, keeping only visible applications.
 func load(path, id string) (Entry, bool) {
 	f, err := os.Open(path)

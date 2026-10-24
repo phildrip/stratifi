@@ -1,0 +1,19 @@
+#!/bin/sh
+# stratifi-session — start stratifi as a Wayland session (bare metal).
+#
+# Install for a display manager (greetd, GDM, SDDM):
+#   install -Dm644 contrib/stratifi.desktop /usr/share/wayland-sessions/stratifi.desktop
+#   install -Dm755 contrib/stratifi-session   /usr/local/bin/stratifi-session
+# then pick "Stratifi" in the session menu.
+set -eu
+
+# No parent compositor to nest inside: drive the DRM/KMS backend.
+: "${STRATIFI_KMS:=1}"
+export STRATIFI_KMS
+
+# Present as a Wayland desktop session so toolkits/portals behave.
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=stratifi
+export XDG_SESSION_DESKTOP=stratifi
+
+exec stratifi "$@"
