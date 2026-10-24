@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"stratifi/internal/protocol/capture"
+	"stratifi/internal/protocol/foreigntoplevel"
 	"stratifi/internal/protocol/idlenotify"
 	"stratifi/internal/protocol/layershell"
 	"stratifi/internal/protocol/wayland"
@@ -18,16 +19,17 @@ import (
 
 // Global numeric IDs advertised to clients via wl_registry.
 const (
-	GlobalCompositor        uint32 = 1
-	GlobalShm               uint32 = 2
-	GlobalXdgWmBase         uint32 = 3
-	GlobalOutput            uint32 = 4
-	GlobalSeat              uint32 = 5
-	GlobalSubcompositor     uint32 = 6
-	GlobalDataDeviceManager uint32 = 7
-	GlobalLayerShell        uint32 = 10
-	GlobalXdgOutputManager  uint32 = 11
-	GlobalIdleNotifier      uint32 = 12
+	GlobalCompositor          uint32 = 1
+	GlobalShm                 uint32 = 2
+	GlobalXdgWmBase           uint32 = 3
+	GlobalOutput              uint32 = 4
+	GlobalSeat                uint32 = 5
+	GlobalSubcompositor       uint32 = 6
+	GlobalDataDeviceManager   uint32 = 7
+	GlobalLayerShell          uint32 = 10
+	GlobalXdgOutputManager    uint32 = 11
+	GlobalIdleNotifier        uint32 = 12
+	GlobalForeignToplevelList uint32 = 13
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -51,7 +53,12 @@ type Client struct {
 	xdgPopups      xdgStore[XdgPopup]
 	subsurfaces    xdgStore[Subsurface]
 	layerSurfaces  xdgStore[LayerSurface]
-	dataSources    xdgStore[DataSource]
+
+	// ext-foreign-toplevel-list-v1: the client's list objects and the handle
+	// object id per toplevel key.
+	toplevelLists map[uint32]*toplevelList
+	toplevelKeys  map[uint32]uint32
+	dataSources   xdgStore[DataSource]
 
 	// subsurfaceOrder maps a parent wl_surface id to the ordered list of
 	// its subsurface object ids (bottom to top). place_above/below reorder
@@ -203,6 +210,12 @@ var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) erro
 	ObjIdleNotification: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return idlenotify.DispatchExtIdleNotificationV1(r, h, c)
 	},
+	ObjForeignToplevelList: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return foreigntoplevel.DispatchExtForeignToplevelListV1(r, h, c)
+	},
+	ObjForeignToplevelHandle: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return foreigntoplevel.DispatchExtForeignToplevelHandleV1(r, h, c)
+	},
 	ObjSubsurface: func(c *Client, r *wire.Reader, h wire.Header) error { return wayland.DispatchWlSubsurface(r, h, c) },
 	ObjDataDeviceManager: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return wayland.DispatchWlDataDeviceManager(r, h, c)
@@ -310,6 +323,10 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 		capture.ExtImageCopyCaptureManagerV1Interface, 1); err != nil {
 		return err
 	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalForeignToplevelList,
+		foreigntoplevel.ExtForeignToplevelListV1Interface, 1); err != nil {
+		return err
+	}
 	return wayland.SendWlRegistryGlobal(w, registryID, GlobalDataDeviceManager, "wl_data_device_manager", 3)
 }
 
@@ -355,6 +372,9 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		c.registerObject(id, ObjXdgOutputManager)
 	case GlobalIdleNotifier:
 		c.registerObject(id, ObjIdleNotifier)
+	case GlobalForeignToplevelList:
+		c.registerObject(id, ObjForeignToplevelList)
+		c.addToplevelList(id)
 	case GlobalDataDeviceManager:
 		c.registerObject(id, ObjDataDeviceManager)
 	case GlobalOutputImageCaptureSourceManager:

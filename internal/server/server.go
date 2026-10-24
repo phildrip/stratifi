@@ -19,6 +19,7 @@ type Server struct {
 	onCommit         func(s *Surface)
 	onToplevel       func(c *Client, toplevel *XdgToplevel, xdgSurfaceID uint32)
 	onToplevelMeta   func(clientID, toplevelID uint32, title, appID string)
+	toplevelProvider func() []Toplevel
 	selectionMu      sync.Mutex
 	selection        Selection // compositor clipboard: last set_selection wins
 	onPopup          func(c *Client, popupID, surfaceID, parentXdgSurfaceID uint32)

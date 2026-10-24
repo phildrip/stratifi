@@ -54,6 +54,7 @@ func newShellHarness() *shellHarness {
 			*h.focus = append(*h.focus, focusCall{winID, clientID, surfaceID})
 		},
 		func(argv []string) { *h.spawned = append(*h.spawned, argv) },
+		nil, // onToplevel: tests set it directly when needed
 	)
 	return h
 }
@@ -772,5 +773,37 @@ func TestShellConfigReloadAppliesMetrics(t *testing.T) {
 	c := h.shell.engine.Config
 	if c.Gap != 20 || c.BorderWidth != 5 || c.TitlebarHeight != 40 || c.ColumnWidth != 0.25 {
 		t.Errorf("engine config = %+v, want the reloaded metrics", c)
+	}
+}
+
+// TestShellNotifiesToplevelList: the shell reports window open/label/close to
+// the toplevel-list seam (feeds ext-foreign-toplevel-list-v1).
+func TestShellNotifiesToplevelList(t *testing.T) {
+	h := newShellHarness()
+	type note struct {
+		kind         int
+		key          uint32
+		title, appID string
+	}
+	var got []note
+	h.shell.onToplevel = func(kind int, key uint32, title, appID string) {
+		got = append(got, note{kind, key, title, appID})
+	}
+	h.shell.applyEvent(shellEvent{kind: evWindowAdded, clientID: 1, xdgSurfaceID: 16, toplevelID: 17, title: "first", appID: "foot"})
+	winID := h.shell.activeWin
+	h.shell.applyEvent(shellEvent{kind: evWindowMeta, clientID: 1, toplevelID: 17, title: "renamed", appID: "foot"})
+	h.shell.applyEvent(shellEvent{kind: evClientGone, clientID: 1})
+
+	if len(got) != 3 {
+		t.Fatalf("notifications = %d, want 3 (%+v)", len(got), got)
+	}
+	if got[0].kind != toplevelOpened || got[0].key != uint32(winID) || got[0].title != "first" {
+		t.Errorf("open = %+v, want opened/%d/first", got[0], winID)
+	}
+	if got[1].kind != toplevelChanged || got[1].title != "renamed" {
+		t.Errorf("change = %+v, want changed/renamed", got[1])
+	}
+	if got[2].kind != toplevelClosed || got[2].key != uint32(winID) {
+		t.Errorf("close = %+v, want closed/%d", got[2], winID)
 	}
 }

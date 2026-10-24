@@ -59,6 +59,7 @@ type shellState struct {
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
 	spawn        func(argv []string)
+	onToplevel   func(kind int, key uint32, title, appID string)
 }
 
 func newShellState(
@@ -69,6 +70,7 @@ func newShellState(
 	clientOf func(clientID uint32) shellClient,
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32),
 	spawn func(argv []string),
+	onToplevel func(kind int, key uint32, title, appID string),
 ) *shellState {
 	return &shellState{
 		engine:       workspaces.Engine(),
@@ -85,6 +87,7 @@ func newShellState(
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
 		spawn:        spawn,
+		onToplevel:   onToplevel,
 	}
 }
 
@@ -268,6 +271,9 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		// new window, and focus alone does not make pointer events land.
 		s.publishScene()
 		s.focusActive()
+		if s.onToplevel != nil {
+			s.onToplevel(toplevelOpened, uint32(winID), ev.title, ev.appID)
+		}
 
 	case evPopupAdded:
 		// Place over the parent window's body: the server's geometry is
@@ -382,6 +388,9 @@ func (s *shellState) applyEvent(ev shellEvent) {
 				if s.fullscreenWin == winID {
 					s.fullscreenWin = 0
 				}
+				if s.onToplevel != nil {
+					s.onToplevel(toplevelClosed, uint32(winID), "", "")
+				}
 				fmt.Printf("[-] Window closed: WinID=%d ClientID=%d\n", winID, ev.clientID)
 			}
 		}
@@ -469,6 +478,9 @@ func (s *shellState) applyEvent(ev shellEvent) {
 			if m.ToplevelID == ev.toplevelID && m.ClientID == ev.clientID {
 				m.Title = ev.title
 				m.AppID = ev.appID
+				if s.onToplevel != nil {
+					s.onToplevel(toplevelChanged, uint32(m.WinID), ev.title, ev.appID)
+				}
 			}
 		}
 		s.publishLauncher()
@@ -574,6 +586,13 @@ type popupEntry struct {
 	parentWin  layout.WindowID
 	x, y, w, h int32
 }
+
+// Toplevel-list notification kinds (ext-foreign-toplevel-list-v1).
+const (
+	toplevelOpened = iota
+	toplevelChanged
+	toplevelClosed
+)
 
 // Layer-surface layer constants (zwlr_layer_shell_v1).
 const (

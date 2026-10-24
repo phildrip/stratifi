@@ -39,6 +39,8 @@ const (
 	ObjXdgOutput
 	ObjIdleNotifier
 	ObjIdleNotification
+	ObjForeignToplevelList
+	ObjForeignToplevelHandle
 
 	// Screen capture protocol objects (ext-image-copy-capture-v1).
 	ObjCaptureSourceManagerOutput

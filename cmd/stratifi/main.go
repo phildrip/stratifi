@@ -770,6 +770,18 @@ func main() {
 			router.RequestFocus(winID, clientID, surfaceID, toplevelID)
 		},
 		spawnClient,
+		func(kind int, key uint32, title, appID string) {
+			t := server.Toplevel{Key: key, Title: title, AppID: appID,
+				Identifier: fmt.Sprintf("stratifi-%d", key)}
+			switch kind {
+			case toplevelOpened:
+				srv.NotifyToplevelOpened(t)
+			case toplevelChanged:
+				srv.NotifyToplevelChanged(t)
+			case toplevelClosed:
+				srv.NotifyToplevelClosed(key)
+			}
+		},
 	)
 
 	// The frame loop renders from closures that run ON the actor
@@ -923,6 +935,21 @@ func main() {
 	} else {
 		defer ipcStop()
 	}
+
+	// ext-foreign-toplevel-list-v1: the compositor owns window state, so the
+	// server reads the launcher snapshot for the initial list.
+	srv.SetToplevelProvider(func() []server.Toplevel {
+		p := launcherList.Load()
+		if p == nil {
+			return nil
+		}
+		out := make([]server.Toplevel, 0, len(*p))
+		for _, w := range *p {
+			out = append(out, server.Toplevel{Key: w.WinID, Title: w.Title, AppID: w.AppID,
+				Identifier: fmt.Sprintf("stratifi-%d", w.WinID)})
+		}
+		return out
+	})
 
 	// Screen capture: the actor owns the frame loop, so grabs are served
 	// there (never concurrently with rendering).
