@@ -85,7 +85,13 @@ bind Super+f fullscreen
 
 # gestures (touchpad; KMS/evdev only — nested has no touchpad source)
 bind_gesture swipe left 3 workspace_next
+
+# run at startup (via sh -c, routed through the session supervisor)
+exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY
+exec swayidle -w timeout 300 'swaylock -f'
 ```
+
+Lines ending in `\` continue on the next line.
 
 ### Keys
 
@@ -113,6 +119,8 @@ f1–f12  home end delete up down left right
 | `move_window_up` / `move_window_down` | Reorder the active window within its column. |
 | `fullscreen` | Toggle fullscreen for the active window. |
 | `workspace <n>` / `move_to_workspace <n>` | Switch to / move the window to workspace *n*. |
+| `workspace_back_and_forth` | Toggle to the previously visited workspace. |
+| `reload` | Re-read the config file: bindings and layout metrics, live. |
 | `workspace_next` / `workspace_prev` | Cycle workspaces. |
 | `overview` | Recognised; not implemented yet. |
 

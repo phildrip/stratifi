@@ -133,3 +133,37 @@ func TestParseGestureBindingErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestParseExecAndContinuation(t *testing.T) {
+	cfg, err := Parse([]byte(`
+gap 6
+exec xsettingsd
+exec swayidle -w \
+     timeout 300 'swaylock -f' \
+     before-sleep 'swaylock -f'
+bind Super+Return spawn foot
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Exec) != 2 {
+		t.Fatalf("exec = %d, want 2 (%v)", len(cfg.Exec), cfg.Exec)
+	}
+	if cfg.Exec[0] != "xsettingsd" {
+		t.Errorf("exec[0] = %q, want xsettingsd", cfg.Exec[0])
+	}
+	// Continuations join; internal spacing/quotes preserved.
+	want := "swayidle -w timeout 300 'swaylock -f' before-sleep 'swaylock -f'"
+	if cfg.Exec[1] != want {
+		t.Errorf("exec[1] = %q\n         want %q", cfg.Exec[1], want)
+	}
+	if cfg.Gap != 6 || len(cfg.Bindings) != 1 {
+		t.Errorf("gap/bindings = %d/%d, want 6/1", cfg.Gap, len(cfg.Bindings))
+	}
+}
+
+func TestParseExecNeedsCommand(t *testing.T) {
+	if _, err := Parse([]byte("exec\n")); err == nil {
+		t.Error("bare exec accepted, want error")
+	}
+}

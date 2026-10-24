@@ -745,3 +745,32 @@ func TestShellUpdatesWindowTitle(t *testing.T) {
 		t.Errorf("launcher list = %v, want the updated title", list)
 	}
 }
+
+// TestShellWorkspaceBackAndForth: toggles to the previously visited workspace.
+func TestShellWorkspaceBackAndForth(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceSwitch, wsIndex: 2})
+	if got := h.shell.workspaces.ActiveID(); got != layout.WorkspaceID(2) {
+		t.Fatalf("active = %d, want 2", got)
+	}
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceBackAndForth})
+	if got := h.shell.workspaces.ActiveID(); got != layout.WorkspaceID(1) {
+		t.Errorf("back_and_forth -> %d, want 1", got)
+	}
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceBackAndForth})
+	if got := h.shell.workspaces.ActiveID(); got != layout.WorkspaceID(2) {
+		t.Errorf("back_and_forth again -> %d, want 2 (toggles)", got)
+	}
+}
+
+// TestShellConfigReloadAppliesMetrics: a reload updates the layout metrics.
+func TestShellConfigReloadAppliesMetrics(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(shellEvent{
+		kind: evConfigReload, gap: 20, borderWidth: 5, titlebarHeight: 40, columnWidth: 0.25,
+	})
+	c := h.shell.engine.Config
+	if c.Gap != 20 || c.BorderWidth != 5 || c.TitlebarHeight != 40 || c.ColumnWidth != 0.25 {
+		t.Errorf("engine config = %+v, want the reloaded metrics", c)
+	}
+}

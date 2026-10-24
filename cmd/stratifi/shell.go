@@ -34,6 +34,7 @@ type shellState struct {
 	surfaceToWin  map[objRef]layout.WindowID
 	activeWin     layout.WindowID
 	fullscreenWin layout.WindowID // 0 = none
+	prevWorkspace layout.WorkspaceID
 
 	// Popups keyed by (clientID, popupID): placed over the parent window
 	// body from the configure geometry the server computed.
@@ -439,6 +440,23 @@ func (s *shellState) applyEvent(ev shellEvent) {
 	case evFullscreen:
 		s.toggleFullscreen()
 
+	case evConfigReload:
+		// Live layout metrics from a config reload (bindings are swapped on
+		// the input goroutine; geometry is the actor's).
+		s.engine.Config.Gap = ev.gap
+		s.engine.Config.BorderWidth = ev.borderWidth
+		s.engine.Config.TitlebarHeight = ev.titlebarHeight
+		s.engine.Config.ColumnWidth = ev.columnWidth
+		s.relayoutAll()
+
+	case evWorkspaceBackAndForth:
+		if s.prevWorkspace != 0 && s.prevWorkspace != s.workspaces.ActiveID() {
+			target := s.prevWorkspace
+			s.prevWorkspace = s.workspaces.ActiveID()
+			s.workspaces.SwitchTo(target)
+			s.relayoutAll()
+		}
+
 	case evSpawn:
 		if s.spawn != nil {
 			s.spawn(ev.argv)
@@ -486,14 +504,17 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.moveColumn(1)
 
 	case evWorkspaceNext:
+		s.prevWorkspace = s.workspaces.ActiveID()
 		s.workspaces.SwitchNext()
 		s.relayoutAll()
 
 	case evWorkspacePrev:
+		s.prevWorkspace = s.workspaces.ActiveID()
 		s.workspaces.SwitchPrev()
 		s.relayoutAll()
 
 	case evWorkspaceSwitch:
+		s.prevWorkspace = s.workspaces.ActiveID()
 		s.workspaces.SwitchToNumber(ev.wsIndex)
 		s.relayoutAll()
 

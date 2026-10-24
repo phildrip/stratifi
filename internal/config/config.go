@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config is the compositor configuration. Every field has a default; a
@@ -19,6 +20,9 @@ type Config struct {
 	ColumnWidth float32
 	Bindings    []Binding
 	Gestures    []GestureBinding
+	// Exec holds startup commands (`exec <cmd>`), run once the compositor is
+	// up; each is passed to `sh -c`, like sway's exec.
+	Exec []string
 }
 
 // GestureBinding is one `bind_gesture` line: a recognized gesture mapped to
@@ -57,6 +61,9 @@ func Default() Config {
 //	border_width N         border width in px (>= 0)
 //	titlebar_height N      titlebar height in px (> 0)
 //	bind COMBO ACTION...   keybinding, e.g. "bind Super+Return spawn foot"
+//	exec CMD...            run CMD at startup (via sh -c), repeatable
+//
+// A line ending in \ continues on the next line.
 //
 // Anything else is an error, as are duplicate scalar keys and malformed
 // integers. Bindings accumulate in order.
@@ -75,9 +82,16 @@ func Parse(data []byte) (Config, error) {
 		return nil
 	}
 
-	for i, raw := range splitLines(data) {
+	lines := splitLines(data)
+	for i := 0; i < len(lines); i++ {
 		line := i + 1
-		fields := splitFields(stripComment(raw))
+		raw := string(stripComment(lines[i]))
+		// Join backslash continuations (sway-style "exec ... \<newline>").
+		for endsWithContinuation(raw) && i+1 < len(lines) {
+			i++
+			raw = dropContinuation(raw) + " " + strings.TrimSpace(string(stripComment(lines[i])))
+		}
+		fields := splitFields([]byte(raw))
 		if len(fields) == 0 {
 			continue
 		}
@@ -118,6 +132,12 @@ func Parse(data []byte) (Config, error) {
 				}
 				cfg.TitlebarHeight = v
 			}
+		case "exec":
+			cmd := restAfterFirstField(raw)
+			if cmd == "" {
+				return Config{}, parseError(line, "exec needs a command")
+			}
+			cfg.Exec = append(cfg.Exec, cmd)
 		case "bind":
 			if err := bind(fields, line); err != nil {
 				return Config{}, err
@@ -141,6 +161,33 @@ func parseError(line int, format string, args ...interface{}) error {
 
 // splitLines splits on '\n', tolerating a missing trailing newline and
 // '\r\n' line endings.
+// endsWithContinuation reports whether a (comment-stripped) line ends with a
+// backslash continuation marker (sway-style multi-line directives).
+func endsWithContinuation(s string) bool {
+	s = strings.TrimRight(s, " \t")
+	return strings.HasSuffix(s, "\\")
+}
+
+// dropContinuation removes a trailing backslash and any spaces around it.
+func dropContinuation(s string) string {
+	s = strings.TrimRight(s, " \t")
+	s = strings.TrimRight(s, "\\")
+	return strings.TrimRight(s, " \t")
+}
+
+// restAfterFirstField returns everything after the first whitespace-delimited
+// token, trimmed — internal spacing and quotes preserved (for `exec`).
+func restAfterFirstField(s string) string {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+		i++
+	}
+	return strings.TrimSpace(s[i:])
+}
+
 func splitLines(data []byte) [][]byte {
 	var lines [][]byte
 	start := 0

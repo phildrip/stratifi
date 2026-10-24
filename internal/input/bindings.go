@@ -45,6 +45,12 @@ var keyNames = map[string]uint32{
 	"f11": 87, "f12": 88,
 	"home": 102, "up": 103, "left": 105, "right": 106,
 	"end": 107, "down": 108, "delete": 111,
+	// Media / hardware keys (used by the hardware-key binds).
+	"print": 210, "sysrq": 99,
+	"xf86audiomute": 113, "xf86audiolowervolume": 114, "xf86audioraisevolume": 115,
+	"xf86audioplay": 164, "xf86audiopause": 119, "xf86audiostop": 166,
+	"xf86audionext": 163, "xf86audioprev": 165,
+	"xf86monbrightnessdown": 224, "xf86monbrightnessup": 225,
 }
 
 // Binding is one compiled key combination and its action.

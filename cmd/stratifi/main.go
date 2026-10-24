@@ -63,6 +63,8 @@ const (
 	evFocusWindow
 	evWindowMeta
 	evSpawn
+	evConfigReload
+	evWorkspaceBackAndForth
 	evFocusWindowUp
 	evFocusWindowDown
 	evMoveWindowUp
@@ -91,6 +93,10 @@ type shellEvent struct {
 	keyboard        uint32
 	namespace       string
 	argv            []string
+	gap             int32
+	borderWidth     int32
+	titlebarHeight  int32
+	columnWidth     float32
 	wsIndex         int
 	clientID        uint32
 	surfaceID       uint32
@@ -110,6 +116,7 @@ var knownActions = []string{
 	"workspace_next", "workspace_prev", "column_next", "column_prev", "overview",
 	"fullscreen", "focus_window_up", "focus_window_down",
 	"move_window_up", "move_window_down", "move_col_left", "move_col_right",
+	"reload", "workspace_back_and_forth",
 }
 
 func isKnownAction(a string) bool {
@@ -119,6 +126,30 @@ func isKnownAction(a string) bool {
 		}
 	}
 	return false
+}
+
+// compileBindings compiles config bindings, rejecting malformed combos,
+// duplicate combos and unknown actions up front (a binding that silently does
+// nothing is the failure this prevents).
+func compileBindings(cfg config.Config) ([]input.Binding, error) {
+	var bindings []input.Binding
+	seen := make(map[[2]uint32]bool)
+	for _, b := range cfg.Bindings {
+		pb, err := input.ParseBinding(b.Combo, b.Action, b.Args)
+		if err != nil {
+			return nil, fmt.Errorf("bad binding: %w", err)
+		}
+		key := [2]uint32{pb.Mods, pb.Code}
+		if seen[key] {
+			return nil, fmt.Errorf("duplicate binding for combo %q", b.Combo)
+		}
+		seen[key] = true
+		if !isKnownAction(pb.Action) {
+			return nil, fmt.Errorf("unknown action %q (combo %q)", pb.Action, b.Combo)
+		}
+		bindings = append(bindings, pb)
+	}
+	return bindings, nil
 }
 
 // applySessionEnv advertises this compositor as a Wayland desktop session so
@@ -307,25 +338,10 @@ func main() {
 	// that silently does nothing is the failure this strictness prevents.
 	// Duplicate combos and unknown actions are rejected here, not at fire
 	// time, for the same reason.
-	var bindings []input.Binding
-	seenCombo := make(map[[2]uint32]bool)
-	for _, b := range cfg.Bindings {
-		pb, err := input.ParseBinding(b.Combo, b.Action, b.Args)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[-] Bad binding: %v\n", err)
-			os.Exit(1)
-		}
-		key := [2]uint32{pb.Mods, pb.Code}
-		if seenCombo[key] {
-			fmt.Fprintf(os.Stderr, "[-] Duplicate binding for combo %q\n", b.Combo)
-			os.Exit(1)
-		}
-		seenCombo[key] = true
-		if !isKnownAction(pb.Action) {
-			fmt.Fprintf(os.Stderr, "[-] Unknown action %q (combo %q)\n", pb.Action, b.Combo)
-			os.Exit(1)
-		}
-		bindings = append(bindings, pb)
+	bindings, err := compileBindings(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] %v\n", err)
+		os.Exit(1)
 	}
 	router.SetBindings(input.NewMatcher(bindings))
 	handleAction := func(action string, args []string) {
@@ -375,6 +391,31 @@ func main() {
 			emit(shellEvent{kind: evMoveColLeft})
 		case "move_col_right":
 			emit(shellEvent{kind: evMoveColRight})
+		case "reload":
+			// Re-read the config. Runs on the input-consumer goroutine (the
+			// action handler's goroutine), the same one that dispatches keys,
+			// so swapping the matcher here is safe.
+			newCfg, err := config.LoadFile(cfgPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[-] reload: %v\n", err)
+				return
+			}
+			bs, err := compileBindings(newCfg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[-] reload: %v (keeping current config)\n", err)
+				return
+			}
+			router.SetBindings(input.NewMatcher(bs))
+			emit(shellEvent{
+				kind:           evConfigReload,
+				gap:            newCfg.Gap,
+				borderWidth:    newCfg.BorderWidth,
+				titlebarHeight: newCfg.TitlebarHeight,
+				columnWidth:    newCfg.ColumnWidth,
+			})
+			fmt.Printf("[+] Reloaded %s (%d bindings)\n", cfgPath, len(bs))
+		case "workspace_back_and_forth":
+			emit(shellEvent{kind: evWorkspaceBackAndForth})
 		case "overview":
 			// Overview is not implemented yet; recognized and ignored so a
 			// bound gesture is not reported as an unknown action.
@@ -651,6 +692,13 @@ func main() {
 	srv.SetOnClientDestroy(func(clientID uint32) {
 		events <- shellEvent{kind: evClientGone, clientID: clientID}
 	})
+
+	// Autostart: run config `exec` commands now that clients can connect, via
+	// sh -c so shell syntax works (routed through the session supervisor when
+	// present, so they survive a compositor restart).
+	for _, cmd := range cfg.Exec {
+		spawnClient([]string{"sh", "-c", cmd})
+	}
 
 	fmt.Printf("[+] stratifi is active on socket: %s\n", srv.SocketPath())
 	fmt.Printf("[+] Run clients with: WAYLAND_DISPLAY=%s foot\n", socketName)
