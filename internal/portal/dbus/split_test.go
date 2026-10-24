@@ -1,10 +1,56 @@
 package dbus
 
 import (
+	"encoding/binary"
+	"fmt"
+	"io"
 	"net"
 	"path/filepath"
 	"testing"
 )
+
+// readControlLine reads one \r\n-terminated auth/control line byte by byte,
+// so it never over-reads into the binary messages that follow BEGIN.
+func readControlLine(c *net.UnixConn) (string, error) {
+	var b []byte
+	one := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(c, one); err != nil {
+			return "", err
+		}
+		if one[0] == '\n' {
+			return string(b), nil
+		}
+		b = append(b, one[0])
+		if len(b) > 4096 {
+			return "", fmt.Errorf("control line too long")
+		}
+	}
+}
+
+// readFramedMsg reads exactly one D-Bus message: the 16-byte fixed header
+// gives the header-fields and body lengths, so the read never consumes part
+// of the next message (which is what made this test flaky).
+func readFramedMsg(c *net.UnixConn) ([]byte, error) {
+	hdr := make([]byte, 16)
+	if _, err := io.ReadFull(c, hdr); err != nil {
+		return nil, err
+	}
+	order := binary.ByteOrder(binary.LittleEndian)
+	if hdr[0] == 'B' {
+		order = binary.BigEndian
+	}
+	total := 16 + int(order.Uint32(hdr[12:16])) + int(order.Uint32(hdr[4:8]))
+	if r := total % 8; r != 0 {
+		total += 8 - r
+	}
+	msg := make([]byte, total)
+	copy(msg, hdr)
+	if _, err := io.ReadFull(c, msg[16:]); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
 
 // TestRecvReplySplitFrames drives the client against a stub that sends the
 // method return in two chunks — the first splitting the message mid-header,
@@ -46,14 +92,18 @@ func TestRecvReplySplitAndInterleaved(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		buf := make([]byte, 256)
-		if _, err := c.Read(buf); err != nil {
+		// The client sends the AUTH line, waits for OK, then BEGIN, then the
+		// Hello message. Read the two text lines precisely, then frame.
+		if _, err := readControlLine(c); err != nil {
 			return
 		}
-		if _, err := c.Write([]byte("OK 1\r\n")); err != nil {
+		if _, err := c.Write([]byte("OK 1234deadbeef\r\n")); err != nil {
 			return
 		}
-		if _, err := c.Read(buf); err != nil {
+		if _, err := readControlLine(c); err != nil { // BEGIN
+			return
+		}
+		if _, err := readFramedMsg(c); err != nil { // Hello
 			return
 		}
 		// First message is Hello: reply so the handshake completes.
@@ -69,7 +119,7 @@ func TestRecvReplySplitAndInterleaved(t *testing.T) {
 		if _, err := c.Write(helloReply); err != nil {
 			return
 		}
-		if _, err := c.Read(buf); err != nil {
+		if _, err := readFramedMsg(c); err != nil { // the tracked call
 			return
 		}
 		// Second message: the tracked call. Interleave a complete unrelated
