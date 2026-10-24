@@ -23,11 +23,12 @@ type Window struct {
 	Title string
 }
 
-// Handler is implemented by the compositor: Windows is a lock-free snapshot,
-// Focus queues a focus transfer onto the owner goroutine.
+// Handler is implemented by the compositor: Windows is a lock-free snapshot;
+// Focus and Spawn queue onto the owner goroutine.
 type Handler interface {
 	Windows() []Window
 	Focus(winID uint32) bool
+	Spawn(argv []string) bool
 }
 
 // SocketPath resolves the default control socket under $XDG_RUNTIME_DIR.
@@ -84,6 +85,13 @@ func serveConn(conn net.Conn, h Handler) {
 			id, err := strconv.ParseUint(strings.TrimSpace(line[len("FOCUS "):]), 10, 32)
 			if err != nil || !h.Focus(uint32(id)) {
 				fmt.Fprintln(w, "ERR focus")
+			} else {
+				fmt.Fprintln(w, "OK")
+			}
+		case strings.HasPrefix(line, "SPAWN "):
+			argv := strings.Split(line[len("SPAWN "):], "\t")
+			if len(argv) == 0 || argv[0] == "" || !h.Spawn(argv) {
+				fmt.Fprintln(w, "ERR spawn")
 			} else {
 				fmt.Fprintln(w, "OK")
 			}
@@ -146,6 +154,27 @@ func Windows(path string) ([]Window, error) {
 		out = append(out, Window{WinID: uint32(id), AppID: parts[1], Title: parts[2]})
 	}
 	return out, nil
+}
+
+// Spawn asks the compositor to launch argv (tab-separated so arguments with
+// spaces survive; the compositor spawns it as a session child).
+func Spawn(path string, argv []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("ipc: empty argv")
+	}
+	conn, err := dial(path)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "SPAWN %s\n", strings.Join(argv, "\t")); err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(conn)
+	if !sc.Scan() || sc.Text() != "OK" {
+		return fmt.Errorf("ipc: spawn failed")
+	}
+	return nil
 }
 
 // Focus asks the compositor to focus a window by id.

@@ -35,6 +35,7 @@ type shellHarness struct {
 	client    *fakeClient
 	sceneInfo *atomic.Pointer[[]input.WindowInfo]
 	launcher  *atomic.Pointer[[]ipc.Window]
+	spawned   *[][]string
 }
 
 func newShellHarness() *shellHarness {
@@ -44,6 +45,7 @@ func newShellHarness() *shellHarness {
 		client:    &fakeClient{surfaceID: 3},
 		sceneInfo: &atomic.Pointer[[]input.WindowInfo]{},
 		launcher:  &atomic.Pointer[[]ipc.Window]{},
+		spawned:   &[][]string{},
 	}
 	h.shell = newShellState(
 		workspaces, layout.Rect{X: 12, Y: 12, W: 1256, H: 696}, h.sceneInfo, h.launcher,
@@ -51,6 +53,7 @@ func newShellHarness() *shellHarness {
 		func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32) {
 			*h.focus = append(*h.focus, focusCall{winID, clientID, surfaceID})
 		},
+		func(argv []string) { *h.spawned = append(*h.spawned, argv) },
 	)
 	return h
 }

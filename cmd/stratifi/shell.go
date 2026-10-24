@@ -57,6 +57,7 @@ type shellState struct {
 	launcher     *atomic.Pointer[[]ipc.Window]
 	clientOf     func(clientID uint32) shellClient
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32)
+	spawn        func(argv []string)
 }
 
 func newShellState(
@@ -66,6 +67,7 @@ func newShellState(
 	launcher *atomic.Pointer[[]ipc.Window],
 	clientOf func(clientID uint32) shellClient,
 	requestFocus func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32),
+	spawn func(argv []string),
 ) *shellState {
 	return &shellState{
 		engine:       workspaces.Engine(),
@@ -81,6 +83,7 @@ func newShellState(
 		launcher:     launcher,
 		clientOf:     clientOf,
 		requestFocus: requestFocus,
+		spawn:        spawn,
 	}
 }
 
@@ -435,6 +438,11 @@ func (s *shellState) applyEvent(ev shellEvent) {
 
 	case evFullscreen:
 		s.toggleFullscreen()
+
+	case evSpawn:
+		if s.spawn != nil {
+			s.spawn(ev.argv)
+		}
 
 	case evWindowMeta:
 		// Titles/app-ids arrive after the window is mapped: update the

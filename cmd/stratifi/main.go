@@ -62,6 +62,7 @@ const (
 	evFullscreen
 	evFocusWindow
 	evWindowMeta
+	evSpawn
 	evFocusWindowUp
 	evFocusWindowDown
 	evMoveWindowUp
@@ -89,6 +90,7 @@ type shellEvent struct {
 	margin          [4]int32
 	keyboard        uint32
 	namespace       string
+	argv            []string
 	wsIndex         int
 	clientID        uint32
 	surfaceID       uint32
@@ -100,11 +102,15 @@ type shellEvent struct {
 	appID           string
 }
 
+// socketName is the Wayland socket we serve; spawned clients point at it.
+const socketName = "wayland-stratifi-0"
+
 // launcherIPC adapts the lock-free window snapshot and the actor's event
 // channel to the ipc.Handler interface.
 type launcherIPC struct {
 	list  *atomic.Pointer[[]ipc.Window]
 	focus func(winID uint32)
+	spawn func(argv []string)
 }
 
 func (l launcherIPC) Windows() []ipc.Window {
@@ -119,6 +125,47 @@ func (l launcherIPC) Focus(winID uint32) bool {
 	return true
 }
 
+func (l launcherIPC) Spawn(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	l.spawn(argv)
+	return true
+}
+
+// spawnClient launches a client of the compositor. When supervised it asks
+// the session supervisor to spawn (so a compositor restart does not kill the
+// child); otherwise it execs directly. Clients get OUR WAYLAND_DISPLAY.
+func spawnClient(argv []string) {
+	if len(argv) == 0 {
+		return
+	}
+	if sock := os.Getenv("STRATIFI_SESSION_SOCKET"); sock != "" {
+		if _, err := session.SendSpawn(sock, argv); err == nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[-] session spawn failed; exec'ing directly\n")
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	env := os.Environ()
+	display := "WAYLAND_DISPLAY=" + socketName
+	replaced := false
+	for i, kv := range env {
+		if len(kv) >= 16 && kv[:16] == "WAYLAND_DISPLAY=" {
+			env[i] = display
+			replaced = true
+		}
+	}
+	if !replaced {
+		env = append(env, display)
+	}
+	cmd.Env = env
+	if err := cmd.Start(); err == nil {
+		_ = cmd.Process.Release() // fully detach: no zombies, survives us
+	}
+}
+
 func main() {
 	fmt.Println("=================================================================")
 	fmt.Println("                     Starting stratifi                             ")
@@ -127,9 +174,6 @@ func main() {
 
 	outputW := int32(1280)
 	outputH := int32(720)
-
-	// The Wayland socket we serve; spawned clients are pointed at it.
-	const socketName = "wayland-stratifi-0"
 
 	// Bare-metal output: STRATIFI_KMS=1 opens the DRM card directly instead of
 	// nesting in a parent compositor. Requires DRM master (run from a VT).
@@ -268,39 +312,7 @@ func main() {
 			default:
 			}
 		case "spawn":
-			if len(args) == 0 {
-				return
-			}
-			// When supervised, ask the session supervisor to spawn: the
-			// child becomes ITS child, so a compositor restart does not
-			// kill it. Otherwise exec directly (standalone behaviour).
-			if sock := os.Getenv("STRATIFI_SESSION_SOCKET"); sock != "" {
-				if _, err := session.SendSpawn(sock, args); err == nil {
-					return
-				}
-				fmt.Fprintf(os.Stderr, "[-] session spawn failed; exec'ing directly\n")
-			}
-			cmd := exec.Command(args[0], args[1:]...)
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			// Children are stratifi clients, not the parent's: point them at
-			// our socket explicitly. Replace (not append) WAYLAND_DISPLAY —
-			// a duplicate leaves the old value winning.
-			env := os.Environ()
-			display := "WAYLAND_DISPLAY=" + socketName
-			replaced := false
-			for i, kv := range env {
-				if len(kv) >= 16 && kv[:16] == "WAYLAND_DISPLAY=" {
-					env[i] = display
-					replaced = true
-				}
-			}
-			if !replaced {
-				env = append(env, display)
-			}
-			cmd.Env = env
-			if err := cmd.Start(); err == nil {
-				_ = cmd.Process.Release() // fully detach: no zombies, survives us
-			}
+			spawnClient(args)
 		case "focus_next":
 			emit(shellEvent{kind: evFocusNext})
 		case "focus_prev":
@@ -642,6 +654,7 @@ func main() {
 		func(winID layout.WindowID, clientID, surfaceID, toplevelID uint32) {
 			router.RequestFocus(winID, clientID, surfaceID, toplevelID)
 		},
+		spawnClient,
 	)
 
 	// The frame loop renders from closures that run ON the actor
@@ -780,6 +793,12 @@ func main() {
 		focus: func(winID uint32) {
 			select {
 			case events <- shellEvent{kind: evFocusWindow, winID: layout.WindowID(winID)}:
+			default:
+			}
+		},
+		spawn: func(argv []string) {
+			select {
+			case events <- shellEvent{kind: evSpawn, argv: argv}:
 			default:
 			}
 		},

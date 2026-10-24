@@ -8,9 +8,17 @@ import (
 type fakeHandler struct {
 	wins    []Window
 	focused []uint32
+	spawned [][]string
 }
 
 func (f *fakeHandler) Windows() []Window { return f.wins }
+func (f *fakeHandler) Spawn(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	f.spawned = append(f.spawned, argv)
+	return true
+}
 func (f *fakeHandler) Focus(winID uint32) bool {
 	if winID == 0 {
 		return false
@@ -56,5 +64,16 @@ func TestServeListFocus(t *testing.T) {
 	// An unknown id reports failure rather than a silent OK.
 	if err := Focus(sock, 0); err == nil {
 		t.Error("Focus(0) should fail")
+	}
+
+	// Spawn carries argv across tabs (arguments with spaces survive).
+	if err := Spawn(sock, []string{"/usr/bin/foot", "-e", "sh -c hi"}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if len(h.spawned) != 1 || h.spawned[0][2] != "sh -c hi" {
+		t.Errorf("spawned = %v, want argv with the spaced arg intact", h.spawned)
+	}
+	if err := Spawn(sock, nil); err == nil {
+		t.Error("Spawn(nil) should fail")
 	}
 }
