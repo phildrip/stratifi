@@ -145,14 +145,16 @@ It talks to the compositor over `$XDG_RUNTIME_DIR/stratifi-ipc.sock`
 ## Testing
 
 ```sh
-go test ./...              # full suite
-go test -race ./...        # race detector (CI gate)
-go test -bench=. ./internal/layout ./internal/compositor
+scripts/check.sh           # the gate: format, vet, build, test, race, 0-alloc
+scripts/check-allocs.sh    # just the hot-path 0-alloc assertion
+scripts/lint.sh            # golangci-lint (optional; CI installs a current one)
+go test ./...              # the suite
+go test -race ./...
 ```
 
-Hot paths carry allocation and benchmark assertions (see
-`skills/data-oriented-design.md`). Live bring-up smoke test:
-`scripts/nested-dev.sh smoke`.
+Hot paths must be **0 allocs/op** and `scripts/check-allocs.sh` fails the gate
+if any regresses (see `skills/data-oriented-design.md`); CI runs the same
+suite. Live bring-up smoke test: `scripts/nested-dev.sh smoke`.
 
 ## Architecture
 

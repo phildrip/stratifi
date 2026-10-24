@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: system deps (Vulkan headers for the cgo renderer)
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev
+      - name: quality gate (format, vet, build, test, race, 0-alloc)
+        run: ./scripts/check.sh
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest

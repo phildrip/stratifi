@@ -1,0 +1,18 @@
+# Linters for stratifi (see skills/general-guidelines.md and stratifi-lnu).
+# Generated protocol bindings and throwaway spikes are excluded.
+run:
+  timeout: 5m
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - unused
+    - gofmt
+
+issues:
+  exclude-dirs:
+    - internal/protocol   # generated from protocol/specs by cmd/wayland-gen
+    - spike               # throwaway prototypes, not part of the build
