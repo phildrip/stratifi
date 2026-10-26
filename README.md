@@ -178,8 +178,24 @@ default=gtk;
 ```
 
 Requirements: `pipewire`, `xdg-desktop-portal`, `xdg-desktop-portal-wlr`, and a
-`pipewire` session. Whole-output sharing works; **per-window** sharing needs
-`ext-foreign-toplevel-list-v1` (tracked, not yet implemented).
+`pipewire` session. Whole-output **and per-window** sharing are implemented.
+
+The easiest way to try it **without replacing your session**:
+
+```sh
+scripts/try-screen-share.sh nested [browser]   # nested; no switch
+scripts/try-screen-share.sh kms    [browser]   # bare metal — run from a spare VT
+```
+
+It starts stratifi if needed, then launches xdg-desktop-portal + the browser on
+a **private D-Bus session** with `WAYLAND_DISPLAY`/`XDG_CURRENT_DESKTOP`
+pointed at stratifi — so the portal captures stratifi, not your outer session.
+(Nested alone isn't enough: a portal in your normal session attaches to your
+outer compositor. Pipewire is shared; only the D-Bus session is private.)
+
+Open a client inside stratifi first (`WAYLAND_DISPLAY=wayland-stratifi-0 foot &`),
+then in the browser start a call, click Share, and pick "Entire screen" or a
+window.
 
 ## Architecture
 
