@@ -41,6 +41,8 @@ const (
 	ObjIdleNotification
 	ObjIdleInhibitManager
 	ObjIdleInhibitor
+	ObjTextInputManager
+	ObjTextInput
 	ObjForeignToplevelList
 	ObjForeignToplevelHandle
 
@@ -253,4 +255,27 @@ type XdgPopup struct {
 	ConfiguredH  int32
 	LastSerial   uint32
 	Active       bool
+}
+
+// TextInputState holds the double-buffered zwp_text_input_v3 state for a client.
+type TextInputState struct {
+	Enabled         bool
+	SurroundingText string
+	Cursor          int32
+	Anchor          int32
+	ChangeCause     uint32
+	ContentHint     uint32
+	ContentPurpose  uint32
+	CursorRect      [4]int32 // x, y, w, h in surface-local coords
+	Serial          uint32   // number of commit requests processed
+}
+
+// TextInput tracks one zwp_text_input_v3 instance bound to a seat.
+type TextInput struct {
+	ID      uint32
+	SeatID  uint32
+	Surface uint32 // currently entered surface (0 = none)
+	Pending TextInputState
+	Current TextInputState
+	Active  bool
 }

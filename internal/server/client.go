@@ -12,6 +12,7 @@ import (
 	"stratifi/internal/protocol/idleinhibit"
 	"stratifi/internal/protocol/idlenotify"
 	"stratifi/internal/protocol/layershell"
+	"stratifi/internal/protocol/textinput"
 	"stratifi/internal/protocol/wayland"
 	"stratifi/internal/protocol/xdgoutput"
 	"stratifi/internal/protocol/xdgshell"
@@ -33,6 +34,7 @@ const (
 	GlobalForeignToplevelList                      uint32 = 13
 	GlobalForeignToplevelImageCaptureSourceManager uint32 = 14
 	GlobalIdleInhibitManager                       uint32 = 15
+	GlobalTextInputManager                         uint32 = 16
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -56,6 +58,8 @@ type Client struct {
 	xdgPopups      xdgStore[XdgPopup]
 	subsurfaces    xdgStore[Subsurface]
 	layerSurfaces  xdgStore[LayerSurface]
+	textInputs     xdgStore[TextInput]
+	focusedSurface uint32
 
 	// ext-foreign-toplevel-list-v1: the client's list objects and the handle
 	// object id per toplevel key.
@@ -219,6 +223,12 @@ var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) erro
 	ObjIdleInhibitor: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return idleinhibit.DispatchZwpIdleInhibitorV1(r, h, c)
 	},
+	ObjTextInputManager: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return textinput.DispatchZwpTextInputManagerV3(r, h, c)
+	},
+	ObjTextInput: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return textinput.DispatchZwpTextInputV3(r, h, c)
+	},
 	ObjForeignToplevelList: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return foreigntoplevel.DispatchExtForeignToplevelListV1(r, h, c)
 	},
@@ -327,6 +337,10 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 		idleinhibit.ZwpIdleInhibitManagerV1Interface, idleinhibit.ZwpIdleInhibitManagerV1Version); err != nil {
 		return err
 	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalTextInputManager,
+		textinput.ZwpTextInputManagerV3Interface, textinput.ZwpTextInputManagerV3Version); err != nil {
+		return err
+	}
 	// Screen/window capture (browser screen sharing via xdg-desktop-portal).
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutputImageCaptureSourceManager,
 		capture.ExtOutputImageCaptureSourceManagerV1Interface, 1); err != nil {
@@ -391,6 +405,8 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		c.registerObject(id, ObjIdleNotifier)
 	case GlobalIdleInhibitManager:
 		c.registerObject(id, ObjIdleInhibitManager)
+	case GlobalTextInputManager:
+		c.registerObject(id, ObjTextInputManager)
 	case GlobalForeignToplevelList:
 		c.registerObject(id, ObjForeignToplevelList)
 		c.addToplevelList(id)
@@ -557,6 +573,17 @@ func (c *Client) HandleWlSurfaceDestroy(senderID uint32) error {
 	c.mu.Lock()
 	c.unregisterObject(senderID)
 	c.surfaces.mutate(senderID, func(sf *Surface) { sf.Active = false })
+	if c.focusedSurface == senderID {
+		c.focusedSurface = 0
+	}
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Surface == senderID {
+			ti.Surface = 0
+			ti.Pending.Enabled = false
+			ti.Current.Enabled = false
+		}
+	}
 	wasCursor := c.hasCursor && c.cursorSurface == senderID
 	if wasCursor {
 		c.hasCursor = false
@@ -1328,30 +1355,67 @@ func (c *Client) SendPointerButton(timeMs uint32, button uint32, state uint32) {
 	_ = c.conn.Flush()
 }
 
-// SendKeyboardEnter dispatches wl_keyboard.enter to the client.
+// SendKeyboardEnter dispatches wl_keyboard.enter (and zwp_text_input_v3.enter) to the client.
 func (c *Client) SendKeyboardEnter(surfaceID uint32, keys []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.keyboardID == 0 {
+	if c.closed.Load() {
 		return
 	}
+	c.focusedSurface = surfaceID
 	w := c.conn.WriterRef()
-	serial := c.NextSerial()
-	_ = wayland.SendWlKeyboardEnter(w, c.keyboardID, serial, surfaceID, keys)
-	_ = c.conn.Flush()
+	wrote := false
+	if c.keyboardID != 0 {
+		serial := c.NextSerial()
+		_ = wayland.SendWlKeyboardEnter(w, c.keyboardID, serial, surfaceID, keys)
+		wrote = true
+	}
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Active && ti.Surface != surfaceID {
+			if ti.Surface != 0 {
+				_ = textinput.SendZwpTextInputV3Leave(w, ti.ID, ti.Surface)
+			}
+			ti.Surface = surfaceID
+			_ = textinput.SendZwpTextInputV3Enter(w, ti.ID, surfaceID)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
 }
 
-// SendKeyboardLeave dispatches wl_keyboard.leave to the client.
+// SendKeyboardLeave dispatches wl_keyboard.leave (and zwp_text_input_v3.leave) to the client.
 func (c *Client) SendKeyboardLeave(surfaceID uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.keyboardID == 0 {
+	if c.closed.Load() {
 		return
 	}
+	if c.focusedSurface == surfaceID {
+		c.focusedSurface = 0
+	}
 	w := c.conn.WriterRef()
-	serial := c.NextSerial()
-	_ = wayland.SendWlKeyboardLeave(w, c.keyboardID, serial, surfaceID)
-	_ = c.conn.Flush()
+	wrote := false
+	if c.keyboardID != 0 {
+		serial := c.NextSerial()
+		_ = wayland.SendWlKeyboardLeave(w, c.keyboardID, serial, surfaceID)
+		wrote = true
+	}
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Active && ti.Surface == surfaceID && surfaceID != 0 {
+			ti.Surface = 0
+			ti.Pending.Enabled = false
+			ti.Current.Enabled = false
+			_ = textinput.SendZwpTextInputV3Leave(w, ti.ID, surfaceID)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
 }
 
 // SendKeyboardKey dispatches wl_keyboard.key to the client.
@@ -1774,6 +1838,195 @@ func (c *Client) HandleZwpIdleInhibitorV1Destroy(senderID uint32) error {
 	c.mu.Unlock()
 	c.server.removeIdleInhibitor(c.id, senderID)
 	return nil
+}
+
+// --- ZwpTextInputManagerV3Handler / ZwpTextInputV3Handler ---
+
+func (c *Client) HandleZwpTextInputManagerV3Destroy(senderID uint32) error {
+	c.mu.Lock()
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputManagerV3GetTextInput(senderID, id, seat uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.registerObject(id, ObjTextInput)
+	ti := TextInput{
+		ID:     id,
+		SeatID: seat,
+		Active: true,
+	}
+	if c.focusedSurface != 0 {
+		ti.Surface = c.focusedSurface
+		w := c.conn.WriterRef()
+		_ = textinput.SendZwpTextInputV3Enter(w, id, c.focusedSurface)
+	}
+	c.textInputs.add(id, ti)
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3Destroy(senderID uint32) error {
+	c.mu.Lock()
+	c.textInputs.remove(senderID)
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3Enable(senderID uint32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		// Per spec, enable resets pending state to defaults and sets enabled=true.
+		ti.Pending = TextInputState{
+			Enabled: true,
+			Serial:  ti.Current.Serial,
+		}
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3Disable(senderID uint32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		ti.Pending.Enabled = false
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3SetSurroundingText(senderID uint32, text string, cursor, anchor int32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		ti.Pending.SurroundingText = text
+		ti.Pending.Cursor = cursor
+		ti.Pending.Anchor = anchor
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3SetTextChangeCause(senderID, cause uint32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		ti.Pending.ChangeCause = cause
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3SetContentType(senderID, hint, purpose uint32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		ti.Pending.ContentHint = hint
+		ti.Pending.ContentPurpose = purpose
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3SetCursorRectangle(senderID uint32, x, y, width, height int32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		ti.Pending.CursorRect = [4]int32{x, y, width, height}
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpTextInputV3Commit(senderID uint32) error {
+	c.mu.Lock()
+	c.textInputs.mutate(senderID, func(ti *TextInput) {
+		ti.Pending.Serial = ti.Current.Serial + 1
+		ti.Current = ti.Pending
+	})
+	c.mu.Unlock()
+	return nil
+}
+
+// ActiveTextInputState returns the committed state of the first enabled
+// zwp_text_input_v3 object on this client.
+func (c *Client) ActiveTextInputState() (TextInputState, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Active && ti.Surface != 0 && ti.Current.Enabled {
+			return ti.Current, true
+		}
+	}
+	return TextInputState{}, false
+}
+
+// SendTextInputPreedit sends a preedit_string followed by done(serial) to
+// every enabled zwp_text_input_v3 on this client.
+func (c *Client) SendTextInputPreedit(text string, cursorBegin, cursorEnd int32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	wrote := false
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Active && ti.Surface != 0 && ti.Current.Enabled {
+			_ = textinput.SendZwpTextInputV3PreeditString(w, ti.ID, text, cursorBegin, cursorEnd)
+			_ = textinput.SendZwpTextInputV3Done(w, ti.ID, ti.Current.Serial)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
+}
+
+// SendTextInputCommit sends a commit_string followed by done(serial) to
+// every enabled zwp_text_input_v3 on this client.
+func (c *Client) SendTextInputCommit(text string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	wrote := false
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Active && ti.Surface != 0 && ti.Current.Enabled {
+			_ = textinput.SendZwpTextInputV3CommitString(w, ti.ID, text)
+			_ = textinput.SendZwpTextInputV3Done(w, ti.ID, ti.Current.Serial)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
+}
+
+// SendTextInputDeleteSurrounding sends delete_surrounding_text followed by
+// done(serial) to every enabled zwp_text_input_v3 on this client.
+func (c *Client) SendTextInputDeleteSurrounding(beforeLen, afterLen uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	wrote := false
+	for i := range c.textInputs.items {
+		ti := &c.textInputs.items[i].rec
+		if ti.Active && ti.Surface != 0 && ti.Current.Enabled {
+			_ = textinput.SendZwpTextInputV3DeleteSurroundingText(w, ti.ID, beforeLen, afterLen)
+			_ = textinput.SendZwpTextInputV3Done(w, ti.ID, ti.Current.Serial)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
 }
 
 // sendIdleNotification delivers idled/resumed to the client owning a
