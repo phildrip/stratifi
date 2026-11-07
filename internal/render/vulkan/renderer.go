@@ -1,7 +1,6 @@
 package vulkan
 
 /*
-#cgo LDFLAGS: -lvulkan
 #include "vk_common.h"
 
 typedef struct {
@@ -13,7 +12,10 @@ typedef struct {
     uint32_t height;
 } VkTarget;
 
+#define TEX_DESC_SETS 64
+
 typedef struct {
+    VkProcs procs;
     VkDevice device;
     VkPhysicalDevice pdev;
     VkQueue queue;
@@ -30,35 +32,21 @@ typedef struct {
     VkDescriptorSetLayout texDescLayout;
     VkPipelineLayout texLayout;
     VkPipeline texPipeline;
-    // One descriptor set per textured draw in a frame. Updates are host
-    // operations: binding one set everywhere would make every quad sample
-    // the last-updated image.
-    #define TEX_DESC_SETS 64
     VkDescriptorSet texDescSets[TEX_DESC_SETS];
-    uint32_t texDescCount;
-    uint32_t texDescNext;
-    int texDescOverflowed;
 
     // Command execution
     VkCommandBuffer cmdBuf;
     VkFence fence;
-    // Readback uses its own fence: reusing the frame fence would leave it
-    // unsignalled and stall the next begin_frame's wait.
     VkFence readbackFence;
-
-    // Current frame state
-    float screenW;
-    float screenH;
-    int inPass;
 } VkRenderer;
 
-static int create_shader_module(VkDevice dev, const uint32_t* pCode, size_t codeSize, VkShaderModule* outModule) {
+static int create_shader_module(const VkProcs* procs, VkDevice dev, const uint32_t* pCode, size_t codeSize, VkShaderModule* outModule) {
     VkShaderModuleCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = codeSize,
         .pCode = pCode,
     };
-    return (int)vkCreateShaderModule(dev, &info, NULL, outModule);
+    return (int)procs->CreateShaderModule(dev, &info, NULL, outModule);
 }
 
 static int init_vk_renderer(VkContext* ctx,
@@ -69,6 +57,7 @@ static int init_vk_renderer(VkContext* ctx,
     VkRenderer* r) {
 
     memset(r, 0, sizeof(VkRenderer));
+    r->procs = ctx->procs;
     r->device = ctx->device;
     r->pdev = ctx->pdev;
     r->queue = ctx->queue;
@@ -116,7 +105,7 @@ static int init_vk_renderer(VkContext* ctx,
         .pDependencies = &dependency,
     };
 
-    VkResult res = vkCreateRenderPass(ctx->device, &rpInfo, NULL, &r->renderPass);
+    VkResult res = r->procs.CreateRenderPass(ctx->device, &rpInfo, NULL, &r->renderPass);
     if (res != VK_SUCCESS) return (int)res;
 
     // 2. Sampler
@@ -128,7 +117,7 @@ static int init_vk_renderer(VkContext* ctx,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
     };
-    res = vkCreateSampler(ctx->device, &samplerInfo, NULL, &r->sampler);
+    res = r->procs.CreateSampler(ctx->device, &samplerInfo, NULL, &r->sampler);
     if (res != VK_SUCCESS) return (int)res;
 
     // 3. Descriptor Pool
@@ -143,7 +132,7 @@ static int init_vk_renderer(VkContext* ctx,
         .poolSizeCount = 1,
         .pPoolSizes = &poolSize,
     };
-    res = vkCreateDescriptorPool(ctx->device, &poolInfo, NULL, &r->descPool);
+    res = r->procs.CreateDescriptorPool(ctx->device, &poolInfo, NULL, &r->descPool);
     if (res != VK_SUCCESS) return (int)res;
 
     // 4. Quad Pipeline
@@ -157,12 +146,12 @@ static int init_vk_renderer(VkContext* ctx,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &quadPush,
     };
-    res = vkCreatePipelineLayout(ctx->device, &quadLayoutInfo, NULL, &r->quadLayout);
+    res = r->procs.CreatePipelineLayout(ctx->device, &quadLayoutInfo, NULL, &r->quadLayout);
     if (res != VK_SUCCESS) return (int)res;
 
     VkShaderModule qvMod, qfMod;
-    if (create_shader_module(ctx->device, quadVertSpv, quadVertSize, &qvMod) != 0) return -20;
-    if (create_shader_module(ctx->device, quadFragSpv, quadFragSize, &qfMod) != 0) return -21;
+    if (create_shader_module(&r->procs, ctx->device, quadVertSpv, quadVertSize, &qvMod) != 0) return -20;
+    if (create_shader_module(&r->procs, ctx->device, quadFragSpv, quadFragSize, &qfMod) != 0) return -21;
 
     VkPipelineShaderStageCreateInfo quadStages[2] = {
         {
@@ -238,9 +227,9 @@ static int init_vk_renderer(VkContext* ctx,
         .renderPass = r->renderPass,
         .subpass = 0,
     };
-    res = vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &quadPipeInfo, NULL, &r->quadPipeline);
-    vkDestroyShaderModule(ctx->device, qvMod, NULL);
-    vkDestroyShaderModule(ctx->device, qfMod, NULL);
+    res = r->procs.CreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &quadPipeInfo, NULL, &r->quadPipeline);
+    r->procs.DestroyShaderModule(ctx->device, qvMod, NULL);
+    r->procs.DestroyShaderModule(ctx->device, qfMod, NULL);
     if (res != VK_SUCCESS) return (int)res;
 
     // 5. Texture Pipeline
@@ -256,7 +245,7 @@ static int init_vk_renderer(VkContext* ctx,
         .bindingCount = 1,
         .pBindings = &binding,
     };
-    res = vkCreateDescriptorSetLayout(ctx->device, &descLayoutInfo, NULL, &r->texDescLayout);
+    res = r->procs.CreateDescriptorSetLayout(ctx->device, &descLayoutInfo, NULL, &r->texDescLayout);
     if (res != VK_SUCCESS) return (int)res;
 
     for (uint32_t i = 0; i < TEX_DESC_SETS; i++) {
@@ -266,10 +255,9 @@ static int init_vk_renderer(VkContext* ctx,
             .descriptorSetCount = 1,
             .pSetLayouts = &r->texDescLayout,
         };
-        res = vkAllocateDescriptorSets(ctx->device, &dsAlloc, &r->texDescSets[i]);
+        res = r->procs.AllocateDescriptorSets(ctx->device, &dsAlloc, &r->texDescSets[i]);
         if (res != VK_SUCCESS) return (int)res;
     }
-    r->texDescCount = TEX_DESC_SETS;
 
     VkPushConstantRange texPush = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
@@ -283,12 +271,12 @@ static int init_vk_renderer(VkContext* ctx,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &texPush,
     };
-    res = vkCreatePipelineLayout(ctx->device, &texLayoutInfo, NULL, &r->texLayout);
+    res = r->procs.CreatePipelineLayout(ctx->device, &texLayoutInfo, NULL, &r->texLayout);
     if (res != VK_SUCCESS) return (int)res;
 
     VkShaderModule tvMod, tfMod;
-    if (create_shader_module(ctx->device, texVertSpv, texVertSize, &tvMod) != 0) return -30;
-    if (create_shader_module(ctx->device, texFragSpv, texFragSize, &tfMod) != 0) return -31;
+    if (create_shader_module(&r->procs, ctx->device, texVertSpv, texVertSize, &tvMod) != 0) return -30;
+    if (create_shader_module(&r->procs, ctx->device, texFragSpv, texFragSize, &tfMod) != 0) return -31;
 
     VkPipelineShaderStageCreateInfo texStages[2] = {
         {
@@ -320,9 +308,9 @@ static int init_vk_renderer(VkContext* ctx,
         .renderPass = r->renderPass,
         .subpass = 0,
     };
-    res = vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &texPipeInfo, NULL, &r->texPipeline);
-    vkDestroyShaderModule(ctx->device, tvMod, NULL);
-    vkDestroyShaderModule(ctx->device, tfMod, NULL);
+    res = r->procs.CreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &texPipeInfo, NULL, &r->texPipeline);
+    r->procs.DestroyShaderModule(ctx->device, tvMod, NULL);
+    r->procs.DestroyShaderModule(ctx->device, tfMod, NULL);
     if (res != VK_SUCCESS) return (int)res;
 
     // 6. Command Buffer & Fence
@@ -332,16 +320,16 @@ static int init_vk_renderer(VkContext* ctx,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
-    res = vkAllocateCommandBuffers(ctx->device, &cmdInfo, &r->cmdBuf);
+    res = r->procs.AllocateCommandBuffers(ctx->device, &cmdInfo, &r->cmdBuf);
     if (res != VK_SUCCESS) return (int)res;
 
     VkFenceCreateInfo fenceInfo = {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    res = vkCreateFence(ctx->device, &fenceInfo, NULL, &r->fence);
+    res = r->procs.CreateFence(ctx->device, &fenceInfo, NULL, &r->fence);
     if (res != VK_SUCCESS) return (int)res;
-    res = vkCreateFence(ctx->device, &fenceInfo, NULL, &r->readbackFence);
+    res = r->procs.CreateFence(ctx->device, &fenceInfo, NULL, &r->readbackFence);
     if (res != VK_SUCCESS) return (int)res;
 
     return 0;
@@ -351,18 +339,18 @@ static void destroy_vk_renderer(VkRenderer* r) {
     if (!r->device) return;
     VkDevice dev = r->device;
 
-    vkDeviceWaitIdle(dev);
+    if (r->procs.DeviceWaitIdle) r->procs.DeviceWaitIdle(dev);
 
-    if (r->fence) vkDestroyFence(dev, r->fence, NULL);
-    if (r->readbackFence) vkDestroyFence(dev, r->readbackFence, NULL);
-    if (r->texPipeline) vkDestroyPipeline(dev, r->texPipeline, NULL);
-    if (r->texLayout) vkDestroyPipelineLayout(dev, r->texLayout, NULL);
-    if (r->texDescLayout) vkDestroyDescriptorSetLayout(dev, r->texDescLayout, NULL);
-    if (r->quadPipeline) vkDestroyPipeline(dev, r->quadPipeline, NULL);
-    if (r->quadLayout) vkDestroyPipelineLayout(dev, r->quadLayout, NULL);
-    if (r->descPool) vkDestroyDescriptorPool(dev, r->descPool, NULL);
-    if (r->sampler) vkDestroySampler(dev, r->sampler, NULL);
-    if (r->renderPass) vkDestroyRenderPass(dev, r->renderPass, NULL);
+    if (r->fence) r->procs.DestroyFence(dev, r->fence, NULL);
+    if (r->readbackFence) r->procs.DestroyFence(dev, r->readbackFence, NULL);
+    if (r->texPipeline) r->procs.DestroyPipeline(dev, r->texPipeline, NULL);
+    if (r->texLayout) r->procs.DestroyPipelineLayout(dev, r->texLayout, NULL);
+    if (r->texDescLayout) r->procs.DestroyDescriptorSetLayout(dev, r->texDescLayout, NULL);
+    if (r->quadPipeline) r->procs.DestroyPipeline(dev, r->quadPipeline, NULL);
+    if (r->quadLayout) r->procs.DestroyPipelineLayout(dev, r->quadLayout, NULL);
+    if (r->descPool) r->procs.DestroyDescriptorPool(dev, r->descPool, NULL);
+    if (r->sampler) r->procs.DestroySampler(dev, r->sampler, NULL);
+    if (r->renderPass) r->procs.DestroyRenderPass(dev, r->renderPass, NULL);
 }
 
 static int create_target(VkContext* ctx, VkRenderPass rp, uint32_t width, uint32_t height, VkTarget* out) {
@@ -384,14 +372,14 @@ static int create_target(VkContext* ctx, VkRenderPass rp, uint32_t width, uint32
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
-    VkResult res = vkCreateImage(ctx->device, &imgInfo, NULL, &out->image);
+    VkResult res = ctx->procs.CreateImage(ctx->device, &imgInfo, NULL, &out->image);
     if (res != VK_SUCCESS) return (int)res;
 
     VkMemoryRequirements memReqs;
-    vkGetImageMemoryRequirements(ctx->device, out->image, &memReqs);
+    ctx->procs.GetImageMemoryRequirements(ctx->device, out->image, &memReqs);
 
     VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(ctx->pdev, &memProps);
+    ctx->procs.GetPhysicalDeviceMemoryProperties(ctx->pdev, &memProps);
 
     int memType = -1;
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
@@ -408,13 +396,13 @@ static int create_target(VkContext* ctx, VkRenderPass rp, uint32_t width, uint32
         .allocationSize = memReqs.size,
         .memoryTypeIndex = (uint32_t)memType,
     };
-    res = vkAllocateMemory(ctx->device, &allocInfo, NULL, &out->memory);
+    res = ctx->procs.AllocateMemory(ctx->device, &allocInfo, NULL, &out->memory);
     if (res != VK_SUCCESS) {
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return (int)res;
     }
 
-    vkBindImageMemory(ctx->device, out->image, out->memory, 0);
+    ctx->procs.BindImageMemory(ctx->device, out->image, out->memory, 0);
 
     VkImageViewCreateInfo viewInfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -429,10 +417,10 @@ static int create_target(VkContext* ctx, VkRenderPass rp, uint32_t width, uint32
             .layerCount = 1,
         },
     };
-    res = vkCreateImageView(ctx->device, &viewInfo, NULL, &out->view);
+    res = ctx->procs.CreateImageView(ctx->device, &viewInfo, NULL, &out->view);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, out->memory, NULL);
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.FreeMemory(ctx->device, out->memory, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return (int)res;
     }
 
@@ -445,21 +433,17 @@ static int create_target(VkContext* ctx, VkRenderPass rp, uint32_t width, uint32
         .height = height,
         .layers = 1,
     };
-    res = vkCreateFramebuffer(ctx->device, &fbInfo, NULL, &out->framebuffer);
+    res = ctx->procs.CreateFramebuffer(ctx->device, &fbInfo, NULL, &out->framebuffer);
     if (res != VK_SUCCESS) {
-        vkDestroyImageView(ctx->device, out->view, NULL);
-        vkFreeMemory(ctx->device, out->memory, NULL);
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.DestroyImageView(ctx->device, out->view, NULL);
+        ctx->procs.FreeMemory(ctx->device, out->memory, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return (int)res;
     }
 
     return 0;
 }
 
-// create_scanout_target builds a framebuffer around an already-imported
-// image view (typically a KMS scanout dumb buffer). The image, view and
-// memory stay owned by the importer; only the framebuffer is created here
-// and only it is destroyed by destroy_scanout_target.
 static int create_scanout_target(VkContext* ctx, VkRenderPass rp, VkImageView view, uint32_t width, uint32_t height, VkTarget* out) {
     memset(out, 0, sizeof(VkTarget));
     out->width = width;
@@ -474,39 +458,33 @@ static int create_scanout_target(VkContext* ctx, VkRenderPass rp, VkImageView vi
         .height = height,
         .layers = 1,
     };
-    VkResult res = vkCreateFramebuffer(ctx->device, &fbInfo, NULL, &out->framebuffer);
+    VkResult res = ctx->procs.CreateFramebuffer(ctx->device, &fbInfo, NULL, &out->framebuffer);
     if (res != VK_SUCCESS) {
         return (int)res;
     }
     return 0;
 }
 
-static void destroy_scanout_target(VkContext* ctx, VkTarget* t) {
-    if (t->framebuffer) vkDestroyFramebuffer(ctx->device, t->framebuffer, NULL);
-    memset(t, 0, sizeof(VkTarget));
-}
-
 static void destroy_target(VkContext* ctx, VkTarget* t) {
-    if (t->framebuffer) vkDestroyFramebuffer(ctx->device, t->framebuffer, NULL);
-    if (t->view) vkDestroyImageView(ctx->device, t->view, NULL);
-    if (t->image) vkDestroyImage(ctx->device, t->image, NULL);
-    if (t->memory) vkFreeMemory(ctx->device, t->memory, NULL);
+    if (t->framebuffer) ctx->procs.DestroyFramebuffer(ctx->device, t->framebuffer, NULL);
+    if (t->view) ctx->procs.DestroyImageView(ctx->device, t->view, NULL);
+    if (t->image) ctx->procs.DestroyImage(ctx->device, t->image, NULL);
+    if (t->memory) ctx->procs.FreeMemory(ctx->device, t->memory, NULL);
     memset(t, 0, sizeof(VkTarget));
 }
 
 static int begin_frame(VkRenderer* r, VkTarget* target, float clearR, float clearG, float clearB, float clearA) {
-    VkResult res = vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    VkResult res = r->procs.WaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
-    vkResetFences(r->device, 1, &r->fence);
-    r->texDescNext = 0;
+    r->procs.ResetFences(r->device, 1, &r->fence);
 
-    vkResetCommandBuffer(r->cmdBuf, 0);
+    r->procs.ResetCommandBuffer(r->cmdBuf, 0);
 
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
+    res = r->procs.BeginCommandBuffer(r->cmdBuf, &beginInfo);
     if (res != VK_SUCCESS) return (int)res;
 
     VkClearValue clearVal = {
@@ -522,7 +500,7 @@ static int begin_frame(VkRenderer* r, VkTarget* target, float clearR, float clea
         .pClearValues = &clearVal,
     };
 
-    vkCmdBeginRenderPass(r->cmdBuf, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+    r->procs.CmdBeginRenderPass(r->cmdBuf, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
 
     VkViewport vp = {
         .x = 0.0f,
@@ -532,53 +510,37 @@ static int begin_frame(VkRenderer* r, VkTarget* target, float clearR, float clea
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
-    vkCmdSetViewport(r->cmdBuf, 0, 1, &vp);
+    r->procs.CmdSetViewport(r->cmdBuf, 0, 1, &vp);
 
     VkRect2D scissor = {
         .offset = {0, 0},
         .extent = { target->width, target->height },
     };
-    vkCmdSetScissor(r->cmdBuf, 0, 1, &scissor);
-
-    r->screenW = (float)target->width;
-    r->screenH = (float)target->height;
-    r->inPass = 1;
+    r->procs.CmdSetScissor(r->cmdBuf, 0, 1, &scissor);
 
     return 0;
 }
 
-static void draw_color_quad(VkRenderer* r, float x, float y, float w, float h, float cr, float cg, float cb, float ca) {
-    if (!r->inPass) return;
-
-    vkCmdBindPipeline(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->quadPipeline);
+static void draw_color_quad(VkRenderer* r, float screenW, float screenH, float x, float y, float w, float h, float cr, float cg, float cb, float ca) {
+    r->procs.CmdBindPipeline(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->quadPipeline);
 
     float pc[10] = {
         x, y, w, h,
         cr, cg, cb, ca,
-        r->screenW, r->screenH,
+        screenW, screenH,
     };
-    vkCmdPushConstants(r->cmdBuf, r->quadLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), pc);
-    vkCmdDraw(r->cmdBuf, 4, 1, 0, 0);
+    r->procs.CmdPushConstants(r->cmdBuf, r->quadLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), pc);
+    r->procs.CmdDraw(r->cmdBuf, 4, 1, 0, 0);
 }
 
-static void draw_texture_quad(VkRenderer* r, VkImageView view,
+static void draw_texture_quad_slot(VkRenderer* r, uint32_t slotIdx, float screenW, float screenH, VkImageView view,
     float dstX, float dstY, float dstW, float dstH,
     float srcU, float srcV, float srcW, float srcH,
     float alpha) {
 
-    if (!r->inPass || !view) return;
+    if (!view || slotIdx >= TEX_DESC_SETS) return;
 
-    // Each draw needs its own set: descriptor writes are host-side, so a
-    // shared set would resolve to whichever image was written last.
-    uint32_t idx = r->texDescNext++;
-    if (idx >= r->texDescCount) {
-        if (!r->texDescOverflowed) {
-            r->texDescOverflowed = 1;
-            fprintf(stderr, "[-] vulkan: more than %u textured draws in a frame; extra quads share a descriptor set\n", r->texDescCount);
-        }
-        idx = r->texDescCount - 1;
-    }
-    VkDescriptorSet descSet = r->texDescSets[idx];
+    VkDescriptorSet descSet = r->texDescSets[slotIdx];
 
     VkDescriptorImageInfo imgInfo = {
         .sampler = r->sampler,
@@ -594,27 +556,24 @@ static void draw_texture_quad(VkRenderer* r, VkImageView view,
         .descriptorCount = 1,
         .pImageInfo = &imgInfo,
     };
-    vkUpdateDescriptorSets(r->device, 1, &write, 0, NULL);
+    r->procs.UpdateDescriptorSets(r->device, 1, &write, 0, NULL);
 
-    vkCmdBindPipeline(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texPipeline);
-    vkCmdBindDescriptorSets(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texLayout, 0, 1, &descSet, 0, NULL);
+    r->procs.CmdBindPipeline(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texPipeline);
+    r->procs.CmdBindDescriptorSets(r->cmdBuf, VK_PIPELINE_BIND_POINT_GRAPHICS, r->texLayout, 0, 1, &descSet, 0, NULL);
 
     float pc[11] = {
         dstX, dstY, dstW, dstH,
         srcU, srcV, srcW, srcH,
-        r->screenW, r->screenH,
+        screenW, screenH,
         alpha,
     };
-    vkCmdPushConstants(r->cmdBuf, r->texLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), pc);
-    vkCmdDraw(r->cmdBuf, 4, 1, 0, 0);
+    r->procs.CmdPushConstants(r->cmdBuf, r->texLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), pc);
+    r->procs.CmdDraw(r->cmdBuf, 4, 1, 0, 0);
 }
 
 static int end_frame(VkRenderer* r) {
-    if (!r->inPass) return 0;
-    r->inPass = 0;
-
-    vkCmdEndRenderPass(r->cmdBuf);
-    VkResult res = vkEndCommandBuffer(r->cmdBuf);
+    r->procs.CmdEndRenderPass(r->cmdBuf);
+    VkResult res = r->procs.EndCommandBuffer(r->cmdBuf);
     if (res != VK_SUCCESS) return (int)res;
 
     VkSubmitInfo submitInfo = {
@@ -623,21 +582,13 @@ static int end_frame(VkRenderer* r) {
         .pCommandBuffers = &r->cmdBuf,
     };
 
-    res = vkQueueSubmit(r->queue, 1, &submitInfo, r->fence);
+    res = r->procs.QueueSubmit(r->queue, 1, &submitInfo, r->fence);
     return (int)res;
 }
 
 static int wait_frame(VkRenderer* r, uint64_t timeoutNs) {
-    return (int)vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, timeoutNs);
+    return (int)r->procs.WaitForFences(r->device, 1, &r->fence, VK_TRUE, timeoutNs);
 }
-
-// --- CPU-upload textures (stratifi-o2x phase 3) ---
-//
-// Client content is shm (memfd, not dmabuf), so the GPU path uploads via
-// host-visible linear images: memcpy into mapped memory, then a command
-// buffer transitions UNDEFINED -> SHADER_READ_ONLY_OPTIMAL for sampling.
-// RADV supports linear sampled images; a staging-buffer copy to OPTIMAL
-// tiling is the optimization path later.
 
 static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, uint32_t height, uint32_t stride, const uint8_t* pixels, VkUploadTexture* out) {
     memset(out, 0, sizeof(VkUploadTexture));
@@ -646,7 +597,6 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
     out->stride = stride;
     if (!pixels) return -33;
 
-    // OPTIMAL image for sampling.
     VkImageCreateInfo imgInfo = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .imageType = VK_IMAGE_TYPE_2D,
@@ -660,14 +610,14 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-    VkResult res = vkCreateImage(r->device, &imgInfo, NULL, &out->image);
+    VkResult res = r->procs.CreateImage(r->device, &imgInfo, NULL, &out->image);
     if (res != VK_SUCCESS) return (int)res;
 
     VkMemoryRequirements imgReqs;
-    vkGetImageMemoryRequirements(r->device, out->image, &imgReqs);
+    r->procs.GetImageMemoryRequirements(r->device, out->image, &imgReqs);
 
     VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(r->pdev, &memProps);
+    r->procs.GetPhysicalDeviceMemoryProperties(r->pdev, &memProps);
     int devMemType = -1;
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
         if ((imgReqs.memoryTypeBits & (1 << i)) &&
@@ -683,35 +633,32 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .allocationSize = imgReqs.size,
         .memoryTypeIndex = (uint32_t)devMemType,
     };
-    res = vkAllocateMemory(r->device, &imgAlloc, NULL, &out->memory);
+    res = r->procs.AllocateMemory(r->device, &imgAlloc, NULL, &out->memory);
     if (res != VK_SUCCESS) {
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
-    res = vkBindImageMemory(r->device, out->image, out->memory, 0);
+    res = r->procs.BindImageMemory(r->device, out->image, out->memory, 0);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(r->device, out->memory, NULL);
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.FreeMemory(r->device, out->memory, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
 
-    // Staging buffer (host visible), memcpy, then cmd copy.
-    VkDeviceSize uploadSize = (VkDeviceSize)stride * height;
     VkBufferCreateInfo sinfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = (VkDeviceSize)width * 4 * height,
         .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
-    VkBuffer staging;
-    res = vkCreateBuffer(r->device, &sinfo, NULL, &out->stagingBuffer);
+    res = r->procs.CreateBuffer(r->device, &sinfo, NULL, &out->stagingBuffer);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(r->device, out->memory, NULL);
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.FreeMemory(r->device, out->memory, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
     VkMemoryRequirements sReqs;
-    vkGetBufferMemoryRequirements(r->device, out->stagingBuffer, &sReqs);
+    r->procs.GetBufferMemoryRequirements(r->device, out->stagingBuffer, &sReqs);
     int hostMemType = -1;
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
         if ((sReqs.memoryTypeBits & (1 << i)) &&
@@ -727,28 +674,28 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .allocationSize = sReqs.size,
         .memoryTypeIndex = (uint32_t)hostMemType,
     };
-    res = vkAllocateMemory(r->device, &sAlloc, NULL, &out->stagingMemory);
+    res = r->procs.AllocateMemory(r->device, &sAlloc, NULL, &out->stagingMemory);
     if (res != VK_SUCCESS) {
-        vkDestroyBuffer(r->device, out->stagingBuffer, NULL);
-        vkFreeMemory(r->device, out->memory, NULL);
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.DestroyBuffer(r->device, out->stagingBuffer, NULL);
+        r->procs.FreeMemory(r->device, out->memory, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
-    res = vkBindBufferMemory(r->device, out->stagingBuffer, out->stagingMemory, 0);
+    res = r->procs.BindBufferMemory(r->device, out->stagingBuffer, out->stagingMemory, 0);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(r->device, out->stagingMemory, NULL);
-        vkDestroyBuffer(r->device, out->stagingBuffer, NULL);
-        vkFreeMemory(r->device, out->memory, NULL);
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.FreeMemory(r->device, out->stagingMemory, NULL);
+        r->procs.DestroyBuffer(r->device, out->stagingBuffer, NULL);
+        r->procs.FreeMemory(r->device, out->memory, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
 
-    void* mapped;
-    res = vkMapMemory(r->device, out->stagingMemory, 0, sReqs.size, 0, &out->mapped);
+    res = r->procs.MapMemory(r->device, out->stagingMemory, 0, sReqs.size, 0, &out->mapped);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(r->device, out->stagingMemory, NULL);
-        vkFreeMemory(r->device, out->memory, NULL);
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.FreeMemory(r->device, out->stagingMemory, NULL);
+        r->procs.DestroyBuffer(r->device, out->stagingBuffer, NULL);
+        r->procs.FreeMemory(r->device, out->memory, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
     for (uint32_t row = 0; row < height; row++) {
@@ -762,22 +709,22 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .format = VK_FORMAT_B8G8R8A8_SRGB,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    res = vkCreateImageView(r->device, &viewInfo, NULL, &out->view);
+    res = r->procs.CreateImageView(r->device, &viewInfo, NULL, &out->view);
     if (res != VK_SUCCESS) {
-        vkUnmapMemory(r->device, out->stagingMemory);
-        vkFreeMemory(r->device, out->stagingMemory, NULL);
-        vkFreeMemory(r->device, out->memory, NULL);
-        vkDestroyImage(r->device, out->image, NULL);
+        r->procs.UnmapMemory(r->device, out->stagingMemory);
+        r->procs.FreeMemory(r->device, out->stagingMemory, NULL);
+        r->procs.DestroyBuffer(r->device, out->stagingBuffer, NULL);
+        r->procs.FreeMemory(r->device, out->memory, NULL);
+        r->procs.DestroyImage(r->device, out->image, NULL);
         return (int)res;
     }
 
-    // One-shot command: layout barrier + buffer->image copy.
-    vkResetFences(r->device, 1, &r->fence);
+    r->procs.ResetFences(r->device, 1, &r->fence);
     VkCommandBufferBeginInfo beginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
+    res = r->procs.BeginCommandBuffer(r->cmdBuf, &beginInfo);
     if (res != VK_SUCCESS) return (int)res;
 
     VkBufferMemoryBarrier uploadVis = {
@@ -790,7 +737,7 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .offset = 0,
         .size = VK_WHOLE_SIZE,
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &uploadVis, 0, NULL);
+    r->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 1, &uploadVis, 0, NULL);
 
     VkImageMemoryBarrier toDst = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -803,7 +750,7 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .image = out->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
+    r->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toDst);
 
     VkBufferImageCopy region = {
         .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
@@ -813,7 +760,7 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
     };
-    vkCmdCopyBufferToImage(r->cmdBuf, out->stagingBuffer, out->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    r->procs.CmdCopyBufferToImage(r->cmdBuf, out->stagingBuffer, out->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
     VkImageMemoryBarrier toSample = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -826,39 +773,28 @@ static int upload_texture_impl(VkContext* ctx, VkRenderer* r, uint32_t width, ui
         .image = out->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toSample);
-    vkEndCommandBuffer(r->cmdBuf);
-
+    r->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &toSample);
+    r->procs.EndCommandBuffer(r->cmdBuf);
 
     VkSubmitInfo submitInfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
-    res = vkQueueSubmit(r->queue, 1, &submitInfo, r->fence);
+    res = r->procs.QueueSubmit(r->queue, 1, &submitInfo, r->fence);
     if (res != VK_SUCCESS) return (int)res;
-    res = vkWaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
+    res = r->procs.WaitForFences(r->device, 1, &r->fence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
-    // Fence left SIGNALLED: begin_frame waits for the previous
-    // submit then resets — a reset here times out the next frame.
     return 0;
 }
 
-
 static void destroy_upload_texture(VkContext* ctx, VkUploadTexture* t) {
-    if (t->view) vkDestroyImageView(ctx->device, t->view, NULL);
-    if (t->mapped) vkUnmapMemory(ctx->device, t->stagingMemory);
-    if (t->stagingMemory) vkFreeMemory(ctx->device, t->stagingMemory, NULL);
-    if (t->stagingBuffer) vkDestroyBuffer(ctx->device, t->stagingBuffer, NULL);
-    if (t->memory) vkFreeMemory(ctx->device, t->memory, NULL);
-    if (t->image) vkDestroyImage(ctx->device, t->image, NULL);
+    if (t->view) ctx->procs.DestroyImageView(ctx->device, t->view, NULL);
+    if (t->mapped) ctx->procs.UnmapMemory(ctx->device, t->stagingMemory);
+    if (t->stagingMemory) ctx->procs.FreeMemory(ctx->device, t->stagingMemory, NULL);
+    if (t->stagingBuffer) ctx->procs.DestroyBuffer(ctx->device, t->stagingBuffer, NULL);
+    if (t->memory) ctx->procs.FreeMemory(ctx->device, t->memory, NULL);
+    if (t->image) ctx->procs.DestroyImage(ctx->device, t->image, NULL);
     memset(t, 0, sizeof(VkUploadTexture));
 }
 
-static void draw_texture_view(VkRenderer* r, VkImageView view,
-    float dstX, float dstY, float dstW, float dstH,
-    float srcU, float srcV, float srcW, float srcH, float alpha) {
-    draw_texture_quad(r, view, dstX, dstY, dstW, dstH, srcU, srcV, srcW, srcH, alpha);
-}
-
 static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* outRows, uint32_t outStride) {
-    // Staging buffer sized for outStride*height.
     VkBufferCreateInfo binfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = (VkDeviceSize)outStride * t->height,
@@ -866,13 +802,13 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     VkBuffer buf;
-    VkResult res = vkCreateBuffer(ctx->device, &binfo, NULL, &buf);
+    VkResult res = ctx->procs.CreateBuffer(ctx->device, &binfo, NULL, &buf);
     if (res != VK_SUCCESS) return (int)res;
 
     VkMemoryRequirements reqs;
-    vkGetBufferMemoryRequirements(ctx->device, buf, &reqs);
+    ctx->procs.GetBufferMemoryRequirements(ctx->device, buf, &reqs);
     VkPhysicalDeviceMemoryProperties mprops;
-    vkGetPhysicalDeviceMemoryProperties(ctx->pdev, &mprops);
+    ctx->procs.GetPhysicalDeviceMemoryProperties(ctx->pdev, &mprops);
     int memType = -1;
     for (uint32_t i = 0; i < mprops.memoryTypeCount; i++) {
         if ((reqs.memoryTypeBits & (1 << i)) &&
@@ -882,21 +818,20 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
             break;
         }
     }
-    if (memType < 0) { vkDestroyBuffer(ctx->device, buf, NULL); return -21; }
+    if (memType < 0) { ctx->procs.DestroyBuffer(ctx->device, buf, NULL); return -21; }
 
     VkMemoryAllocateInfo ainfo = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = reqs.size, .memoryTypeIndex = (uint32_t)memType };
     VkDeviceMemory mem;
-    res = vkAllocateMemory(ctx->device, &ainfo, NULL, &mem);
-    if (res != VK_SUCCESS) { vkDestroyBuffer(ctx->device, buf, NULL); return (int)res; }
-    res = vkBindBufferMemory(ctx->device, buf, mem, 0);
-    if (res != VK_SUCCESS) { vkFreeMemory(ctx->device, mem, NULL); vkDestroyBuffer(ctx->device, buf, NULL); return (int)res; }
+    res = ctx->procs.AllocateMemory(ctx->device, &ainfo, NULL, &mem);
+    if (res != VK_SUCCESS) { ctx->procs.DestroyBuffer(ctx->device, buf, NULL); return (int)res; }
+    res = ctx->procs.BindBufferMemory(ctx->device, buf, mem, 0);
+    if (res != VK_SUCCESS) { ctx->procs.FreeMemory(ctx->device, mem, NULL); ctx->procs.DestroyBuffer(ctx->device, buf, NULL); return (int)res; }
 
-    vkResetFences(ctx->device, 1, &r->readbackFence);
+    ctx->procs.ResetFences(ctx->device, 1, &r->readbackFence);
     VkCommandBufferBeginInfo binfo2 = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
-    res = vkBeginCommandBuffer(r->cmdBuf, &binfo2);
+    res = ctx->procs.BeginCommandBuffer(r->cmdBuf, &binfo2);
     if (res != VK_SUCCESS) goto fail;
 
-    // COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL
     VkImageMemoryBarrier pre = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -908,7 +843,7 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
         .image = t->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &pre);
+    ctx->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &pre);
 
     VkBufferImageCopy region = {
         .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
@@ -918,9 +853,8 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
         .bufferRowLength = t->width,
         .bufferImageHeight = t->height,
     };
-    vkCmdCopyImageToBuffer(r->cmdBuf, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
+    ctx->procs.CmdCopyImageToBuffer(r->cmdBuf, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &region);
 
-    // Back to COLOR_ATTACHMENT_OPTIMAL for future frames.
     VkImageMemoryBarrier post = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
@@ -932,53 +866,49 @@ static int readback_target(VkContext* ctx, VkRenderer* r, VkTarget* t, void* out
         .image = t->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &post);
-    vkEndCommandBuffer(r->cmdBuf);
+    ctx->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &post);
+    ctx->procs.EndCommandBuffer(r->cmdBuf);
 
     VkSubmitInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
-    res = vkQueueSubmit(r->queue, 1, &sinfo, r->readbackFence);
+    res = ctx->procs.QueueSubmit(r->queue, 1, &sinfo, r->readbackFence);
     if (res != VK_SUCCESS) goto fail;
-    res = vkWaitForFences(ctx->device, 1, &r->readbackFence, VK_TRUE, 1000000000ULL);
+    res = ctx->procs.WaitForFences(ctx->device, 1, &r->readbackFence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) goto fail;
-    vkResetFences(ctx->device, 1, &r->readbackFence);
+    ctx->procs.ResetFences(ctx->device, 1, &r->readbackFence);
 
-    // Copy out row by row.
     {
         void* mapped;
-        res = vkMapMemory(ctx->device, mem, 0, reqs.size, 0, &mapped);
+        res = ctx->procs.MapMemory(ctx->device, mem, 0, reqs.size, 0, &mapped);
         if (res == VK_SUCCESS) {
             for (uint32_t row = 0; row < t->height; row++) {
                 memcpy((uint8_t*)outRows + (size_t)outStride * row, (uint8_t*)mapped + (size_t)t->width * 4 * row, (size_t)t->width * 4);
             }
-            vkUnmapMemory(ctx->device, mem);
+            ctx->procs.UnmapMemory(ctx->device, mem);
         }
-        vkFreeMemory(ctx->device, mem, NULL);
-        vkDestroyBuffer(ctx->device, buf, NULL);
+        ctx->procs.FreeMemory(ctx->device, mem, NULL);
+        ctx->procs.DestroyBuffer(ctx->device, buf, NULL);
         return 0;
     }
 fail:
-    vkResetFences(ctx->device, 1, &r->readbackFence);
-    vkFreeMemory(ctx->device, mem, NULL);
-    vkDestroyBuffer(ctx->device, buf, NULL);
+    ctx->procs.ResetFences(ctx->device, 1, &r->readbackFence);
+    ctx->procs.FreeMemory(ctx->device, mem, NULL);
+    ctx->procs.DestroyBuffer(ctx->device, buf, NULL);
     return -1;
 }
 
 static int readback_texture_impl(VkContext* ctx, VkUploadTexture* t, uint8_t* outRows, uint32_t outStride) {
     (void)ctx;
     if (!t->mapped) return -31;
-    // OPTIMAL tiling: read the staging rows (tightly packed width*4).
     for (uint32_t row = 0; row < t->height; row++) {
         memcpy((uint8_t*)outRows + (size_t)outStride * row, (uint8_t*)t->mapped + (size_t)t->width * 4 * row, (size_t)t->width * 4);
     }
     return 0;
 }
 
-// Verify the OPTIMAL image actually received the data: transition
-// SHADER_READ_ONLY -> TRANSFER_SRC, copy image -> staging, back.
 static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) {
-    vkResetFences(ctx->device, 1, &r->readbackFence);
+    ctx->procs.ResetFences(ctx->device, 1, &r->readbackFence);
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
-    VkResult res = vkBeginCommandBuffer(r->cmdBuf, &beginInfo);
+    VkResult res = ctx->procs.BeginCommandBuffer(r->cmdBuf, &beginInfo);
     if (res != VK_SUCCESS) return (int)res;
 
     VkImageMemoryBarrier pre = {
@@ -992,7 +922,7 @@ static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) 
         .image = t->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &pre);
+    ctx->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &pre);
 
     VkBufferImageCopy region = {
         .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
@@ -1002,7 +932,7 @@ static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) 
         .bufferRowLength = 0,
         .bufferImageHeight = 0,
     };
-    vkCmdCopyImageToBuffer(r->cmdBuf, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->stagingBuffer, 1, &region);
+    ctx->procs.CmdCopyImageToBuffer(r->cmdBuf, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->stagingBuffer, 1, &region);
 
     VkImageMemoryBarrier post = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1015,24 +945,26 @@ static int verify_image_copy(VkContext* ctx, VkRenderer* r, VkUploadTexture* t) 
         .image = t->image,
         .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    vkCmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &post);
-    vkEndCommandBuffer(r->cmdBuf);
+    ctx->procs.CmdPipelineBarrier(r->cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &post);
+    ctx->procs.EndCommandBuffer(r->cmdBuf);
 
     VkSubmitInfo sinfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &r->cmdBuf };
-    res = vkQueueSubmit(r->queue, 1, &sinfo, r->readbackFence);
+    res = ctx->procs.QueueSubmit(r->queue, 1, &sinfo, r->readbackFence);
     if (res != VK_SUCCESS) return (int)res;
-    res = vkWaitForFences(ctx->device, 1, &r->readbackFence, VK_TRUE, 1000000000ULL);
+    res = ctx->procs.WaitForFences(ctx->device, 1, &r->readbackFence, VK_TRUE, 1000000000ULL);
     if (res != VK_SUCCESS) return (int)res;
-    // readbackFence left SIGNALLED; the frame fence is never touched here.
     return 0;
 }
 */
 import "C"
 import (
 	"fmt"
+	"os"
 	"sync"
 	"unsafe"
 )
+
+const texDescSetRingSize = 64
 
 // RenderTarget represents an offscreen or display-backed framebuffer in Vulkan.
 type RenderTarget struct {
@@ -1043,9 +975,14 @@ type RenderTarget struct {
 
 // Renderer provides a high-throughput, data-oriented Vulkan 2D compositing engine.
 type Renderer struct {
-	dev *Device
-	r   C.VkRenderer
-	mu  sync.Mutex
+	dev               *Device
+	r                 C.VkRenderer
+	mu                sync.Mutex
+	inPass            bool
+	screenW           float32
+	screenH           float32
+	texDescNext       uint32
+	texDescOverflowed bool
 }
 
 // NewRenderer creates a Vulkan compositor renderer backed by the given hardware device.
@@ -1099,7 +1036,6 @@ func (ren *Renderer) CreateTarget(width, height uint32) (*RenderTarget, error) {
 	}, nil
 }
 
-// DestroyTarget frees GPU memory and framebuffer resources of a RenderTarget.
 // CreateScanoutTarget wraps an imported dma-buf image (KMS scanout dumb
 // buffer) in a framebuffer on the renderer's render pass, so frames render
 // straight into scanout memory. The image, view and memory stay owned by
@@ -1145,26 +1081,47 @@ func (ren *Renderer) BeginFrame(target *RenderTarget, r, g, b, a float32) error 
 	if res != 0 {
 		return fmt.Errorf("begin_frame failed (code %d)", int(res))
 	}
+	ren.texDescNext = 0
+	ren.screenW = float32(target.Width)
+	ren.screenH = float32(target.Height)
+	ren.inPass = true
 	return nil
 }
 
 // DrawColorQuad renders a solid color rectangle (window border, divider, drag highlight).
 // Zero-allocation hot path.
 func (ren *Renderer) DrawColorQuad(x, y, w, h float32, r, g, b, a float32) {
-	C.draw_color_quad(&ren.r, C.float(x), C.float(y), C.float(w), C.float(h), C.float(r), C.float(g), C.float(b), C.float(a))
+	if !ren.inPass {
+		return
+	}
+	C.draw_color_quad(&ren.r, C.float(ren.screenW), C.float(ren.screenH),
+		C.float(x), C.float(y), C.float(w), C.float(h),
+		C.float(r), C.float(g), C.float(b), C.float(a))
+}
+
+func (ren *Renderer) nextDescriptorSlot() uint32 {
+	idx := ren.texDescNext
+	ren.texDescNext++
+	if idx >= texDescSetRingSize {
+		if !ren.texDescOverflowed {
+			ren.texDescOverflowed = true
+			fmt.Fprintf(os.Stderr, "[-] vulkan: more than %d textured draws in a frame; extra quads share a descriptor set\n", texDescSetRingSize)
+		}
+		idx = texDescSetRingSize - 1
+	}
+	return idx
 }
 
 // DrawTextureQuad renders an imported DMA-BUF texture quad onto the target surface.
 // Zero-allocation hot path. Each draw in a frame samples its own image: the
-// renderer owns a descriptor ring, so callers may draw any number of
-// different textures without per-draw bookkeeping. Do NOT hand this path a
-// shared descriptor set — descriptor writes are host-side and a shared set
-// resolves to the last image written (all quads identical).
+// renderer owns a descriptor ring in Go, so callers may draw any number of
+// different textures without per-draw bookkeeping.
 func (ren *Renderer) DrawTextureQuad(buf *ImportedBuffer, dstX, dstY, dstW, dstH float32, srcU, srcV, srcW, srcH float32, alpha float32) {
-	if buf == nil {
+	if !ren.inPass || buf == nil || buf.buf.view == nil {
 		return
 	}
-	C.draw_texture_quad(&ren.r, buf.buf.view,
+	slot := ren.nextDescriptorSlot()
+	C.draw_texture_quad_slot(&ren.r, C.uint32_t(slot), C.float(ren.screenW), C.float(ren.screenH), buf.buf.view,
 		C.float(dstX), C.float(dstY), C.float(dstW), C.float(dstH),
 		C.float(srcU), C.float(srcV), C.float(srcW), C.float(srcH),
 		C.float(alpha),
@@ -1175,6 +1132,11 @@ func (ren *Renderer) DrawTextureQuad(buf *ImportedBuffer, dstX, dstY, dstW, dstH
 func (ren *Renderer) EndFrame() error {
 	ren.mu.Lock()
 	defer ren.mu.Unlock()
+
+	if !ren.inPass {
+		return nil
+	}
+	ren.inPass = false
 
 	res := C.end_frame(&ren.r)
 	if res != 0 {
@@ -1200,6 +1162,7 @@ func (ren *Renderer) Close() error {
 	ren.mu.Lock()
 	defer ren.mu.Unlock()
 
+	ren.inPass = false
 	C.destroy_vk_renderer(&ren.r)
 	return nil
 }
@@ -1262,7 +1225,11 @@ func (ren *Renderer) DrawTextureView(tex *Texture, dstX, dstY, dstW, dstH float3
 	}
 	ren.mu.Lock()
 	defer ren.mu.Unlock()
-	C.draw_texture_view(&ren.r, tex.t.view,
+	if !ren.inPass || tex.t.view == nil {
+		return
+	}
+	slot := ren.nextDescriptorSlot()
+	C.draw_texture_quad_slot(&ren.r, C.uint32_t(slot), C.float(ren.screenW), C.float(ren.screenH), tex.t.view,
 		C.float(dstX), C.float(dstY), C.float(dstW), C.float(dstH),
 		0, 0, 1, 1,
 		C.float(alpha),
@@ -1280,7 +1247,6 @@ func (ren *Renderer) ReadbackTarget(target *RenderTarget) ([]byte, bool) {
 		return nil, false
 	}
 
-	var pixels []byte
 	var res C.int
 	if len(out) > 0 {
 		res = C.readback_target(&ren.dev.ctx, &ren.r, &target.target,
@@ -1291,7 +1257,6 @@ func (ren *Renderer) ReadbackTarget(target *RenderTarget) ([]byte, bool) {
 	if res != 0 {
 		return nil, false
 	}
-	_ = pixels
 	return out, true
 }
 
@@ -1328,7 +1293,6 @@ func (ren *Renderer) VerifyImageCopy(tex *Texture) ([]byte, bool) {
 	if len(out) == 0 {
 		return nil, false
 	}
-	// Copies the image into the staging buffer; then read the staging.
 	if res := C.verify_image_copy(&ren.dev.ctx, &ren.r, &tex.t); res != 0 {
 		return nil, false
 	}

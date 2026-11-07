@@ -1,13 +1,43 @@
 package vulkan
 
 /*
-#cgo LDFLAGS: -lvulkan
 #include "vk_common.h"
 #include <fcntl.h>
 #include <unistd.h>
 
-static int init_vulkan_context(VkContext* ctx) {
+static void* vk_dlopen(const char* name) {
+    return dlopen(name, RTLD_NOW | RTLD_LOCAL);
+}
+
+static void* vk_dlsym(void* handle, const char* symbol) {
+    return dlsym(handle, symbol);
+}
+
+static int vk_dlclose(void* handle) {
+    return dlclose(handle);
+}
+
+#define RESOLVE_INST(ctx, fn) do { \
+    (ctx)->procs.fn = (PFN_vk##fn)(ctx)->procs.GetInstanceProcAddr((ctx)->instance, "vk" #fn); \
+    if (!(ctx)->procs.fn) return -100; \
+} while (0)
+
+#define RESOLVE_DEV(ctx, fn) do { \
+    (ctx)->procs.fn = (PFN_vk##fn)(ctx)->procs.GetDeviceProcAddr((ctx)->device, "vk" #fn); \
+    if (!(ctx)->procs.fn) { \
+        (ctx)->procs.fn = (PFN_vk##fn)(ctx)->procs.GetInstanceProcAddr((ctx)->instance, "vk" #fn); \
+    } \
+    if (!(ctx)->procs.fn) return -101; \
+} while (0)
+
+static int init_vulkan_context_with_gipa(VkContext* ctx, void* libHandle, void* gipa) {
     memset(ctx, 0, sizeof(VkContext));
+    ctx->libHandle = libHandle;
+    ctx->procs.GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)gipa;
+    if (!ctx->procs.GetInstanceProcAddr) return -99;
+
+    ctx->procs.CreateInstance = (PFN_vkCreateInstance)ctx->procs.GetInstanceProcAddr(NULL, "vkCreateInstance");
+    if (!ctx->procs.CreateInstance) return -98;
 
     VkApplicationInfo appInfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -18,8 +48,6 @@ static int init_vulkan_context(VkContext* ctx) {
         .apiVersion = VK_API_VERSION_1_3,
     };
 
-    // Optional validation (STRATIFI_VK_VALIDATION=1 + VK_LAYER_PATH): catches
-    // layout and sync bugs the silent paths hide.
     const char* validationLayer = "VK_LAYER_KHRONOS_validation";
     VkInstanceCreateInfo instInfo = {
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -30,20 +58,28 @@ static int init_vulkan_context(VkContext* ctx) {
         instInfo.ppEnabledLayerNames = &validationLayer;
     }
 
-    VkResult res = vkCreateInstance(&instInfo, NULL, &ctx->instance);
+    VkResult res = ctx->procs.CreateInstance(&instInfo, NULL, &ctx->instance);
     if (res != VK_SUCCESS) return (int)res;
 
+    RESOLVE_INST(ctx, DestroyInstance);
+    RESOLVE_INST(ctx, EnumeratePhysicalDevices);
+    RESOLVE_INST(ctx, GetPhysicalDeviceProperties);
+    RESOLVE_INST(ctx, GetPhysicalDeviceQueueFamilyProperties);
+    RESOLVE_INST(ctx, GetPhysicalDeviceMemoryProperties);
+    RESOLVE_INST(ctx, CreateDevice);
+    RESOLVE_INST(ctx, GetDeviceProcAddr);
+
     uint32_t devCount = 0;
-    res = vkEnumeratePhysicalDevices(ctx->instance, &devCount, NULL);
+    res = ctx->procs.EnumeratePhysicalDevices(ctx->instance, &devCount, NULL);
     if (res != VK_SUCCESS || devCount == 0) {
-        vkDestroyInstance(ctx->instance, NULL);
+        ctx->procs.DestroyInstance(ctx->instance, NULL);
         return -1;
     }
     VkPhysicalDevice devices[16];
     if (devCount > 16) devCount = 16;
-    res = vkEnumeratePhysicalDevices(ctx->instance, &devCount, devices);
+    res = ctx->procs.EnumeratePhysicalDevices(ctx->instance, &devCount, devices);
     if (res != VK_SUCCESS || devCount == 0) {
-        vkDestroyInstance(ctx->instance, NULL);
+        ctx->procs.DestroyInstance(ctx->instance, NULL);
         return -1;
     }
     int devIdx = 0;
@@ -53,14 +89,14 @@ static int init_vulkan_context(VkContext* ctx) {
     ctx->pdev = devices[devIdx];
 
     VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(ctx->pdev, &props);
+    ctx->procs.GetPhysicalDeviceProperties(ctx->pdev, &props);
     strncpy(ctx->deviceName, props.deviceName, sizeof(ctx->deviceName) - 1);
 
     // Find graphics queue
     uint32_t qCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(ctx->pdev, &qCount, NULL);
+    ctx->procs.GetPhysicalDeviceQueueFamilyProperties(ctx->pdev, &qCount, NULL);
     VkQueueFamilyProperties qProps[qCount];
-    vkGetPhysicalDeviceQueueFamilyProperties(ctx->pdev, &qCount, qProps);
+    ctx->procs.GetPhysicalDeviceQueueFamilyProperties(ctx->pdev, &qCount, qProps);
 
     int graphicsQ = -1;
     for (uint32_t i = 0; i < qCount; i++) {
@@ -70,7 +106,7 @@ static int init_vulkan_context(VkContext* ctx) {
         }
     }
     if (graphicsQ < 0) {
-        vkDestroyInstance(ctx->instance, NULL);
+        ctx->procs.DestroyInstance(ctx->instance, NULL);
         return -2;
     }
     ctx->queueFamily = (uint32_t)graphicsQ;
@@ -97,13 +133,72 @@ static int init_vulkan_context(VkContext* ctx) {
         .ppEnabledExtensionNames = extNames,
     };
 
-    res = vkCreateDevice(ctx->pdev, &devInfo, NULL, &ctx->device);
+    res = ctx->procs.CreateDevice(ctx->pdev, &devInfo, NULL, &ctx->device);
     if (res != VK_SUCCESS) {
-        vkDestroyInstance(ctx->instance, NULL);
+        ctx->procs.DestroyInstance(ctx->instance, NULL);
         return (int)res;
     }
 
-    vkGetDeviceQueue(ctx->device, ctx->queueFamily, 0, &ctx->queue);
+    RESOLVE_DEV(ctx, DestroyDevice);
+    RESOLVE_DEV(ctx, GetDeviceQueue);
+    RESOLVE_DEV(ctx, DeviceWaitIdle);
+    RESOLVE_DEV(ctx, CreateCommandPool);
+    RESOLVE_DEV(ctx, DestroyCommandPool);
+    RESOLVE_DEV(ctx, AllocateCommandBuffers);
+    RESOLVE_DEV(ctx, ResetCommandBuffer);
+    RESOLVE_DEV(ctx, BeginCommandBuffer);
+    RESOLVE_DEV(ctx, EndCommandBuffer);
+    RESOLVE_DEV(ctx, QueueSubmit);
+    RESOLVE_DEV(ctx, CreateFence);
+    RESOLVE_DEV(ctx, DestroyFence);
+    RESOLVE_DEV(ctx, WaitForFences);
+    RESOLVE_DEV(ctx, ResetFences);
+    RESOLVE_DEV(ctx, CreateImage);
+    RESOLVE_DEV(ctx, DestroyImage);
+    RESOLVE_DEV(ctx, GetImageMemoryRequirements);
+    RESOLVE_DEV(ctx, AllocateMemory);
+    RESOLVE_DEV(ctx, FreeMemory);
+    RESOLVE_DEV(ctx, MapMemory);
+    RESOLVE_DEV(ctx, UnmapMemory);
+    RESOLVE_DEV(ctx, BindImageMemory);
+    RESOLVE_DEV(ctx, CreateImageView);
+    RESOLVE_DEV(ctx, DestroyImageView);
+    RESOLVE_DEV(ctx, CreateBuffer);
+    RESOLVE_DEV(ctx, DestroyBuffer);
+    RESOLVE_DEV(ctx, GetBufferMemoryRequirements);
+    RESOLVE_DEV(ctx, BindBufferMemory);
+    RESOLVE_DEV(ctx, CreateRenderPass);
+    RESOLVE_DEV(ctx, DestroyRenderPass);
+    RESOLVE_DEV(ctx, CreateFramebuffer);
+    RESOLVE_DEV(ctx, DestroyFramebuffer);
+    RESOLVE_DEV(ctx, CreateSampler);
+    RESOLVE_DEV(ctx, DestroySampler);
+    RESOLVE_DEV(ctx, CreateDescriptorPool);
+    RESOLVE_DEV(ctx, DestroyDescriptorPool);
+    RESOLVE_DEV(ctx, CreateDescriptorSetLayout);
+    RESOLVE_DEV(ctx, DestroyDescriptorSetLayout);
+    RESOLVE_DEV(ctx, AllocateDescriptorSets);
+    RESOLVE_DEV(ctx, UpdateDescriptorSets);
+    RESOLVE_DEV(ctx, CreateShaderModule);
+    RESOLVE_DEV(ctx, DestroyShaderModule);
+    RESOLVE_DEV(ctx, CreatePipelineLayout);
+    RESOLVE_DEV(ctx, DestroyPipelineLayout);
+    RESOLVE_DEV(ctx, CreateGraphicsPipelines);
+    RESOLVE_DEV(ctx, DestroyPipeline);
+    RESOLVE_DEV(ctx, CmdBeginRenderPass);
+    RESOLVE_DEV(ctx, CmdEndRenderPass);
+    RESOLVE_DEV(ctx, CmdSetViewport);
+    RESOLVE_DEV(ctx, CmdSetScissor);
+    RESOLVE_DEV(ctx, CmdBindPipeline);
+    RESOLVE_DEV(ctx, CmdBindDescriptorSets);
+    RESOLVE_DEV(ctx, CmdPushConstants);
+    RESOLVE_DEV(ctx, CmdDraw);
+    RESOLVE_DEV(ctx, CmdPipelineBarrier);
+    RESOLVE_DEV(ctx, CmdCopyBufferToImage);
+    RESOLVE_DEV(ctx, CmdCopyImageToBuffer);
+    ctx->procs.GetMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)ctx->procs.GetDeviceProcAddr(ctx->device, "vkGetMemoryFdPropertiesKHR");
+
+    ctx->procs.GetDeviceQueue(ctx->device, ctx->queueFamily, 0, &ctx->queue);
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo = {
@@ -111,10 +206,10 @@ static int init_vulkan_context(VkContext* ctx) {
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         .queueFamilyIndex = ctx->queueFamily,
     };
-    res = vkCreateCommandPool(ctx->device, &poolInfo, NULL, &ctx->cmdPool);
+    res = ctx->procs.CreateCommandPool(ctx->device, &poolInfo, NULL, &ctx->cmdPool);
     if (res != VK_SUCCESS) {
-        vkDestroyDevice(ctx->device, NULL);
-        vkDestroyInstance(ctx->instance, NULL);
+        ctx->procs.DestroyDevice(ctx->device, NULL);
+        ctx->procs.DestroyInstance(ctx->instance, NULL);
         return (int)res;
     }
 
@@ -123,15 +218,19 @@ static int init_vulkan_context(VkContext* ctx) {
 
 static void destroy_vulkan_context(VkContext* ctx) {
     if (ctx->device) {
-        if (ctx->cmdPool) {
-            vkDestroyCommandPool(ctx->device, ctx->cmdPool, NULL);
+        if (ctx->cmdPool && ctx->procs.DestroyCommandPool) {
+            ctx->procs.DestroyCommandPool(ctx->device, ctx->cmdPool, NULL);
             ctx->cmdPool = NULL;
         }
-        vkDestroyDevice(ctx->device, NULL);
+        if (ctx->procs.DestroyDevice) {
+            ctx->procs.DestroyDevice(ctx->device, NULL);
+        }
         ctx->device = NULL;
     }
     if (ctx->instance) {
-        vkDestroyInstance(ctx->instance, NULL);
+        if (ctx->procs.DestroyInstance) {
+            ctx->procs.DestroyInstance(ctx->instance, NULL);
+        }
         ctx->instance = NULL;
     }
 }
@@ -143,19 +242,17 @@ static int import_dmabuf_impl(VkContext* ctx, int fd, uint32_t width, uint32_t h
     out->stride = stride;
     out->modifier = modifier;
 
-    PFN_vkGetMemoryFdPropertiesKHR pfnGetMemoryFdPropertiesKHR =
-        (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(ctx->device, "vkGetMemoryFdPropertiesKHR");
-    if (!pfnGetMemoryFdPropertiesKHR) return -10;
+    if (!ctx->procs.GetMemoryFdPropertiesKHR) return -10;
 
     VkMemoryFdPropertiesKHR fdProps = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR,
     };
-    VkResult res = pfnGetMemoryFdPropertiesKHR(ctx->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fdProps);
+    VkResult res = ctx->procs.GetMemoryFdPropertiesKHR(ctx->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fdProps);
     if (res != VK_SUCCESS) return (int)res;
 
     // Find suitable memory type index
     VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(ctx->pdev, &memProps);
+    ctx->procs.GetPhysicalDeviceMemoryProperties(ctx->pdev, &memProps);
 
     int memTypeIndex = -1;
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
@@ -201,19 +298,19 @@ static int import_dmabuf_impl(VkContext* ctx, int fd, uint32_t width, uint32_t h
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
 
-    res = vkCreateImage(ctx->device, &imgInfo, NULL, &out->image);
+    res = ctx->procs.CreateImage(ctx->device, &imgInfo, NULL, &out->image);
     if (res != VK_SUCCESS) {
         return (int)res;
     }
 
     int dupFd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
     if (dupFd < 0) {
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return -12;
     }
 
     VkMemoryRequirements memReqs;
-    vkGetImageMemoryRequirements(ctx->device, out->image, &memReqs);
+    ctx->procs.GetImageMemoryRequirements(ctx->device, out->image, &memReqs);
 
     // Import device memory from FD
     VkImportMemoryFdInfoKHR importInfo = {
@@ -235,17 +332,17 @@ static int import_dmabuf_impl(VkContext* ctx, int fd, uint32_t width, uint32_t h
         .memoryTypeIndex = (uint32_t)memTypeIndex,
     };
 
-    res = vkAllocateMemory(ctx->device, &allocInfo, NULL, &out->memory);
+    res = ctx->procs.AllocateMemory(ctx->device, &allocInfo, NULL, &out->memory);
     if (res != VK_SUCCESS) {
         close(dupFd);
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return (int)res;
     }
 
-    res = vkBindImageMemory(ctx->device, out->image, out->memory, 0);
+    res = ctx->procs.BindImageMemory(ctx->device, out->image, out->memory, 0);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, out->memory, NULL);
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.FreeMemory(ctx->device, out->memory, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return (int)res;
     }
 
@@ -269,10 +366,10 @@ static int import_dmabuf_impl(VkContext* ctx, int fd, uint32_t width, uint32_t h
         },
     };
 
-    res = vkCreateImageView(ctx->device, &viewInfo, NULL, &out->view);
+    res = ctx->procs.CreateImageView(ctx->device, &viewInfo, NULL, &out->view);
     if (res != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, out->memory, NULL);
-        vkDestroyImage(ctx->device, out->image, NULL);
+        ctx->procs.FreeMemory(ctx->device, out->memory, NULL);
+        ctx->procs.DestroyImage(ctx->device, out->image, NULL);
         return (int)res;
     }
 
@@ -294,15 +391,15 @@ static int import_dmabuf_target(VkContext* ctx, int fd, uint32_t width, uint32_t
 
 static void destroy_imported_buffer(VkContext* ctx, VkImportedBuffer* buf) {
     if (buf->view) {
-        vkDestroyImageView(ctx->device, buf->view, NULL);
+        ctx->procs.DestroyImageView(ctx->device, buf->view, NULL);
         buf->view = NULL;
     }
     if (buf->image) {
-        vkDestroyImage(ctx->device, buf->image, NULL);
+        ctx->procs.DestroyImage(ctx->device, buf->image, NULL);
         buf->image = NULL;
     }
     if (buf->memory) {
-        vkFreeMemory(ctx->device, buf->memory, NULL);
+        ctx->procs.FreeMemory(ctx->device, buf->memory, NULL);
         buf->memory = NULL;
     }
 }
@@ -312,7 +409,54 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"unsafe"
 )
+
+var defaultVulkanLibraries = []string{"libvulkan.so.1", "libvulkan.so"}
+
+var (
+	sharedLoaderHandle unsafe.Pointer
+	sharedLoaderGIPA   unsafe.Pointer
+	sharedLoaderMu     sync.Mutex
+)
+
+func acquireSharedLoader() (unsafe.Pointer, unsafe.Pointer, error) {
+	sharedLoaderMu.Lock()
+	defer sharedLoaderMu.Unlock()
+	if sharedLoaderHandle != nil && sharedLoaderGIPA != nil {
+		return sharedLoaderHandle, sharedLoaderGIPA, nil
+	}
+	h, gipa, err := openVulkanLibrary(defaultVulkanLibraries)
+	if err != nil {
+		return nil, nil, err
+	}
+	sharedLoaderHandle = h
+	sharedLoaderGIPA = gipa
+	return h, gipa, nil
+}
+
+func openVulkanLibrary(names []string) (unsafe.Pointer, unsafe.Pointer, error) {
+	var lastErr error
+	for _, name := range names {
+		cname := C.CString(name)
+		h := C.vk_dlopen(cname)
+		C.free(unsafe.Pointer(cname))
+		if h == nil {
+			lastErr = fmt.Errorf("%s: not found", name)
+			continue
+		}
+		symName := C.CString("vkGetInstanceProcAddr")
+		gipa := C.vk_dlsym(h, symName)
+		C.free(unsafe.Pointer(symName))
+		if gipa == nil {
+			C.vk_dlclose(h)
+			lastErr = fmt.Errorf("%s: missing vkGetInstanceProcAddr", name)
+			continue
+		}
+		return h, gipa, nil
+	}
+	return nil, nil, fmt.Errorf("no vulkan loader available: %w", lastErr)
+}
 
 // Device manages a Vulkan 1.3+ instance, AMD/Intel/NVIDIA GPU device, and graphics queue.
 type Device struct {
@@ -331,10 +475,32 @@ type ImportedBuffer struct {
 	Modifier uint64
 }
 
-// NewDevice creates and initializes a hardware-accelerated Vulkan device with DMA-BUF support.
+// NewDevice creates and initializes a hardware-accelerated Vulkan device with
+// runtime-dlopened libvulkan.so.1 and DMA-BUF support.
 func NewDevice() (*Device, error) {
+	h, gipa, err := acquireSharedLoader()
+	if err != nil {
+		return nil, err
+	}
+	return newDeviceWithGIPA(h, gipa)
+}
+
+func newDeviceFromLibraries(names []string) (*Device, error) {
+	h, gipa, err := openVulkanLibrary(names)
+	if err != nil {
+		return nil, err
+	}
+	dev, err := newDeviceWithGIPA(h, gipa)
+	if err != nil {
+		C.vk_dlclose(h)
+		return nil, err
+	}
+	return dev, nil
+}
+
+func newDeviceWithGIPA(h, gipa unsafe.Pointer) (*Device, error) {
 	var ctx C.VkContext
-	res := C.init_vulkan_context(&ctx)
+	res := C.init_vulkan_context_with_gipa(&ctx, h, gipa)
 	if res != 0 {
 		return nil, fmt.Errorf("failed to initialize Vulkan context (code %d)", int(res))
 	}
@@ -399,6 +565,9 @@ func (d *Device) ImportDmaBuf(fd int, width, height, stride uint32, modifier uin
 // as a COLOR_ATTACHMENT image so the compositor can render straight into
 // scanout memory. No CPU round trip.
 func (d *Device) ImportDmaBufAsTarget(fd int, width, height, stride uint32, modifier uint64) (*ImportedBuffer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
 	if d.closed.Load() {
 		return nil, fmt.Errorf("device is closed")
 	}
