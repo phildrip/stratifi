@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"stratifi/internal/config"
 	"stratifi/internal/desktop"
 )
 
@@ -61,6 +62,64 @@ func TestReadmeListsAllActions(t *testing.T) {
 	for _, a := range knownActions {
 		if !strings.Contains(readme, a) {
 			t.Errorf("README does not mention action %q", a)
+		}
+	}
+}
+
+func TestSwayParityConfigCompiles(t *testing.T) {
+	doc := `
+output HDMI-A-1 scale 1.25
+input * xkb_layout "gb"
+gap 6
+border_width 2
+titlebar_height 28
+column_width 0.5
+bind Super+Shift+space floating_toggle
+bind Super+space focus_mode_toggle
+bind Super+minus scratchpad_show
+bind Super+Shift+minus move_scratchpad
+bind Super+r mode resize
+mode "resize" {
+    bind j resize_col_width -10
+    bind k resize_window_height 10
+    bind l resize_window_height -10
+    bind semicolon resize_col_width 10
+    bind Return mode default
+    bind Escape mode default
+}
+bind Super+Pause mode system
+mode "system" {
+    bind l spawn swaylock -f -c 2E3440
+    bind e quit
+    bind Shift+s spawn systemctl poweroff -i
+    bind Return mode default
+    bind Escape mode default
+}
+`
+	cfg, err := config.Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse sway parity config: %v", err)
+	}
+	if cfg.XKBLayout != "gb" || cfg.OutputScale != 1.25 {
+		t.Errorf("XKBLayout=%q OutputScale=%v, want gb/1.25", cfg.XKBLayout, cfg.OutputScale)
+	}
+	bs, err := compileBindings(cfg)
+	if err != nil {
+		t.Fatalf("compileBindings: %v", err)
+	}
+	if len(bs) != len(cfg.Bindings) {
+		t.Errorf("compiled %d bindings, want %d", len(bs), len(cfg.Bindings))
+	}
+
+	if p := config.FindConfigPath(); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			userCfg, err := config.LoadFile(p)
+			if err != nil {
+				t.Fatalf("LoadFile(%s): %v", p, err)
+			}
+			if _, err := compileBindings(userCfg); err != nil {
+				t.Fatalf("compileBindings(%s): %v", p, err)
+			}
 		}
 	}
 }

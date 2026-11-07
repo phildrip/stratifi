@@ -193,3 +193,45 @@ func (e *Engine) ReorderActiveColumn(tag uint32, delta int) bool {
 	e.ActiveCol = dst
 	return true
 }
+
+// ResizeWindowColumnWidth adjusts the scrollable width fraction of the column
+// containing win by deltaFrac, clamped to [0.1, 1.0]. Zero heap allocations.
+func (e *Engine) ResizeWindowColumnWidth(win WindowID, deltaFrac float32) bool {
+	colIdx, _, ok := e.WindowPos(win)
+	if !ok {
+		return false
+	}
+	col := &e.Columns[colIdx]
+	next := e.columnFrac(col) + deltaFrac
+	if next < 0.1 {
+		next = 0.1
+	}
+	if next > 1.0 {
+		next = 1.0
+	}
+	col.WidthFrac = next
+	return true
+}
+
+// ResizeWindowHeight adjusts the vertical height weight of win within its
+// column by deltaWeight, clamped to [0.1, 10.0]. Returns false if win is
+// unknown or is the only window in its column. Zero heap allocations.
+func (e *Engine) ResizeWindowHeight(win WindowID, deltaWeight float32) bool {
+	colIdx, rowIdx, ok := e.WindowPos(win)
+	if !ok {
+		return false
+	}
+	col := &e.Columns[colIdx]
+	if len(col.Windows) < 2 || rowIdx >= len(col.HeightWeights) {
+		return false
+	}
+	next := col.HeightWeights[rowIdx] + deltaWeight
+	if next < 0.1 {
+		next = 0.1
+	}
+	if next > 10.0 {
+		next = 10.0
+	}
+	col.HeightWeights[rowIdx] = next
+	return true
+}

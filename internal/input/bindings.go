@@ -46,7 +46,7 @@ var keyNames = map[string]uint32{
 	"home": 102, "up": 103, "left": 105, "right": 106,
 	"end": 107, "down": 108, "delete": 111,
 	// Media / hardware keys (used by the hardware-key binds).
-	"print": 210, "sysrq": 99,
+	"print": 210, "sysrq": 99, "pause": 119,
 	"xf86audiomute": 113, "xf86audiolowervolume": 114, "xf86audioraisevolume": 115,
 	"xf86audioplay": 164, "xf86audiopause": 119, "xf86audiostop": 166,
 	"xf86audionext": 163, "xf86audioprev": 165,
@@ -55,6 +55,7 @@ var keyNames = map[string]uint32{
 
 // Binding is one compiled key combination and its action.
 type Binding struct {
+	Mode   string // "" means default mode
 	Mods   uint32
 	Code   uint32
 	Action string
@@ -128,10 +129,32 @@ func modName(lower string) (uint32, bool) {
 // It is the single place that decides consume-vs-forward, so the router
 // cannot double-deliver a bound press or leak a swallowed release.
 type Matcher struct {
-	heldMods uint32
-	modRefs  [4]int // press count per mod bit: releasing one of two held
-	consumed map[uint32]bool
-	bindings []Binding
+	heldMods   uint32
+	modRefs    [4]int // press count per mod bit: releasing one of two held
+	consumed   map[uint32]bool
+	bindings   []Binding
+	activeMode string // "" means default mode
+}
+
+// SetMode switches the active keybinding mode ("default" or "" returns to the default mode).
+func (m *Matcher) SetMode(mode string) {
+	if mode == "default" {
+		mode = ""
+	}
+	m.activeMode = mode
+}
+
+// Mode returns the currently active keybinding mode name ("default" when in the base mode).
+func (m *Matcher) Mode() string {
+	if m.activeMode == "" {
+		return "default"
+	}
+	return m.activeMode
+}
+
+// HeldMods returns the bitmask of currently depressed modifier keys.
+func (m *Matcher) HeldMods() uint32 {
+	return m.heldMods
 }
 
 // modIndex maps a modifier bit to its refcount slot.
@@ -182,10 +205,20 @@ func (m *Matcher) HandleKey(code, state uint32) (action string, args []string, c
 	switch state {
 	case 1: // press
 		for _, b := range m.bindings {
-			if b.Code == code && b.Mods == m.heldMods {
+			mode := b.Mode
+			if mode == "default" {
+				mode = ""
+			}
+			if mode == m.activeMode && b.Code == code && b.Mods == m.heldMods {
 				m.consumed[code] = true
 				return b.Action, b.Args, true
 			}
+		}
+		// Failsafe: in any non-default mode, bare Escape always exits back to
+		// default mode even if the config omitted an explicit Escape binding.
+		if m.activeMode != "" && code == 1 && m.heldMods == 0 {
+			m.consumed[code] = true
+			return "mode", []string{"default"}, true
 		}
 		return "", nil, false
 	case 2: // repeat

@@ -807,3 +807,118 @@ func TestShellNotifiesToplevelList(t *testing.T) {
 		t.Errorf("close = %+v, want closed/%d", got[2], winID)
 	}
 }
+
+func TestShellResizeActions(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 10, 11)) // w1 in col 0
+	h.shell.applyEvent(windowAddedEvent(1, 20, 21)) // w2 in col 0 (stacked)
+
+	beforeW := h.shell.windows[h.shell.activeWin].Rect.W
+	h.shell.applyEvent(shellEvent{kind: evResizeColWidth, columnWidth: 0.1})
+	afterW := h.shell.windows[h.shell.activeWin].Rect.W
+	if afterW <= beforeW {
+		t.Errorf("col width after +0.1 = %d, want > %d", afterW, beforeW)
+	}
+
+	beforeH := h.shell.windows[h.shell.activeWin].Rect.H
+	h.shell.applyEvent(shellEvent{kind: evResizeWindowHeight, columnWidth: 0.5})
+	afterH := h.shell.windows[h.shell.activeWin].Rect.H
+	if afterH <= beforeH {
+		t.Errorf("win height after +0.5 = %d, want > %d", afterH, beforeH)
+	}
+}
+
+func TestShellFloatingToggleAndFocusModeToggle(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 10, 11)) // w1
+	w1 := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 20, 21)) // w2
+	w2 := h.shell.activeWin
+
+	// Float w2.
+	h.shell.applyEvent(shellEvent{kind: evFloatingToggle})
+	m2 := h.shell.windows[w2]
+	if !m2.Floating {
+		t.Fatalf("expected w2 to be floating")
+	}
+
+	// Hit-test order (sceneInfo): floating w2 must precede tiled w1.
+	scene := *h.sceneInfo.Load()
+	if len(scene) < 2 || scene[0].WinID != w2 || scene[1].WinID != w1 {
+		t.Errorf("hit-test order = %+v, want floating w2 (%d) before tiled w1 (%d)", scene, w2, w1)
+	}
+
+	// Render order (back-to-front): tiled w1 must precede floating w2.
+	drawOrder := h.shell.visibleWindowsBackToFront()
+	if len(drawOrder) != 2 || drawOrder[0].WinID != w1 || drawOrder[1].WinID != w2 {
+		t.Errorf("draw order = [%d, %d], want tiled w1 (%d) then floating w2 (%d)",
+			drawOrder[0].WinID, drawOrder[1].WinID, w1, w2)
+	}
+
+	// Drag move (+25, +35) and drag resize (+40, +50) on floating w2.
+	origRect := m2.Rect
+	h.shell.applyEvent(shellEvent{kind: evWindowDrag, winID: w2, px: 25, py: 35, cursorOn: false})
+	if m2.Rect.X != origRect.X+25 || m2.Rect.Y != origRect.Y+35 {
+		t.Errorf("rect after drag move = %+v, want X=%d Y=%d", m2.Rect, origRect.X+25, origRect.Y+35)
+	}
+	h.shell.applyEvent(shellEvent{kind: evWindowDrag, winID: w2, px: 40, py: 50, cursorOn: true})
+	if m2.Rect.W != origRect.W+40 || m2.Rect.H != origRect.H+50 {
+		t.Errorf("rect after drag resize = %+v, want W=%d H=%d", m2.Rect, origRect.W+40, origRect.H+50)
+	}
+
+	// focus_mode_toggle switches between floating w2 and tiled w1.
+	h.shell.applyEvent(shellEvent{kind: evFocusModeToggle})
+	if h.shell.activeWin != w1 {
+		t.Errorf("activeWin after focus_mode_toggle = %d, want tiled w1 (%d)", h.shell.activeWin, w1)
+	}
+	h.shell.applyEvent(shellEvent{kind: evFocusModeToggle})
+	if h.shell.activeWin != w2 {
+		t.Errorf("activeWin after second focus_mode_toggle = %d, want floating w2 (%d)", h.shell.activeWin, w2)
+	}
+
+	// Unfloat w2 back into tiling.
+	h.shell.applyEvent(shellEvent{kind: evFloatingToggle})
+	if m2.Floating {
+		t.Errorf("expected w2 to be unfloated")
+	}
+}
+
+func TestShellScratchpad(t *testing.T) {
+	h := newShellHarness()
+	h.shell.applyEvent(windowAddedEvent(1, 10, 11)) // w1
+	w1 := h.shell.activeWin
+	h.shell.applyEvent(windowAddedEvent(1, 20, 21)) // w2
+	w2 := h.shell.activeWin
+
+	// Move w2 to scratchpad: hidden, focus falls back to w1.
+	h.shell.applyEvent(shellEvent{kind: evMoveScratchpad})
+	if h.shell.sceneVisible(w2) {
+		t.Fatalf("scratchpad window w2 should be hidden")
+	}
+	if h.shell.activeWin != w1 {
+		t.Errorf("activeWin = %d, want w1 (%d)", h.shell.activeWin, w1)
+	}
+
+	// Switch to workspace 2 and show scratchpad: w2 appears on workspace 2 and takes focus.
+	h.shell.applyEvent(shellEvent{kind: evWorkspaceSwitch, wsIndex: 2})
+	h.shell.applyEvent(shellEvent{kind: evScratchpadShow})
+	if !h.shell.sceneVisible(w2) {
+		t.Fatalf("scratchpad window w2 should be visible on workspace 2 after scratchpad_show")
+	}
+	if h.shell.activeWin != w2 {
+		t.Errorf("activeWin = %d, want w2 (%d)", h.shell.activeWin, w2)
+	}
+
+	// Toggle scratchpad_show again: hides w2.
+	h.shell.applyEvent(shellEvent{kind: evScratchpadShow})
+	if h.shell.sceneVisible(w2) {
+		t.Errorf("scratchpad window w2 should hide on second scratchpad_show")
+	}
+
+	// Focusing a hidden scratchpad window via launcher IPC (evFocusWindow)
+	// summons it to the current workspace and focuses it.
+	h.shell.applyEvent(shellEvent{kind: evFocusWindow, winID: w2})
+	if !h.shell.sceneVisible(w2) || h.shell.activeWin != w2 {
+		t.Errorf("evFocusWindow on hidden scratchpad window should show and focus it")
+	}
+}

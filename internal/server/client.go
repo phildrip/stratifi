@@ -367,9 +367,9 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 	case GlobalOutput:
 		c.registerObject(id, ObjOutput)
 		w := c.conn.WriterRef()
-		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "stratifi", "stratifi-display", 0)
-		_ = wayland.SendWlOutputScale(w, id, 1)
 		out := c.server.Output()
+		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "stratifi", "stratifi-display", 0)
+		_ = wayland.SendWlOutputScale(w, id, out.IntScale())
 		_ = wayland.SendWlOutputMode(w, id, 0x3,
 			int32(out.Width), int32(out.Height), int32(out.RefreshHz*1000))
 		// v4: clients (waybar et al.) match bars to outputs by name.
@@ -1190,9 +1190,10 @@ func (c *Client) HandleWlSeatGetKeyboard(senderID uint32, id uint32) error {
 	c.registerObject(id, ObjKeyboard)
 	c.keyboardID = id
 
-	if c.server.keymapFD >= 0 && c.server.keymapSize > 0 {
+	kmFD, kmSize := c.server.Keymap()
+	if kmFD >= 0 && kmSize > 0 {
 		w := c.conn.WriterRef()
-		_ = wayland.SendWlKeyboardKeymap(w, id, 1, c.server.keymapFD, c.server.keymapSize)
+		_ = wayland.SendWlKeyboardKeymap(w, id, 1, kmFD, kmSize)
 		_ = wayland.SendWlKeyboardRepeatInfo(w, id, 25, 400)
 	}
 	return nil
@@ -1376,6 +1377,18 @@ func (c *Client) SendKeyboardModifiers(depressed, latched, locked, group uint32)
 	w := c.conn.WriterRef()
 	serial := c.NextSerial()
 	_ = wayland.SendWlKeyboardModifiers(w, c.keyboardID, serial, depressed, latched, locked, group)
+	_ = c.conn.Flush()
+}
+
+// SendKeyboardKeymap dispatches an updated wl_keyboard.keymap event to the client.
+func (c *Client) SendKeyboardKeymap(fd int, size uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() || c.keyboardID == 0 || fd < 0 || size == 0 {
+		return
+	}
+	w := c.conn.WriterRef()
+	_ = wayland.SendWlKeyboardKeymap(w, c.keyboardID, 1, fd, size)
 	_ = c.conn.Flush()
 }
 
@@ -1793,17 +1806,47 @@ func (c *Client) HandleZxdgOutputManagerV1GetXdgOutput(senderID, id, output uint
 	c.mu.Lock()
 	c.registerObject(id, ObjXdgOutput)
 	out := c.server.Output()
+	logW, logH := out.LogicalSize()
 	w := c.conn.WriterRef()
 	// Single logical output at the origin; name/description let clients
 	// (waybar et al.) match panels to outputs.
 	_ = xdgoutput.SendZxdgOutputV1LogicalPosition(w, id, 0, 0)
-	_ = xdgoutput.SendZxdgOutputV1LogicalSize(w, id, int32(out.Width), int32(out.Height))
+	_ = xdgoutput.SendZxdgOutputV1LogicalSize(w, id, logW, logH)
 	_ = xdgoutput.SendZxdgOutputV1Name(w, id, "STRATIFI-1")
 	_ = xdgoutput.SendZxdgOutputV1Description(w, id, "stratifi output 1")
 	_ = xdgoutput.SendZxdgOutputV1Done(w, id)
 	_ = c.conn.Flush()
 	c.mu.Unlock()
 	return nil
+}
+
+// SendOutputUpdate broadcasts updated wl_output.scale and zxdg_output_v1.logical_size
+// events to any output objects bound by this client.
+func (c *Client) SendOutputUpdate(out Output) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	wrote := false
+	scale := out.IntScale()
+	logW, logH := out.LogicalSize()
+	for id, typ := range c.objects.typ {
+		switch typ {
+		case ObjOutput:
+			_ = wayland.SendWlOutputScale(w, uint32(id), scale)
+			_ = wayland.SendWlOutputDone(w, uint32(id))
+			wrote = true
+		case ObjXdgOutput:
+			_ = xdgoutput.SendZxdgOutputV1LogicalSize(w, uint32(id), logW, logH)
+			_ = xdgoutput.SendZxdgOutputV1Done(w, uint32(id))
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
 }
 
 func (c *Client) HandleZxdgOutputV1Destroy(senderID uint32) error {

@@ -18,6 +18,10 @@ type Config struct {
 	// ColumnWidth is the scrollable column width as a fraction of the
 	// output (niri model); 0 means the layout default (1/2).
 	ColumnWidth float32
+	// XKBLayout is the XKB keyboard layout name (e.g. "us", "gb", "gb(extd)").
+	XKBLayout string
+	// OutputScale is the display scale factor (e.g. 1.0, 1.25, 2.0).
+	OutputScale float32
 	Bindings    []Binding
 	Gestures    []GestureBinding
 	// Exec holds startup commands (`exec <cmd>`), run once the compositor is
@@ -38,6 +42,7 @@ type GestureBinding struct {
 // as written ("Super+Return", "spawn"); interpretation into modifier masks
 // and keysyms belongs to the input layer, not the parser.
 type Binding struct {
+	Mode   string // "" means default mode
 	Combo  string
 	Action string
 	Args   []string
@@ -50,6 +55,8 @@ func Default() Config {
 		Gap:            8,
 		BorderWidth:    3,
 		TitlebarHeight: 28,
+		XKBLayout:      "us",
+		OutputScale:    1.0,
 	}
 }
 
@@ -70,11 +77,26 @@ func Default() Config {
 func Parse(data []byte) (Config, error) {
 	cfg := Default()
 	seen := map[string]int{} // scalar key -> first line number
-	bind := func(fields []string, line int) error {
+	currentMode := ""
+	modeStartLine := 0
+	normalizeMode := func(m string) (string, bool) {
+		if len(m) >= 2 && m[0] == '"' && m[len(m)-1] == '"' {
+			m = m[1 : len(m)-1]
+		}
+		if m == "" {
+			return "", false
+		}
+		if m == "default" {
+			return "", true
+		}
+		return m, true
+	}
+	bind := func(mode string, fields []string, line int) error {
 		if len(fields) < 3 {
 			return parseError(line, "bind needs a combo and an action")
 		}
 		cfg.Bindings = append(cfg.Bindings, Binding{
+			Mode:   mode,
 			Combo:  fields[1],
 			Action: fields[2],
 			Args:   append([]string(nil), fields[3:]...),
@@ -139,18 +161,108 @@ func Parse(data []byte) (Config, error) {
 			}
 			cfg.Exec = append(cfg.Exec, cmd)
 		case "bind":
-			if err := bind(fields, line); err != nil {
+			if err := bind(currentMode, fields, line); err != nil {
 				return Config{}, err
 			}
+		case "bind_mode":
+			if len(fields) < 4 {
+				return Config{}, parseError(line, "bind_mode needs a mode, a combo, and an action")
+			}
+			mode, ok := normalizeMode(fields[1])
+			if !ok {
+				return Config{}, parseError(line, "bind_mode needs a non-empty mode name")
+			}
+			cfg.Bindings = append(cfg.Bindings, Binding{
+				Mode:   mode,
+				Combo:  fields[2],
+				Action: fields[3],
+				Args:   append([]string(nil), fields[4:]...),
+			})
+		case "mode":
+			if modeStartLine != 0 {
+				return Config{}, parseError(line, "nested mode blocks are not supported")
+			}
+			if len(fields) != 3 || fields[2] != "{" {
+				return Config{}, parseError(line, "mode block syntax is 'mode <name> {'")
+			}
+			mode, ok := normalizeMode(fields[1])
+			if !ok {
+				return Config{}, parseError(line, "mode needs a non-empty name")
+			}
+			currentMode = mode
+			modeStartLine = line
+		case "}":
+			if modeStartLine == 0 || len(fields) != 1 {
+				return Config{}, parseError(line, "unexpected '}'")
+			}
+			currentMode = ""
+			modeStartLine = 0
 		case "bind_gesture":
 			gb, err := parseGestureBinding(fields, line)
 			if err != nil {
 				return Config{}, err
 			}
 			cfg.Gestures = append(cfg.Gestures, gb)
+		case "xkb_layout":
+			if _, dup := seen["xkb_layout"]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "xkb_layout", seen["xkb_layout"])
+			}
+			if len(fields) != 2 {
+				return Config{}, parseError(line, "xkb_layout needs exactly one value")
+			}
+			layout, ok := parseXKBLayout(fields[1])
+			if !ok {
+				return Config{}, parseError(line, "invalid xkb_layout %q", fields[1])
+			}
+			seen["xkb_layout"] = line
+			cfg.XKBLayout = layout
+		case "input":
+			// Sway compatibility: `input * xkb_layout "gb"`
+			if len(fields) != 4 || fields[1] != "*" || fields[2] != "xkb_layout" {
+				return Config{}, parseError(line, "unsupported input directive (expected 'input * xkb_layout <layout>')")
+			}
+			if _, dup := seen["xkb_layout"]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "xkb_layout", seen["xkb_layout"])
+			}
+			layout, ok := parseXKBLayout(fields[3])
+			if !ok {
+				return Config{}, parseError(line, "invalid xkb_layout %q", fields[3])
+			}
+			seen["xkb_layout"] = line
+			cfg.XKBLayout = layout
+		case "output_scale":
+			if _, dup := seen["output_scale"]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_scale", seen["output_scale"])
+			}
+			if len(fields) != 2 {
+				return Config{}, parseError(line, "output_scale needs exactly one value")
+			}
+			sc, err := parseScale(fields[1])
+			if err != nil {
+				return Config{}, parseError(line, "output_scale: %v", err)
+			}
+			seen["output_scale"] = line
+			cfg.OutputScale = sc
+		case "output":
+			// Sway compatibility: `output <name> scale <float>`
+			if len(fields) != 4 || fields[2] != "scale" {
+				return Config{}, parseError(line, "unsupported output directive (expected 'output <name> scale <scale>')")
+			}
+			if _, dup := seen["output_scale"]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_scale", seen["output_scale"])
+			}
+			sc, err := parseScale(fields[3])
+			if err != nil {
+				return Config{}, parseError(line, "output scale: %v", err)
+			}
+			seen["output_scale"] = line
+			cfg.OutputScale = sc
 		default:
 			return Config{}, parseError(line, "unknown directive %q", key)
 		}
+	}
+	if modeStartLine != 0 {
+		return Config{}, parseError(modeStartLine, "unclosed mode block")
 	}
 	return cfg, nil
 }
@@ -330,6 +442,40 @@ func parseFrac(s string) (float32, error) {
 	return float32(v), nil
 }
 
+// parseScale parses a display scale factor in [0.5, 4.0] (e.g. "1.0", "1.25", "2").
+func parseScale(s string) (float32, error) {
+	if s == "" {
+		return 0, errEmpty()
+	}
+	var whole, frac float64
+	var fracDiv float64 = 1
+	seenDot := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			if seenDot {
+				fracDiv *= 10
+				frac = frac*10 + float64(c-'0')
+			} else {
+				whole = whole*10 + float64(c-'0')
+			}
+		case c == '.':
+			if seenDot {
+				return 0, errNotInt(s)
+			}
+			seenDot = true
+		default:
+			return 0, errNotInt(s)
+		}
+	}
+	v := whole + frac/fracDiv
+	if v < 0.5 || v > 4.0 {
+		return 0, &pxErr{"scale out of range [0.5, 4.0]: " + s}
+	}
+	return float32(v), nil
+}
+
 // parseGestureBinding parses: bind_gesture <type> [direction] [fingers] <action>
 // where direction/fingers are optional. Examples:
 //
@@ -386,4 +532,56 @@ func parseSmallInt(s string) (int, bool) {
 		n = n*10 + int(s[i]-'0')
 	}
 	return n, true
+}
+
+// parseXKBLayout strips optional surrounding double-quotes and validates that
+// the layout name is a safe XKB symbols identifier like "us", "gb", or "gb(extd)".
+func parseXKBLayout(raw string) (string, bool) {
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	if !IsValidXKBLayout(raw) {
+		return "", false
+	}
+	return raw, true
+}
+
+// IsValidXKBLayout reports whether s is a safe XKB layout identifier
+// (e.g. "us", "gb", "de", "gb(extd)").
+func IsValidXKBLayout(s string) bool {
+	if len(s) == 0 || len(s) > 32 {
+		return false
+	}
+	isAlpha := func(c byte) bool {
+		return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	}
+	isIdent := func(c byte) bool {
+		return isAlpha(c) || (c >= '0' && c <= '9') || c == '_' || c == '-'
+	}
+	if !isAlpha(s[0]) {
+		return false
+	}
+	inParen := false
+	parenStart := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '(':
+			if inParen {
+				return false
+			}
+			inParen = true
+			parenStart = i
+		case c == ')':
+			if !inParen || i != len(s)-1 || i == parenStart+1 {
+				return false
+			}
+			inParen = false
+		default:
+			if !isIdent(c) {
+				return false
+			}
+		}
+	}
+	return !inParen
 }

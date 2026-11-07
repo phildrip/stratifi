@@ -46,6 +46,14 @@ type Router struct {
 	keys     *Matcher
 	onAction func(action string, args []string)
 
+	// Super + mouse button drag state (move = 1 on BTN_LEFT 272, resize = 2 on BTN_RIGHT 273).
+	dragMode     uint8
+	dragButton   uint32
+	dragWinID    layout.WindowID
+	dragLastX    float64
+	dragLastY    float64
+	onWindowDrag func(winID uint32, dx, dy int32, resize bool)
+
 	lookupWindow  func(x, y float64) (info WindowInfo, hit bool)
 	getClient     func(clientID uint32) *server.Client
 	onFocusChange func(oldWin, newWin layout.WindowID)
@@ -94,6 +102,13 @@ func (r *Router) FocusWindowID() layout.WindowID {
 	return r.focusWinID
 }
 
+func (r *Router) client(clientID uint32) *server.Client {
+	if r.getClient == nil {
+		return nil
+	}
+	return r.getClient(clientID)
+}
+
 // SetFocus explicitly transfers keyboard focus to target window.
 func (r *Router) SetFocus(targetWin layout.WindowID, clientID, surfaceID, toplevelID uint32) {
 	if r.focusWinID == targetWin {
@@ -102,7 +117,7 @@ func (r *Router) SetFocus(targetWin layout.WindowID, clientID, surfaceID, toplev
 
 	oldWin := r.focusWinID
 	if r.focusClientID != 0 && r.focusSurfaceID != 0 {
-		oldClient := r.getClient(r.focusClientID)
+		oldClient := r.client(r.focusClientID)
 		if oldClient != nil {
 			oldClient.SendKeyboardLeave(r.focusSurfaceID)
 		}
@@ -114,7 +129,7 @@ func (r *Router) SetFocus(targetWin layout.WindowID, clientID, surfaceID, toplev
 	r.focusToplevel = toplevelID
 
 	if r.focusClientID != 0 && r.focusSurfaceID != 0 {
-		newClient := r.getClient(r.focusClientID)
+		newClient := r.client(r.focusClientID)
 		if newClient != nil {
 			newClient.SendKeyboardEnter(r.focusSurfaceID, nil)
 			newClient.GiveClipboardOffer()
@@ -181,12 +196,23 @@ func (r *Router) RequestFocus(winID layout.WindowID, clientID, surfaceID, toplev
 func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 	r.setCursor(x, y)
 
+	if r.dragMode != 0 && r.onWindowDrag != nil {
+		dx := int32(x - r.dragLastX)
+		dy := int32(y - r.dragLastY)
+		if dx != 0 || dy != 0 {
+			r.dragLastX += float64(dx)
+			r.dragLastY += float64(dy)
+			r.onWindowDrag(uint32(r.dragWinID), dx, dy, r.dragMode == 2)
+		}
+		return
+	}
+
 	info, hit := r.lookupWindow(x, y)
 
 	if !hit || info.WinID != r.hoverWinID {
 		// Pointer left previous window
 		if r.hoverClientID != 0 && r.hoverSurfaceID != 0 {
-			prevClient := r.getClient(r.hoverClientID)
+			prevClient := r.client(r.hoverClientID)
 			if prevClient != nil {
 				prevClient.SendPointerLeave(r.hoverSurfaceID)
 			}
@@ -198,7 +224,7 @@ func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 			r.hoverSurfaceID = info.SurfaceID
 			r.hovered.Store(info.ClientID)
 
-			newClient := r.getClient(info.ClientID)
+			newClient := r.client(info.ClientID)
 			if newClient != nil {
 				sx := x - float64(info.Rect.X)
 				sy := y - float64(info.Rect.Y)
@@ -215,7 +241,7 @@ func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 
 	// Pointer moved within the same window
 	if r.hoverClientID != 0 && r.hoverSurfaceID != 0 {
-		client := r.getClient(r.hoverClientID)
+		client := r.client(r.hoverClientID)
 		if client != nil {
 			sx := x - float64(info.Rect.X)
 			sy := y - float64(info.Rect.Y)
@@ -226,18 +252,42 @@ func (r *Router) HandlePointerMotion(timeMs uint32, x, y float64) {
 
 // HandlePointerButton processes button press and release events.
 func (r *Router) HandlePointerButton(timeMs uint32, button, state uint32) {
+	if r.dragMode != 0 {
+		if state == ButtonStateReleased && button == r.dragButton {
+			r.dragMode = 0
+			r.dragButton = 0
+			r.dragWinID = 0
+		}
+		return
+	}
+
 	if state == ButtonStatePressed {
 		cx, cy := r.CursorPosition()
 		info, hit := r.lookupWindow(cx, cy)
 		// WinID 0 is a layer surface (panel/bar), not a window: give it
 		// pointer events but never steal the window keyboard focus for it.
-		if hit && info.WinID != 0 && info.WinID != r.focusWinID {
-			r.SetFocus(info.WinID, info.ClientID, info.SurfaceID, info.ToplevelID)
+		if hit && info.WinID != 0 {
+			if info.WinID != r.focusWinID {
+				r.SetFocus(info.WinID, info.ClientID, info.SurfaceID, info.ToplevelID)
+			}
+			// Super + Left/Right mouse button initiates a compositor window move/resize drag.
+			if r.keys != nil && (r.keys.HeldMods()&ModSuper) != 0 && r.onWindowDrag != nil && (button == 272 || button == 273) {
+				if button == 272 {
+					r.dragMode = 1
+				} else {
+					r.dragMode = 2
+				}
+				r.dragButton = button
+				r.dragWinID = info.WinID
+				r.dragLastX = cx
+				r.dragLastY = cy
+				return
+			}
 		}
 	}
 
 	if r.hoverClientID != 0 {
-		client := r.getClient(r.hoverClientID)
+		client := r.client(r.hoverClientID)
 		if client != nil {
 			client.SendPointerButton(timeMs, button, state)
 		}
@@ -259,7 +309,7 @@ func (r *Router) HandleKeyboardKey(timeMs uint32, code, state uint32) {
 		r.keys.HandleKey(code, state)
 	}
 	if r.focusClientID != 0 {
-		client := r.getClient(r.focusClientID)
+		client := r.client(r.focusClientID)
 		if client != nil {
 			client.SendKeyboardKey(timeMs, code, state)
 		}
@@ -269,7 +319,7 @@ func (r *Router) HandleKeyboardKey(timeMs uint32, code, state uint32) {
 // HandleKeyboardModifiers processes modifier state updates.
 func (r *Router) HandleKeyboardModifiers(depressed, latched, locked, group uint32) {
 	if r.focusClientID != 0 {
-		client := r.getClient(r.focusClientID)
+		client := r.client(r.focusClientID)
 		if client != nil {
 			client.SendKeyboardModifiers(depressed, latched, locked, group)
 		}
@@ -293,9 +343,30 @@ func (r *Router) SetBindings(m *Matcher) {
 	r.keys = m
 }
 
+// SetMode switches the active keybinding mode on the router's matcher.
+func (r *Router) SetMode(mode string) {
+	if r.keys != nil {
+		r.keys.SetMode(mode)
+	}
+}
+
+// Mode returns the router's active keybinding mode ("default" when unset).
+func (r *Router) Mode() string {
+	if r.keys == nil {
+		return "default"
+	}
+	return r.keys.Mode()
+}
+
 // SetActionHandler installs the callback fired when a binding matches.
 // It runs on the input-consumer goroutine: keep it to channel sends and
 // socket writes, never actor state.
 func (r *Router) SetActionHandler(fn func(action string, args []string)) {
 	r.onAction = fn
+}
+
+// SetWindowDragHandler installs the callback fired during Super + mouse button
+// drags (left button = move, right button = resize).
+func (r *Router) SetWindowDragHandler(fn func(winID uint32, dx, dy int32, resize bool)) {
+	r.onWindowDrag = fn
 }

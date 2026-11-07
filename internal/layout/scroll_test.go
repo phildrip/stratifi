@@ -144,3 +144,41 @@ func BenchmarkComputeScrollable(b *testing.B) {
 		e.ComputeScrollable(1, scrollBounds)
 	}
 }
+
+func TestResizeColumnWidthAndWindowHeight(t *testing.T) {
+	e := NewEngine(scrollCfg())
+	w1 := e.SlotMap.Allocate()
+	w2 := e.SlotMap.Allocate()
+	_ = e.AddWindowTagged(w1, 0, 1)
+	_ = e.AddWindowTagged(w2, 0, 1) // stack 2 windows in column 0
+
+	// Shrink column 0 by 10% (0.5 -> 0.4 -> 400px out of 1000px).
+	if !e.ResizeWindowColumnWidth(w1, -0.1) {
+		t.Fatalf("ResizeWindowColumnWidth(-0.1) returned false")
+	}
+	_, rects := e.ComputeScrollable(1, scrollBounds)
+	if rects[0].W != 400 {
+		t.Errorf("col width after -0.1 = %d, want 400", rects[0].W)
+	}
+
+	// Clamp at minimum 0.1 (100px) and maximum 1.0 (1000px).
+	e.ResizeWindowColumnWidth(w1, -5.0)
+	_, rects = e.ComputeScrollable(1, scrollBounds)
+	if rects[0].W != 100 {
+		t.Errorf("col width clamped min = %d, want 100", rects[0].W)
+	}
+	e.ResizeWindowColumnWidth(w1, 5.0)
+	_, rects = e.ComputeScrollable(1, scrollBounds)
+	if rects[0].W != 1000 {
+		t.Errorf("col width clamped max = %d, want 1000", rects[0].W)
+	}
+
+	// Resize window height in a 2-window column: w1 grows, so w1.H > w2.H.
+	if !e.ResizeWindowHeight(w1, 1.0) {
+		t.Fatalf("ResizeWindowHeight(w1, +1.0) returned false")
+	}
+	_, rects = e.ComputeScrollable(1, scrollBounds)
+	if rects[0].H <= rects[1].H {
+		t.Errorf("expected w1.H (%d) > w2.H (%d) after growing w1", rects[0].H, rects[1].H)
+	}
+}

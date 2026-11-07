@@ -31,6 +31,9 @@ type WindowMapping struct {
 	Title        string
 	AppID        string
 	Rect         layout.Rect
+	Floating     bool
+	Scratchpad   bool
+	Workspace    layout.WorkspaceID // for floating windows (0 = hidden in scratchpad)
 }
 
 // objRef scopes object lookups: Wayland object ids are per-client — two
@@ -78,6 +81,13 @@ const (
 	evWorkspaceNext
 	evWorkspacePrev
 	evDPMS
+	evResizeColWidth
+	evResizeWindowHeight
+	evFloatingToggle
+	evFocusModeToggle
+	evMoveScratchpad
+	evScratchpadShow
+	evWindowDrag
 )
 
 // shellEvent is one message to the owner goroutine.
@@ -118,6 +128,8 @@ var knownActions = []string{
 	"fullscreen", "focus_window_up", "focus_window_down",
 	"move_window_up", "move_window_down", "move_col_left", "move_col_right",
 	"reload", "workspace_back_and_forth", "dpms",
+	"mode", "resize_col_width", "resize_window_height",
+	"floating_toggle", "focus_mode_toggle", "move_scratchpad", "scratchpad_show",
 }
 
 func isKnownAction(a string) bool {
@@ -133,14 +145,20 @@ func isKnownAction(a string) bool {
 // duplicate combos and unknown actions up front (a binding that silently does
 // nothing is the failure this prevents).
 func compileBindings(cfg config.Config) ([]input.Binding, error) {
+	type modeKey struct {
+		mode string
+		mods uint32
+		code uint32
+	}
 	var bindings []input.Binding
-	seen := make(map[[2]uint32]bool)
+	seen := make(map[modeKey]bool)
 	for _, b := range cfg.Bindings {
 		pb, err := input.ParseBinding(b.Combo, b.Action, b.Args)
 		if err != nil {
 			return nil, fmt.Errorf("bad binding: %w", err)
 		}
-		key := [2]uint32{pb.Mods, pb.Code}
+		pb.Mode = b.Mode
+		key := modeKey{mode: pb.Mode, mods: pb.Mods, code: pb.Code}
 		if seen[key] {
 			return nil, fmt.Errorf("duplicate binding for combo %q", b.Combo)
 		}
@@ -384,6 +402,9 @@ func main() {
 		os.Exit(1)
 	}
 	router.SetBindings(input.NewMatcher(bindings))
+	currentXKBLayout := cfg.XKBLayout
+	currentKeymapFD := -1
+	currentOutputScale := cfg.OutputScale
 	handleAction := func(action string, args []string) {
 		emit := func(ev shellEvent) {
 			select {
@@ -401,6 +422,21 @@ func main() {
 			}
 		case "spawn":
 			spawnClient(args)
+			if router.Mode() != "default" {
+				router.SetMode("default")
+			}
+		case "mode":
+			if len(args) > 0 {
+				router.SetMode(args[0])
+			}
+		case "resize_col_width":
+			if delta, ok := parseResizeDelta(args); ok {
+				emit(shellEvent{kind: evResizeColWidth, columnWidth: delta})
+			}
+		case "resize_window_height":
+			if delta, ok := parseResizeDelta(args); ok {
+				emit(shellEvent{kind: evResizeWindowHeight, columnWidth: delta})
+			}
 		case "focus_next":
 			emit(shellEvent{kind: evFocusNext})
 		case "focus_prev":
@@ -419,6 +455,14 @@ func main() {
 			emit(shellEvent{kind: evColumnPrev})
 		case "fullscreen":
 			emit(shellEvent{kind: evFullscreen})
+		case "floating_toggle":
+			emit(shellEvent{kind: evFloatingToggle})
+		case "focus_mode_toggle":
+			emit(shellEvent{kind: evFocusModeToggle})
+		case "move_scratchpad":
+			emit(shellEvent{kind: evMoveScratchpad})
+		case "scratchpad_show":
+			emit(shellEvent{kind: evScratchpadShow})
 		case "focus_window_up":
 			emit(shellEvent{kind: evFocusWindowUp})
 		case "focus_window_down":
@@ -446,6 +490,27 @@ func main() {
 				return
 			}
 			router.SetBindings(input.NewMatcher(bs))
+			if newCfg.XKBLayout != currentXKBLayout && srv != nil {
+				if kmFD, kmSize, err := server.CompileXKBKeymap(newCfg.XKBLayout); err != nil {
+					fmt.Fprintf(os.Stderr, "[-] reload xkb_layout %q: %v (keeping %q)\n", newCfg.XKBLayout, err, currentXKBLayout)
+				} else {
+					srv.SetKeymap(kmFD, kmSize)
+					if currentKeymapFD >= 0 {
+						_ = unix.Close(currentKeymapFD)
+					}
+					currentKeymapFD = kmFD
+					currentXKBLayout = newCfg.XKBLayout
+				}
+			}
+			if newCfg.OutputScale != currentOutputScale && srv != nil {
+				currentOutputScale = newCfg.OutputScale
+				srv.SetOutput(server.Output{
+					Width:     uint32(outputW),
+					Height:    uint32(outputH),
+					RefreshHz: 60,
+					Scale:     currentOutputScale,
+				})
+			}
 			emit(shellEvent{
 				kind:           evConfigReload,
 				gap:            newCfg.Gap,
@@ -484,6 +549,18 @@ func main() {
 		}
 	}
 	router.SetActionHandler(handleAction)
+	router.SetWindowDragHandler(func(winID uint32, dx, dy int32, resize bool) {
+		select {
+		case events <- shellEvent{
+			kind:     evWindowDrag,
+			winID:    layout.WindowID(winID),
+			px:       dx,
+			py:       dy,
+			cursorOn: resize,
+		}:
+		default:
+		}
+	})
 
 	// Gesture router: config-driven gesture bindings dispatch through the
 	// same action handler as keybindings. Fed from evdev MT events in KMS
@@ -649,12 +726,27 @@ func main() {
 	// Advertise the REAL output geometry: wl_output, zxdg_output and the
 	// capture session buffer_size all read it. Without this they fall back
 	// to the server default (960x640) and clients lay out for the wrong size.
-	srv.SetOutput(server.Output{Width: uint32(outputW), Height: uint32(outputH), RefreshHz: 60})
+	srv.SetOutput(server.Output{
+		Width:     uint32(outputW),
+		Height:    uint32(outputH),
+		RefreshHz: 60,
+		Scale:     currentOutputScale,
+	})
 
-	if kmFD, kmSize, err := server.DefaultXKBKeymap(); err == nil {
+	if kmFD, kmSize, err := server.CompileXKBKeymap(currentXKBLayout); err == nil {
+		currentKeymapFD = kmFD
 		srv.SetKeymap(kmFD, kmSize)
-		defer unix.Close(kmFD)
+	} else if kmFD, kmSize, err := server.DefaultXKBKeymap(); err == nil {
+		fmt.Fprintf(os.Stderr, "[-] xkb_layout %q failed (%v); falling back to us\n", currentXKBLayout, err)
+		currentXKBLayout = "us"
+		currentKeymapFD = kmFD
+		srv.SetKeymap(kmFD, kmSize)
 	}
+	defer func() {
+		if currentKeymapFD >= 0 {
+			_ = unix.Close(currentKeymapFD)
+		}
+	}()
 
 	// Server callbacks: channel sends only — the actor applies them.
 	srv.SetOnToplevel(func(c *server.Client, toplevel *server.XdgToplevel, xdgSurfaceID uint32) {
@@ -824,10 +916,7 @@ func main() {
 			})
 		}
 		fs := shell.fullscreenActive()
-		for _, m := range shell.windows {
-			if !shell.sceneVisible(m.WinID) {
-				continue // hidden on another workspace, or behind fullscreen
-			}
+		for _, m := range shell.visibleWindowsBackToFront() {
 			if m.WinID == fs {
 				// Fullscreen: borderless, filling the whole output.
 				dst = append(dst, compositor.SceneWindow{
@@ -1081,4 +1170,54 @@ func parseWorkspaceArg(args []string) (int, bool) {
 		n = n*10 + int(c-'0')
 	}
 	return n, n > 0
+}
+
+// parseResizeDelta reads a signed resize step from a binding arg:
+// values in [-1, 1] are treated as fractions (e.g. "-0.05", "+0.1"), while
+// larger magnitudes are percentage points (e.g. "-10" -> -0.10, "10" -> +0.10).
+func parseResizeDelta(args []string) (float32, bool) {
+	if len(args) == 0 || args[0] == "" {
+		return 0, false
+	}
+	s := args[0]
+	sign := float64(1)
+	if s[0] == '-' {
+		sign = -1
+		s = s[1:]
+	} else if s[0] == '+' {
+		s = s[1:]
+	}
+	if s == "" {
+		return 0, false
+	}
+	var whole, frac float64
+	var fracDiv float64 = 1
+	seenDot := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			if seenDot {
+				fracDiv *= 10
+				frac = frac*10 + float64(c-'0')
+			} else {
+				whole = whole*10 + float64(c-'0')
+			}
+		case c == '.':
+			if seenDot {
+				return 0, false
+			}
+			seenDot = true
+		default:
+			return 0, false
+		}
+	}
+	v := whole + frac/fracDiv
+	if v == 0 {
+		return 0, false
+	}
+	if v > 1.0 {
+		v = v / 100.0
+	}
+	return float32(sign * v), true
 }

@@ -167,3 +167,135 @@ func TestParseExecNeedsCommand(t *testing.T) {
 		t.Error("bare exec accepted, want error")
 	}
 }
+
+func TestParseXKBLayout(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{"default is us", "# empty\n", "us"},
+		{"native directive", "xkb_layout gb\n", "gb"},
+		{"quoted layout", "xkb_layout \"gb\"\n", "gb"},
+		{"sway input syntax", "input * xkb_layout \"gb\"\n", "gb"},
+		{"variant syntax", "xkb_layout gb(extd)\n", "gb(extd)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(tc.doc))
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.doc, err)
+			}
+			if cfg.XKBLayout != tc.want {
+				t.Errorf("XKBLayout = %q, want %q", cfg.XKBLayout, tc.want)
+			}
+		})
+	}
+
+	bad := []string{
+		"xkb_layout\n",
+		"xkb_layout gb us\n",
+		"xkb_layout \"\"\n",
+		"xkb_layout gb\";\n",
+		"xkb_layout ../gb\n",
+		"xkb_layout gb(\n",
+		"xkb_layout gb)\n",
+		"xkb_layout gb\nxkb_layout us\n",
+		"xkb_layout gb\ninput * xkb_layout us\n",
+		"input * xkb_options caps:escape\n",
+	}
+	for _, doc := range bad {
+		if _, err := Parse([]byte(doc)); err == nil {
+			t.Errorf("Parse(%q) succeeded, want error", doc)
+		}
+	}
+}
+
+func TestParseModes(t *testing.T) {
+	doc := `
+bind Super+r mode resize
+bind Super+Pause mode system
+bind_mode resize j resize_col_width -10
+bind_mode resize semicolon resize_col_width 10
+mode "resize" {
+    bind k resize_window_height 10
+    bind l resize_window_height -10
+    bind Escape mode default
+}
+mode system {
+    bind l spawn swaylock -f
+    bind Escape mode default
+}
+`
+	cfg, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse modes: %v", err)
+	}
+	if len(cfg.Bindings) != 9 {
+		t.Fatalf("len(Bindings) = %d, want 9: %+v", len(cfg.Bindings), cfg.Bindings)
+	}
+	if cfg.Bindings[0].Mode != "" || cfg.Bindings[0].Action != "mode" || cfg.Bindings[0].Args[0] != "resize" {
+		t.Errorf("binding[0] = %+v, want default-mode 'mode resize'", cfg.Bindings[0])
+	}
+	if cfg.Bindings[2].Mode != "resize" || cfg.Bindings[2].Combo != "j" || cfg.Bindings[2].Action != "resize_col_width" {
+		t.Errorf("binding[2] = %+v, want resize-mode 'j resize_col_width -10'", cfg.Bindings[2])
+	}
+	if cfg.Bindings[4].Mode != "resize" || cfg.Bindings[4].Combo != "k" || cfg.Bindings[4].Action != "resize_window_height" {
+		t.Errorf("binding[4] = %+v, want resize-mode 'k resize_window_height 10'", cfg.Bindings[4])
+	}
+	if cfg.Bindings[7].Mode != "system" || cfg.Bindings[7].Combo != "l" || cfg.Bindings[7].Action != "spawn" {
+		t.Errorf("binding[7] = %+v, want system-mode 'l spawn swaylock -f'", cfg.Bindings[7])
+	}
+
+	for _, bad := range []string{
+		"bind_mode resize j\n",
+		"mode resize\n",
+		"mode \"\" {\n}\n",
+		"mode resize {\nbind j close\n", // unclosed mode block
+		"mode default {\nmode resize {\n}\n}\n",
+		"}\n", // stray closing brace
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("Parse(%q) succeeded, want error", bad)
+		}
+	}
+}
+
+func TestParseOutputScale(t *testing.T) {
+	cases := []struct {
+		name string
+		doc  string
+		want float32
+	}{
+		{"default is 1.0", "# empty\n", 1.0},
+		{"output_scale directive", "output_scale 1.25\n", 1.25},
+		{"sway output scale syntax", "output HDMI-A-1 scale 1.25\n", 1.25},
+		{"integer scale", "output * scale 2\n", 2.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(tc.doc))
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", tc.doc, err)
+			}
+			if cfg.OutputScale != tc.want {
+				t.Errorf("OutputScale = %v, want %v", cfg.OutputScale, tc.want)
+			}
+		})
+	}
+
+	for _, bad := range []string{
+		"output_scale\n",
+		"output_scale 0\n",
+		"output_scale 0.25\n",
+		"output_scale 5\n",
+		"output_scale abc\n",
+		"output_scale 1.25\noutput_scale 1.5\n",
+		"output_scale 1.25\noutput HDMI-A-1 scale 1.5\n",
+		"output HDMI-A-1 mode 1920x1080\n",
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("Parse(%q) succeeded, want error", bad)
+		}
+	}
+}

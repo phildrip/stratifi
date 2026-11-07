@@ -102,10 +102,11 @@ func (s *shellState) publishScene() {
 		list = append(list, input.WindowInfo{ClientID: p.clientID, SurfaceID: p.surfaceID, Rect: p.rect})
 	}
 	fs := s.fullscreenActive()
-	for _, m := range s.windows {
-		if !s.sceneVisible(m.WinID) {
-			continue // hidden on another workspace, or behind fullscreen
-		}
+	visWins := s.visibleWindowsBackToFront()
+	// Publish front-to-back (reverse of draw order) so floating windows
+	// hit-test above tiled windows.
+	for i := len(visWins) - 1; i >= 0; i-- {
+		m := visWins[i]
 		rect := m.Rect
 		if m.WinID == fs {
 			rect = s.output // fullscreen owns the whole output
@@ -182,11 +183,13 @@ func (s *shellState) relayoutAll() {
 			s.configure(m)
 		}
 	}
-	if _, ok := s.windows[s.activeWin]; !ok {
-		// Active window moved away: focus the first visible one.
+	if _, ok := s.windows[s.activeWin]; !ok || !s.sceneVisible(s.activeWin) {
+		// Active window moved away or hid in scratchpad: focus the first visible one.
 		s.activeWin = 0
 		if len(winIDs) > 0 {
 			s.activeWin = winIDs[0]
+		} else if vis := s.visibleWindowsBackToFront(); len(vis) > 0 {
+			s.activeWin = vis[len(vis)-1].WinID
 		}
 	}
 	s.publishScene()
@@ -416,25 +419,7 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 
 		// Recompute layout for the survivors and reconfigure them.
-		winIDs, rects := s.workspaces.ComputeScrollable(s.tilingArea())
-		for i, id := range winIDs {
-			if m, ok := s.windows[id]; ok {
-				m.Rect = rects[i]
-				s.configure(m)
-			}
-		}
-
-		// Focus falls to the first remaining window: a plain channel
-		// command the router applies on its own loop — no cross-goroutine
-		// method calls, no lock-order contracts.
-		if len(winIDs) > 0 {
-			if m, ok := s.windows[winIDs[0]]; ok {
-				s.activeWin = winIDs[0]
-				s.requestFocus(winIDs[0], m.ClientID, m.SurfaceID, m.ToplevelID)
-			}
-		}
-
-		s.publishScene()
+		s.relayoutAll()
 
 	case evColumnNext:
 		s.workspaces.MoveActiveColumn(1)
@@ -486,11 +471,17 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		s.publishLauncher()
 
 	case evFocusWindow:
-		if _, ok := s.windows[ev.winID]; !ok {
+		m, ok := s.windows[ev.winID]
+		if !ok {
 			return
 		}
-		// Jump to the window's workspace if it lives elsewhere.
-		if ws := s.engine.WorkspaceOf(ev.winID); ws != 0 && ws != uint32(s.workspaces.ActiveID()) {
+		if m.Floating {
+			if m.Workspace == 0 {
+				m.Workspace = s.workspaces.ActiveID()
+			} else if m.Workspace != s.workspaces.ActiveID() {
+				s.workspaces.SwitchTo(m.Workspace)
+			}
+		} else if ws := s.engine.WorkspaceOf(ev.winID); ws != 0 && ws != uint32(s.workspaces.ActiveID()) {
 			s.workspaces.SwitchTo(layout.WorkspaceID(ws))
 		}
 		s.activeWin = ev.winID
@@ -515,6 +506,16 @@ func (s *shellState) applyEvent(ev shellEvent) {
 	case evMoveColRight:
 		s.moveColumn(1)
 
+	case evResizeColWidth:
+		if s.activeWin != 0 && s.engine.ResizeWindowColumnWidth(s.activeWin, ev.columnWidth) {
+			s.relayoutAll()
+		}
+
+	case evResizeWindowHeight:
+		if s.activeWin != 0 && s.engine.ResizeWindowHeight(s.activeWin, ev.columnWidth) {
+			s.relayoutAll()
+		}
+
 	case evWorkspaceNext:
 		s.prevWorkspace = s.workspaces.ActiveID()
 		s.workspaces.SwitchNext()
@@ -532,10 +533,30 @@ func (s *shellState) applyEvent(ev shellEvent) {
 
 	case evWorkspaceMove:
 		if m, ok := s.windows[s.activeWin]; ok {
-			if s.workspaces.MoveWindowToWorkspace(m.WinID, s.workspaces.Ensure(ev.wsIndex)) {
+			target := s.workspaces.Ensure(ev.wsIndex)
+			if m.Floating {
+				m.Workspace = target
+				m.Scratchpad = false
+				s.relayoutAll()
+			} else if s.workspaces.MoveWindowToWorkspace(m.WinID, target) {
 				s.relayoutAll()
 			}
 		}
+
+	case evFloatingToggle:
+		s.toggleFloating()
+
+	case evFocusModeToggle:
+		s.toggleFocusMode()
+
+	case evMoveScratchpad:
+		s.moveToScratchpad()
+
+	case evScratchpadShow:
+		s.toggleScratchpad()
+
+	case evWindowDrag:
+		s.dragFloatingWindow(ev.winID, ev.px, ev.py, ev.cursorOn)
 
 	case evCloseActive:
 		m, ok := s.windows[s.activeWin]
@@ -547,12 +568,15 @@ func (s *shellState) applyEvent(ev shellEvent) {
 		}
 
 	case evFocusNext, evFocusPrev:
-		if len(s.windows) < 2 {
-			return
-		}
 		ids := make([]layout.WindowID, 0, len(s.windows))
-		for id := range s.windows {
+		for id, m := range s.windows {
+			if m.Scratchpad && m.Workspace == 0 {
+				continue // skip hidden scratchpad windows
+			}
 			ids = append(ids, id)
+		}
+		if len(ids) < 2 {
+			return
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 		at := 0
@@ -740,13 +764,180 @@ func (s *shellState) fullscreenActive() layout.WindowID {
 // active workspace, and — while something is fullscreen — only if it IS the
 // fullscreen window.
 func (s *shellState) sceneVisible(winID layout.WindowID) bool {
-	if !s.workspaces.Visible(winID) {
+	m, ok := s.windows[winID]
+	if !ok {
 		return false
 	}
 	if fs := s.fullscreenActive(); fs != 0 && winID != fs {
 		return false
 	}
-	return true
+	if m.Floating {
+		return m.Workspace == s.workspaces.ActiveID()
+	}
+	return s.workspaces.Visible(winID)
+}
+
+// visibleWindowsBackToFront returns visible windows ordered from back to front:
+// tiled windows first (sorted by WinID), then floating windows (sorted by WinID,
+// with the active floating window last so it renders topmost).
+func (s *shellState) visibleWindowsBackToFront() []*WindowMapping {
+	tiled := make([]*WindowMapping, 0, len(s.windows))
+	floating := make([]*WindowMapping, 0, len(s.windows))
+	for _, m := range s.windows {
+		if !s.sceneVisible(m.WinID) {
+			continue
+		}
+		if m.Floating {
+			floating = append(floating, m)
+		} else {
+			tiled = append(tiled, m)
+		}
+	}
+	sort.Slice(tiled, func(i, j int) bool { return tiled[i].WinID < tiled[j].WinID })
+	sort.Slice(floating, func(i, j int) bool {
+		if floating[i].WinID == s.activeWin {
+			return false
+		}
+		if floating[j].WinID == s.activeWin {
+			return true
+		}
+		return floating[i].WinID < floating[j].WinID
+	})
+	return append(tiled, floating...)
+}
+
+// centeredFloatingRect returns a default centered floating rectangle inside the
+// workspace's tiling area.
+func (s *shellState) centeredFloatingRect() layout.Rect {
+	area := s.tilingArea()
+	w := (area.W * 3) / 5
+	h := (area.H * 2) / 3
+	if w < 160 {
+		w = area.W
+	}
+	if h < 120 {
+		h = area.H
+	}
+	return layout.Rect{
+		X: area.X + (area.W-w)/2,
+		Y: area.Y + (area.H-h)/2,
+		W: w,
+		H: h,
+	}
+}
+
+func (s *shellState) toggleFloating() {
+	m, ok := s.windows[s.activeWin]
+	if !ok {
+		return
+	}
+	if !m.Floating {
+		_ = s.workspaces.RemoveWindow(m.WinID)
+		m.Floating = true
+		m.Scratchpad = false
+		m.Workspace = s.workspaces.ActiveID()
+		m.Rect = s.centeredFloatingRect()
+		s.configure(m)
+		s.relayoutAll()
+		return
+	}
+	m.Floating = false
+	m.Scratchpad = false
+	m.Workspace = 0
+	_ = s.workspaces.AddWindow(m.WinID)
+	s.workspaces.Engine().SetActiveColumn(s.columnIndexOf(m.WinID))
+	s.relayoutAll()
+}
+
+func (s *shellState) toggleFocusMode() {
+	vis := s.visibleWindowsBackToFront()
+	if len(vis) == 0 {
+		return
+	}
+	wantFloating := true
+	if cur, ok := s.windows[s.activeWin]; ok && cur.Floating {
+		wantFloating = false
+	}
+	for i := len(vis) - 1; i >= 0; i-- {
+		if vis[i].Floating == wantFloating {
+			s.activeWin = vis[i].WinID
+			s.publishScene()
+			s.focusActive()
+			return
+		}
+	}
+}
+
+func (s *shellState) moveToScratchpad() {
+	m, ok := s.windows[s.activeWin]
+	if !ok {
+		return
+	}
+	if !m.Floating {
+		_ = s.workspaces.RemoveWindow(m.WinID)
+		m.Rect = s.centeredFloatingRect()
+	}
+	m.Floating = true
+	m.Scratchpad = true
+	m.Workspace = 0 // hidden
+	s.configure(m)
+	s.relayoutAll()
+}
+
+func (s *shellState) toggleScratchpad() {
+	activeWS := s.workspaces.ActiveID()
+	// If a scratchpad window is already visible on the active workspace, hide it.
+	for _, m := range s.windows {
+		if m.Scratchpad && m.Workspace == activeWS {
+			m.Workspace = 0
+			s.relayoutAll()
+			return
+		}
+	}
+	// Otherwise find the first scratchpad window (deterministic by WinID) and show it.
+	var target *WindowMapping
+	for _, m := range s.windows {
+		if m.Scratchpad && (target == nil || m.WinID < target.WinID) {
+			target = m
+		}
+	}
+	if target == nil {
+		return
+	}
+	target.Floating = true
+	target.Workspace = activeWS
+	if target.Rect.W <= 0 || target.Rect.H <= 0 {
+		target.Rect = s.centeredFloatingRect()
+	}
+	s.activeWin = target.WinID
+	s.configure(target)
+	s.publishScene()
+	s.focusActive()
+}
+
+func (s *shellState) dragFloatingWindow(winID layout.WindowID, dx, dy int32, resize bool) {
+	m, ok := s.windows[winID]
+	if !ok || !m.Floating {
+		return
+	}
+	if !resize {
+		m.Rect.X += dx
+		m.Rect.Y += dy
+		s.publishScene()
+		return
+	}
+	w := m.Rect.W + dx
+	h := m.Rect.H + dy
+	if w < 120 {
+		w = 120
+	}
+	if h < 80 {
+		h = 80
+	}
+	m.Rect.W = w
+	m.Rect.H = h
+	s.configure(m)
+	s.publishScene()
 }
 
 // toggleFullscreen makes the active window fill the output (hiding the

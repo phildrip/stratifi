@@ -77,6 +77,8 @@ gap 8                 # pixels between windows
 border_width 3
 titlebar_height 28
 column_width 0.5      # scrollable column width, fraction of the output
+xkb_layout gb         # XKB keyboard layout (default: us; also accepts 'input * xkb_layout "gb"')
+output_scale 1.25     # display scale factor (default: 1.0; also accepts 'output <name> scale 1.25')
 
 # keybindings
 bind Super+Return spawn foot
@@ -118,10 +120,16 @@ f1–f12  home end delete up down left right
 | `focus_window_up` / `focus_window_down` | Focus within the active column's stack. |
 | `move_window_up` / `move_window_down` | Reorder the active window within its column. |
 | `fullscreen` | Toggle fullscreen for the active window. |
+| `floating_toggle` | Toggle the active window between floating and scrollable-column tiling (`Super` + left/right mouse drag moves/resizes floating windows). |
+| `focus_mode_toggle` | Switch keyboard focus between the floating layer and the tiled layer. |
+| `move_scratchpad` / `scratchpad_show` | Hide the active window into the scratchpad / toggle showing the scratchpad window on the current workspace. |
 | `workspace <n>` / `move_to_workspace <n>` | Switch to / move the window to workspace *n*. |
 | `workspace_back_and_forth` | Toggle to the previously visited workspace. |
-| `reload` | Re-read the config file: bindings and layout metrics, live. |
+| `reload` | Re-read the config file: bindings, XKB layout, and layout metrics, live. |
 | `dpms [on\|off\|toggle]` | Power the KMS display on or off (also wakes automatically on input). |
+| `mode <name>` | Switch keybinding mode (`default` returns to the base mode). |
+| `resize_col_width <delta>` | Adjust the active column's width fraction (e.g. `-10` / `+10` ppt or `-0.05` / `+0.05`). |
+| `resize_window_height <delta>` | Adjust the active window's height weight within its column stack. |
 | `workspace_next` / `workspace_prev` | Cycle workspaces. |
 | `overview` | Recognised; not implemented yet. |
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,22 +54,77 @@ type Server struct {
 // Output is the compositor's virtual output geometry. Single source of
 // truth: wl_output advertisement and capture buffer sizing both read it.
 type Output struct {
-	// Width/Height are logical pixels; RefreshHz is the advertised rate.
+	// Width/Height are mode pixels; RefreshHz is the advertised rate.
 	Width, Height uint32
 	RefreshHz     uint32
+	// Scale is the configured output scale factor (0 or 1.0 = unscaled).
+	Scale float32
 }
 
-// SetOutput configures the virtual output geometry.
-func (s *Server) SetOutput(o Output) { s.output = o }
+// IntScale returns the integer scale factor advertised via wl_output.scale
+// (ceil(Scale), at least 1).
+func (o Output) IntScale() int32 {
+	if o.Scale <= 1.0 {
+		return 1
+	}
+	return int32(math.Ceil(float64(o.Scale)))
+}
+
+// LogicalSize returns the logical output dimensions advertised via
+// zxdg_output_v1.logical_size (Width/Scale, Height/Scale).
+func (o Output) LogicalSize() (int32, int32) {
+	sc := float64(o.Scale)
+	if sc <= 0 {
+		sc = 1.0
+	}
+	w := int32(math.Round(float64(o.Width) / sc))
+	h := int32(math.Round(float64(o.Height) / sc))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	return w, h
+}
+
+// SetOutput configures the virtual output geometry and notifies any connected
+// clients that have bound wl_output or zxdg_output_v1.
+func (s *Server) SetOutput(o Output) {
+	s.clientMu.Lock()
+	s.output = o
+	out := s.outputLocked()
+	clients := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clientMu.Unlock()
+
+	for _, c := range clients {
+		c.SendOutputUpdate(out)
+	}
+}
 
 // Output returns the configured virtual output geometry. Zero values
 // default to the historical 960x640@60 demo geometry so existing callers
 // keep working until the compositor core (stratifi-o2x) owns real outputs.
 func (s *Server) Output() Output {
-	if s.output.Width == 0 || s.output.Height == 0 {
-		return Output{Width: 960, Height: 640, RefreshHz: 60}
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	return s.outputLocked()
+}
+
+func (s *Server) outputLocked() Output {
+	o := s.output
+	if o.Width == 0 || o.Height == 0 {
+		o.Width = 960
+		o.Height = 640
+		o.RefreshHz = 60
 	}
-	return s.output
+	if o.Scale <= 0 {
+		o.Scale = 1.0
+	}
+	return o
 }
 
 // NewServer creates a new Wayland server listening on the specified socket name.
@@ -88,9 +144,32 @@ func NewServer(socketName string) (*Server, error) {
 }
 
 // SetKeymap configures the shared keymap FD and size distributed to clients via wl_keyboard.
+// Any already-connected clients that have bound wl_keyboard immediately receive a new
+// wl_keyboard.keymap event.
 func (s *Server) SetKeymap(fd int, size uint32) {
+	s.clientMu.Lock()
 	s.keymapFD = fd
 	s.keymapSize = size
+	if fd < 0 || size == 0 {
+		s.clientMu.Unlock()
+		return
+	}
+	clients := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clientMu.Unlock()
+
+	for _, c := range clients {
+		c.SendKeyboardKeymap(fd, size)
+	}
+}
+
+// Keymap returns the currently configured keymap FD and byte size.
+func (s *Server) Keymap() (int, uint32) {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	return s.keymapFD, s.keymapSize
 }
 
 // SocketPath returns the active filesystem path of the Wayland socket.
