@@ -35,6 +35,7 @@ const (
 	GlobalForeignToplevelImageCaptureSourceManager uint32 = 14
 	GlobalIdleInhibitManager                       uint32 = 15
 	GlobalTextInputManager                         uint32 = 16
+	GlobalOutputExtraBase                          uint32 = 100
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -60,6 +61,8 @@ type Client struct {
 	layerSurfaces  xdgStore[LayerSurface]
 	textInputs     xdgStore[TextInput]
 	focusedSurface uint32
+	outputGlobals  map[uint32]uint32 // wl_output object ID -> wl_registry GlobalID
+	xdgOutputs     map[uint32]uint32 // zxdg_output_v1 object ID -> wl_output object ID
 
 	// ext-foreign-toplevel-list-v1: the client's list objects and the handle
 	// object id per toplevel key.
@@ -315,8 +318,14 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalXdgWmBase, "xdg_wm_base", 3); err != nil {
 		return err
 	}
-	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutput, "wl_output", 4); err != nil {
-		return err
+	for _, out := range c.server.Outputs() {
+		gid := out.GlobalID
+		if gid == 0 {
+			gid = GlobalOutput
+		}
+		if err := wayland.SendWlRegistryGlobal(w, registryID, gid, "wl_output", 4); err != nil {
+			return err
+		}
 	}
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalSeat, "wl_seat", 5); err != nil {
 		return err
@@ -379,17 +388,8 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 	case GlobalXdgWmBase:
 		c.registerObject(id, ObjXdgWmBase)
 	case GlobalOutput:
-		c.registerObject(id, ObjOutput)
-		w := c.conn.WriterRef()
-		out := c.server.Output()
-		_ = wayland.SendWlOutputGeometry(w, id, 0, 0, 320, 240, 0, "stratifi", "stratifi-display", 0)
-		_ = wayland.SendWlOutputScale(w, id, out.IntScale())
-		_ = wayland.SendWlOutputMode(w, id, 0x3,
-			int32(out.Width), int32(out.Height), int32(out.RefreshHz*1000))
-		// v4: clients (waybar et al.) match bars to outputs by name.
-		_ = wayland.SendWlOutputName(w, id, "STRATIFI-1")
-		_ = wayland.SendWlOutputDescription(w, id, "stratifi output 1")
-		_ = wayland.SendWlOutputDone(w, id)
+		out, _ := c.server.OutputByGlobalID(GlobalOutput)
+		c.bindOutputLocked(id, GlobalOutput, out)
 	case GlobalSeat:
 		c.registerObject(id, ObjSeat)
 		w := c.conn.WriterRef()
@@ -419,9 +419,71 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 	case GlobalImageCopyCaptureManager:
 		c.registerObject(id, ObjImageCopyCaptureManager)
 	default:
+		if out, ok := c.server.OutputByGlobalID(name); ok {
+			c.bindOutputLocked(id, name, out)
+			return nil
+		}
 		return fmt.Errorf("unknown global name %d (iface %s)", name, ifaceName)
 	}
 	return nil
+}
+
+func (c *Client) bindOutputLocked(id, globalID uint32, out Output) {
+	c.registerObject(id, ObjOutput)
+	if c.outputGlobals == nil {
+		c.outputGlobals = make(map[uint32]uint32)
+	}
+	c.outputGlobals[id] = globalID
+	w := c.conn.WriterRef()
+	_ = wayland.SendWlOutputGeometry(w, id, out.X, out.Y, 320, 240, 0, "stratifi", "stratifi-display", 0)
+	_ = wayland.SendWlOutputScale(w, id, out.IntScale())
+	_ = wayland.SendWlOutputMode(w, id, 0x3,
+		int32(out.Width), int32(out.Height), int32(out.RefreshHz*1000))
+	_ = wayland.SendWlOutputName(w, id, out.Name)
+	_ = wayland.SendWlOutputDescription(w, id, out.Description)
+	_ = wayland.SendWlOutputDone(w, id)
+}
+
+// SendRegistryGlobal broadcasts a new wl_registry.global event to all
+// registry objects bound by this client (used for output hotplug-add).
+func (c *Client) SendRegistryGlobal(name uint32, iface string, version uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	wrote := false
+	for id, typ := range c.objects.typ {
+		if typ == ObjRegistry {
+			_ = wayland.SendWlRegistryGlobal(w, uint32(id), name, iface, version)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
+}
+
+// SendRegistryGlobalRemove broadcasts a wl_registry.global_remove event to all
+// registry objects bound by this client (used for output hotplug-remove).
+func (c *Client) SendRegistryGlobalRemove(name uint32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
+		return
+	}
+	w := c.conn.WriterRef()
+	wrote := false
+	for id, typ := range c.objects.typ {
+		if typ == ObjRegistry {
+			_ = wayland.SendWlRegistryGlobalRemove(w, uint32(id), name)
+			wrote = true
+		}
+	}
+	if wrote {
+		_ = c.conn.Flush()
+	}
 }
 
 // --- WlCompositorHandler ---
@@ -2058,15 +2120,22 @@ func (c *Client) HandleZxdgOutputManagerV1Destroy(senderID uint32) error {
 func (c *Client) HandleZxdgOutputManagerV1GetXdgOutput(senderID, id, output uint32) error {
 	c.mu.Lock()
 	c.registerObject(id, ObjXdgOutput)
+	if c.xdgOutputs == nil {
+		c.xdgOutputs = make(map[uint32]uint32)
+	}
+	c.xdgOutputs[id] = output
 	out := c.server.Output()
+	if gid, ok := c.outputGlobals[output]; ok {
+		if found, ok := c.server.OutputByGlobalID(gid); ok {
+			out = found
+		}
+	}
 	logW, logH := out.LogicalSize()
 	w := c.conn.WriterRef()
-	// Single logical output at the origin; name/description let clients
-	// (waybar et al.) match panels to outputs.
-	_ = xdgoutput.SendZxdgOutputV1LogicalPosition(w, id, 0, 0)
+	_ = xdgoutput.SendZxdgOutputV1LogicalPosition(w, id, out.X, out.Y)
 	_ = xdgoutput.SendZxdgOutputV1LogicalSize(w, id, logW, logH)
-	_ = xdgoutput.SendZxdgOutputV1Name(w, id, "STRATIFI-1")
-	_ = xdgoutput.SendZxdgOutputV1Description(w, id, "stratifi output 1")
+	_ = xdgoutput.SendZxdgOutputV1Name(w, id, out.Name)
+	_ = xdgoutput.SendZxdgOutputV1Description(w, id, out.Description)
 	_ = xdgoutput.SendZxdgOutputV1Done(w, id)
 	_ = c.conn.Flush()
 	c.mu.Unlock()

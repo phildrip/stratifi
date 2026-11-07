@@ -48,12 +48,19 @@ type Server struct {
 
 	captureGrabber FrameGrabber
 
-	output Output
+	output        Output
+	outputs       []Output
+	nextOutGlobal uint32
 }
 
 // Output is the compositor's virtual output geometry. Single source of
 // truth: wl_output advertisement and capture buffer sizing both read it.
 type Output struct {
+	GlobalID    uint32
+	Name        string
+	Description string
+	X, Y        int32
+	HasPos      bool
 	// Width/Height are mode pixels; RefreshHz is the advertised rate.
 	Width, Height uint32
 	RefreshHz     uint32
@@ -88,12 +95,77 @@ func (o Output) LogicalSize() (int32, int32) {
 	return w, h
 }
 
-// SetOutput configures the virtual output geometry and notifies any connected
-// clients that have bound wl_output or zxdg_output_v1.
+// LayoutOutputs computes output logical positions and the combined desktop
+// bounding size under "join" (horizontal extension unless HasPos is set) or
+// "mirror" (all outputs placed at (0,0), desktop sized to primary output).
+func LayoutOutputs(in []Output, policy string) ([]Output, int32, int32) {
+	if len(in) == 0 {
+		return nil, 0, 0
+	}
+	out := make([]Output, len(in))
+	copy(out, in)
+	if policy == "mirror" {
+		for i := range out {
+			out[i].X = 0
+			out[i].Y = 0
+		}
+		w, h := out[0].LogicalSize()
+		return out, w, h
+	}
+	var curX int32
+	var maxW, maxH int32
+	for i := range out {
+		lw, lh := out[i].LogicalSize()
+		if !out[i].HasPos {
+			out[i].X = curX
+			out[i].Y = 0
+		}
+		curX = out[i].X + lw
+		if out[i].X+lw > maxW {
+			maxW = out[i].X + lw
+		}
+		if out[i].Y+lh > maxH {
+			maxH = out[i].Y + lh
+		}
+	}
+	return out, maxW, maxH
+}
+
+func normalizeOutput(o Output, idx int, defaultGlobalID uint32) Output {
+	if o.Width == 0 || o.Height == 0 {
+		o.Width = 960
+		o.Height = 640
+		o.RefreshHz = 60
+	}
+	if o.RefreshHz == 0 {
+		o.RefreshHz = 60
+	}
+	if o.Scale <= 0 {
+		o.Scale = 1.0
+	}
+	if o.Name == "" {
+		o.Name = fmt.Sprintf("STRATIFI-%d", idx+1)
+	}
+	if o.Description == "" {
+		o.Description = fmt.Sprintf("stratifi output %d", idx+1)
+	}
+	if o.GlobalID == 0 {
+		o.GlobalID = defaultGlobalID
+	}
+	return o
+}
+
+// SetOutput configures the primary virtual output geometry and notifies any
+// connected clients that have bound wl_output or zxdg_output_v1.
 func (s *Server) SetOutput(o Output) {
 	s.clientMu.Lock()
+	o = normalizeOutput(o, 0, GlobalOutput)
 	s.output = o
-	out := s.outputLocked()
+	if len(s.outputs) <= 1 {
+		s.outputs = []Output{o}
+	} else {
+		s.outputs[0] = o
+	}
 	clients := make([]*Client, 0, len(s.clients))
 	for _, c := range s.clients {
 		clients = append(clients, c)
@@ -101,8 +173,118 @@ func (s *Server) SetOutput(o Output) {
 	s.clientMu.Unlock()
 
 	for _, c := range clients {
-		c.SendOutputUpdate(out)
+		c.SendOutputUpdate(o)
 	}
+}
+
+// SetOutputs replaces the server's output topology.
+func (s *Server) SetOutputs(outs []Output) {
+	s.clientMu.Lock()
+	if s.nextOutGlobal < GlobalOutputExtraBase {
+		s.nextOutGlobal = GlobalOutputExtraBase
+	}
+	s.outputs = make([]Output, len(outs))
+	for i, o := range outs {
+		gid := GlobalOutput
+		if i > 0 {
+			gid = s.nextOutGlobal
+			s.nextOutGlobal++
+		}
+		s.outputs[i] = normalizeOutput(o, i, gid)
+	}
+	if len(s.outputs) > 0 {
+		s.output = s.outputs[0]
+	}
+	s.clientMu.Unlock()
+}
+
+// Outputs returns a copy of all currently advertised outputs.
+func (s *Server) Outputs() []Output {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	if len(s.outputs) == 0 {
+		return []Output{s.outputLocked()}
+	}
+	cp := make([]Output, len(s.outputs))
+	copy(cp, s.outputs)
+	return cp
+}
+
+// OutputByGlobalID looks up an advertised output by its wl_registry global ID.
+func (s *Server) OutputByGlobalID(globalID uint32) (Output, bool) {
+	s.clientMu.RLock()
+	defer s.clientMu.RUnlock()
+	if len(s.outputs) == 0 && globalID == GlobalOutput {
+		return s.outputLocked(), true
+	}
+	for _, o := range s.outputs {
+		if o.GlobalID == globalID {
+			return o, true
+		}
+	}
+	return Output{}, false
+}
+
+// AddOutput dynamically hotplugs a new output and broadcasts wl_registry.global
+// to all connected clients. Returns the assigned wl_registry global name.
+func (s *Server) AddOutput(o Output) uint32 {
+	s.clientMu.Lock()
+	if len(s.outputs) == 0 {
+		s.outputs = []Output{s.outputLocked()}
+	}
+	if s.nextOutGlobal < GlobalOutputExtraBase {
+		s.nextOutGlobal = GlobalOutputExtraBase
+	}
+	gid := o.GlobalID
+	if gid == 0 {
+		gid = s.nextOutGlobal
+		s.nextOutGlobal++
+	}
+	o = normalizeOutput(o, len(s.outputs), gid)
+	s.outputs = append(s.outputs, o)
+	clients := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clientMu.Unlock()
+
+	for _, c := range clients {
+		c.SendRegistryGlobal(gid, "wl_output", 4)
+	}
+	return gid
+}
+
+// RemoveOutput dynamically hotplug-removes an output by connector name and
+// broadcasts wl_registry.global_remove to all connected clients.
+func (s *Server) RemoveOutput(name string) bool {
+	s.clientMu.Lock()
+	var removedID uint32
+	idx := -1
+	for i, o := range s.outputs {
+		if o.Name == name {
+			removedID = o.GlobalID
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.clientMu.Unlock()
+		return false
+	}
+	s.outputs = append(s.outputs[:idx], s.outputs[idx+1:]...)
+	if len(s.outputs) > 0 {
+		s.output = s.outputs[0]
+	}
+	clients := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clientMu.Unlock()
+
+	for _, c := range clients {
+		c.SendRegistryGlobalRemove(removedID)
+	}
+	return true
 }
 
 // Output returns the configured virtual output geometry. Zero values
@@ -115,16 +297,7 @@ func (s *Server) Output() Output {
 }
 
 func (s *Server) outputLocked() Output {
-	o := s.output
-	if o.Width == 0 || o.Height == 0 {
-		o.Width = 960
-		o.Height = 640
-		o.RefreshHz = 60
-	}
-	if o.Scale <= 0 {
-		o.Scale = 1.0
-	}
-	return o
+	return normalizeOutput(s.output, 0, GlobalOutput)
 }
 
 // NewServer creates a new Wayland server listening on the specified socket name.

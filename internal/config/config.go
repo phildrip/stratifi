@@ -22,11 +22,23 @@ type Config struct {
 	XKBLayout string
 	// OutputScale is the display scale factor (e.g. 1.0, 1.25, 2.0).
 	OutputScale float32
-	Bindings    []Binding
-	Gestures    []GestureBinding
+	// OutputPolicy is the multi-output layout policy: "join" (default) or "mirror".
+	OutputPolicy string
+	// Outputs holds per-output rules (`output <name> ...`).
+	Outputs  []OutputConfig
+	Bindings []Binding
+	Gestures []GestureBinding
 	// Exec holds startup commands (`exec <cmd>`), run once the compositor is
 	// up; each is passed to `sh -c`, like sway's exec.
 	Exec []string
+}
+
+// OutputConfig holds per-output layout configuration (`output <name> ...`).
+type OutputConfig struct {
+	Name   string
+	X, Y   int32
+	HasPos bool
+	Scale  float32
 }
 
 // GestureBinding is one `bind_gesture` line: a recognized gesture mapped to
@@ -57,6 +69,7 @@ func Default() Config {
 		TitlebarHeight: 28,
 		XKBLayout:      "us",
 		OutputScale:    1.0,
+		OutputPolicy:   "join",
 	}
 }
 
@@ -230,6 +243,15 @@ func Parse(data []byte) (Config, error) {
 			}
 			seen["xkb_layout"] = line
 			cfg.XKBLayout = layout
+		case "output_policy":
+			if _, dup := seen["output_policy"]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_policy", seen["output_policy"])
+			}
+			if len(fields) != 2 || (fields[1] != "join" && fields[1] != "mirror") {
+				return Config{}, parseError(line, "output_policy must be 'join' or 'mirror'")
+			}
+			seen["output_policy"] = line
+			cfg.OutputPolicy = fields[1]
 		case "output_scale":
 			if _, dup := seen["output_scale"]; dup {
 				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_scale", seen["output_scale"])
@@ -242,21 +264,63 @@ func Parse(data []byte) (Config, error) {
 				return Config{}, parseError(line, "output_scale: %v", err)
 			}
 			seen["output_scale"] = line
+			seen["output_scale_explicit"] = line
 			cfg.OutputScale = sc
 		case "output":
-			// Sway compatibility: `output <name> scale <float>`
-			if len(fields) != 4 || fields[2] != "scale" {
-				return Config{}, parseError(line, "unsupported output directive (expected 'output <name> scale <scale>')")
+			// Sway compatibility:
+			//   `output <name> scale <float>`
+			//   `output <name> pos <x> <y> [scale <float>]`
+			if len(fields) < 4 {
+				return Config{}, parseError(line, "unsupported output directive")
 			}
-			if _, dup := seen["output_scale"]; dup {
-				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_scale", seen["output_scale"])
+			oc := OutputConfig{Name: fields[1], Scale: 1.0}
+			idx := 2
+			hasField := false
+			for idx < len(fields) {
+				switch fields[idx] {
+				case "scale":
+					if idx+1 >= len(fields) {
+						return Config{}, parseError(line, "output scale needs a value")
+					}
+					if _, dup := seen["output_scale_explicit"]; dup {
+						return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_scale", seen["output_scale_explicit"])
+					}
+					sc, err := parseScale(fields[idx+1])
+					if err != nil {
+						return Config{}, parseError(line, "output scale: %v", err)
+					}
+					oc.Scale = sc
+					if _, set := seen["output_scale"]; !set {
+						seen["output_scale"] = line
+						cfg.OutputScale = sc
+					}
+					hasField = true
+					idx += 2
+				case "pos", "position":
+					if idx+2 >= len(fields) {
+						return Config{}, parseError(line, "output pos needs X and Y values")
+					}
+					x, err := parsePx(fields[idx+1])
+					if err != nil {
+						return Config{}, parseError(line, "output pos X: %v", err)
+					}
+					y, err := parsePx(fields[idx+2])
+					if err != nil {
+						return Config{}, parseError(line, "output pos Y: %v", err)
+					}
+					oc.X = x
+					oc.Y = y
+					oc.HasPos = true
+					hasField = true
+					idx += 3
+				default:
+					return Config{}, parseError(line, "unsupported output directive %q", fields[idx])
+				}
 			}
-			sc, err := parseScale(fields[3])
-			if err != nil {
-				return Config{}, parseError(line, "output scale: %v", err)
+			if !hasField {
+				return Config{}, parseError(line, "empty output directive")
 			}
-			seen["output_scale"] = line
-			cfg.OutputScale = sc
+			cfg.Outputs = append(cfg.Outputs, oc)
 		default:
 			return Config{}, parseError(line, "unknown directive %q", key)
 		}

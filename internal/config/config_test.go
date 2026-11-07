@@ -299,3 +299,34 @@ func TestParseOutputScale(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMultiOutputPolicyAndPosition(t *testing.T) {
+	doc := `
+output_policy mirror
+output DP-1 pos 0 0 scale 1.0
+output HDMI-A-1 position 1920 0 scale 2.0
+`
+	cfg, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse multi-output: %v", err)
+	}
+	if cfg.OutputPolicy != "mirror" {
+		t.Fatalf("OutputPolicy = %q, want mirror", cfg.OutputPolicy)
+	}
+	if len(cfg.Outputs) != 2 {
+		t.Fatalf("len(Outputs) = %d, want 2", len(cfg.Outputs))
+	}
+	if cfg.Outputs[1].Name != "HDMI-A-1" || !cfg.Outputs[1].HasPos || cfg.Outputs[1].X != 1920 || cfg.Outputs[1].Scale != 2.0 {
+		t.Fatalf("Outputs[1] = %+v", cfg.Outputs[1])
+	}
+
+	for _, bad := range []string{
+		"output_policy clone\n",
+		"output_policy join\noutput_policy mirror\n",
+		"output DP-1 pos 100\n",
+	} {
+		if _, err := Parse([]byte(bad)); err == nil {
+			t.Errorf("Parse(%q) succeeded, want error", bad)
+		}
+	}
+}

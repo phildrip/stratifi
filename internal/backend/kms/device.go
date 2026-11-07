@@ -437,6 +437,28 @@ func (c *Card) FindCRTCByID(id uint32) *CRTC {
 	return nil
 }
 
+// ConnectedConnectors appends all connected connectors with at least one mode
+// into dst (retaining capacity) and returns the populated slice.
+func (c *Card) ConnectedConnectors(dst []*Connector) []*Connector {
+	dst = dst[:0]
+	for _, conn := range c.Connectors {
+		if conn.IsConnected() && len(conn.Modes) > 0 {
+			dst = append(dst, conn)
+		}
+	}
+	return dst
+}
+
+// RescanConnectors re-enumerates the card's DRM connectors and CRTCs after a
+// hotplug event and returns all currently connected connectors.
+func (c *Card) RescanConnectors() ([]*Connector, error) {
+	c.Connectors = c.Connectors[:0]
+	if err := c.enumerate(); err != nil {
+		return nil, err
+	}
+	return c.ConnectedConnectors(nil), nil
+}
+
 // mu guards scanout lifetime against concurrent flips.
 var mu sync.Mutex
 

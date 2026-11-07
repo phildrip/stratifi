@@ -263,7 +263,23 @@ func TestScanoutWriteCursorARGBZeroAlloc(t *testing.T) {
 	if buf[24*4] != 0 || buf[24*4+3] != 0 {
 		t.Errorf("pixel(24,0) = % x, want 00 00 00 00", buf[24*4:24*4+4])
 	}
+	// Pixel (0,24) and row 24 must be cleared to 0 (transparent).
 	if buf[24*256] != 0 || buf[24*256+3] != 0 {
 		t.Errorf("pixel(0,24) = % x, want 00 00 00 00", buf[24*256:24*256+4])
+	}
+}
+
+func TestConnectedConnectorsFilter(t *testing.T) {
+	c := &Card{
+		Connectors: []*Connector{
+			{ID: 1, Type: ConnectorDisplayPort, TypeID: 1, Status: StatusConnected, Modes: []Mode{{HDisplay: 1920, VDisplay: 1080}}},
+			{ID: 2, Type: ConnectorHDMIA, TypeID: 1, Status: StatusDisconnected},
+			{ID: 3, Type: ConnectorHDMIA, TypeID: 2, Status: StatusConnected, Modes: []Mode{{HDisplay: 2560, VDisplay: 1440}}},
+		},
+	}
+	var scratch [4]*Connector
+	active := c.ConnectedConnectors(scratch[:0])
+	if len(active) != 2 || active[0].ID != 1 || active[1].ID != 3 {
+		t.Fatalf("ConnectedConnectors = %+v, want IDs [1, 3]", active)
 	}
 }
