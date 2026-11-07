@@ -24,11 +24,12 @@ type Window struct {
 }
 
 // Handler is implemented by the compositor: Windows is a lock-free snapshot;
-// Focus and Spawn queue onto the owner goroutine.
+// Focus, Spawn and DPMS queue onto the owner goroutine.
 type Handler interface {
 	Windows() []Window
 	Focus(winID uint32) bool
 	Spawn(argv []string) bool
+	DPMS(on bool) bool
 }
 
 // SocketPath resolves the default control socket under $XDG_RUNTIME_DIR.
@@ -92,6 +93,26 @@ func serveConn(conn net.Conn, h Handler) {
 			argv := strings.Split(line[len("SPAWN "):], "\t")
 			if len(argv) == 0 || argv[0] == "" || !h.Spawn(argv) {
 				fmt.Fprintln(w, "ERR spawn")
+			} else {
+				fmt.Fprintln(w, "OK")
+			}
+		case strings.HasPrefix(line, "DPMS "):
+			arg := strings.ToLower(strings.TrimSpace(line[len("DPMS "):]))
+			var on bool
+			switch arg {
+			case "on", "1", "true":
+				on = true
+			case "off", "0", "false":
+				on = false
+			default:
+				fmt.Fprintln(w, "ERR dpms")
+				if err := w.Flush(); err != nil {
+					return
+				}
+				continue
+			}
+			if !h.DPMS(on) {
+				fmt.Fprintln(w, "ERR dpms")
 			} else {
 				fmt.Fprintln(w, "OK")
 			}
@@ -190,6 +211,27 @@ func Focus(path string, winID uint32) error {
 	sc := bufio.NewScanner(conn)
 	if !sc.Scan() || sc.Text() != "OK" {
 		return fmt.Errorf("ipc: focus failed")
+	}
+	return nil
+}
+
+// SetDPMS asks the compositor to turn display power (DPMS) on or off.
+func SetDPMS(path string, on bool) error {
+	conn, err := dial(path)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	arg := "off"
+	if on {
+		arg = "on"
+	}
+	if _, err := fmt.Fprintf(conn, "DPMS %s\n", arg); err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(conn)
+	if !sc.Scan() || sc.Text() != "OK" {
+		return fmt.Errorf("ipc: dpms failed")
 	}
 	return nil
 }

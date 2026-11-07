@@ -62,3 +62,26 @@ func TestKmsDisplayOutputMethods(t *testing.T) {
 		t.Errorf("Pixels()[0:3] = % x, want 33 22 11", px[:3])
 	}
 }
+
+func TestKmsDisplayDPMSSuppressesPresent(t *testing.T) {
+	d := &kmsDisplay{}
+	if !d.PowerOn() {
+		t.Fatal("expected initial PowerOn() == true")
+	}
+	if err := d.SetPower(false); err != nil {
+		t.Fatalf("SetPower(false): %v", err)
+	}
+	if d.PowerOn() {
+		t.Fatal("expected PowerOn() == false after SetPower(false)")
+	}
+	// Present while DPMS off must be a no-op (does not dereference nil card).
+	if err := d.Present(); err != nil {
+		t.Fatalf("Present() while DPMS off: %v", err)
+	}
+	if err := d.SetPower(true); err != nil {
+		t.Fatalf("SetPower(true): %v", err)
+	}
+	if !d.PowerOn() {
+		t.Fatal("expected PowerOn() == true after SetPower(true)")
+	}
+}

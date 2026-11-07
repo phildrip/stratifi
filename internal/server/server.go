@@ -29,11 +29,14 @@ type Server struct {
 	onSubsurfaceGone func(clientID, surfaceID uint32)
 	onCursor         func(clientID, surfaceID uint32, hx, hy, w, h int32, active bool)
 
-	// Idle notifications (ext-idle-notify-v1): timers over global input
-	// activity, so idle daemons can lock/blank the session.
+	// Idle notifications (ext-idle-notify-v1) & inhibitors (zwp-idle-inhibit-v1):
+	// timers over global input activity, so idle daemons can lock/blank the
+	// session while video/call apps can inhibit regular idle notifications.
 	idleMu             sync.Mutex
 	idleNotifs         []idleNotif
+	idleInhibitors     []idleInhibitor
 	lastActivity       time.Time
+	lastInhibitEnd     time.Time
 	onLayerSurface     func(info LayerSurfaceInfo)
 	onLayerSurfaceGone func(clientID, surfaceID uint32)
 	onClientDestroy    func(clientID uint32)
@@ -189,10 +192,24 @@ func (s *Server) SetOnLayerSurfaceGone(fn func(clientID, surfaceID uint32)) {
 }
 
 type idleNotif struct {
-	client   *Client
-	objectID uint32
-	timeout  time.Duration
-	idled    bool
+	client         *Client
+	objectID       uint32
+	timeout        time.Duration
+	idled          bool
+	obeyInhibitors bool
+}
+
+type idleInhibitor struct {
+	clientID  uint32
+	objectID  uint32
+	surfaceID uint32
+}
+
+// IsIdleInhibited reports whether any client holds an active zwp_idle_inhibitor_v1.
+func (s *Server) IsIdleInhibited() bool {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	return len(s.idleInhibitors) > 0
 }
 
 // NotifyInputActivity resets the idle timers and immediately reports resumed
@@ -219,14 +236,17 @@ func (s *Server) NotifyInputActivity() {
 	}
 }
 
-func (s *Server) addIdleNotif(c *Client, objectID uint32, timeoutMs uint32) {
+func (s *Server) addIdleNotif(c *Client, objectID uint32, timeoutMs uint32, obeyInhibitors bool) {
 	s.idleMu.Lock()
 	defer s.idleMu.Unlock()
 	if s.lastActivity.IsZero() {
 		s.lastActivity = time.Now()
 	}
 	s.idleNotifs = append(s.idleNotifs, idleNotif{
-		client: c, objectID: objectID, timeout: time.Duration(timeoutMs) * time.Millisecond,
+		client:         c,
+		objectID:       objectID,
+		timeout:        time.Duration(timeoutMs) * time.Millisecond,
+		obeyInhibitors: obeyInhibitors,
 	})
 }
 
@@ -242,8 +262,64 @@ func (s *Server) removeIdleNotif(objectID uint32) {
 	s.idleNotifs = out
 }
 
-// dropClientIdle removes a disconnecting client's notifications (and clears
-// any it owns) so the ticker never sends to a dead connection.
+func (s *Server) addIdleInhibitor(clientID, objectID, surfaceID uint32) {
+	s.idleMu.Lock()
+	s.idleInhibitors = append(s.idleInhibitors, idleInhibitor{
+		clientID:  clientID,
+		objectID:  objectID,
+		surfaceID: surfaceID,
+	})
+	type fire struct {
+		c  *Client
+		id uint32
+	}
+	var resumed []fire
+	for i := range s.idleNotifs {
+		if s.idleNotifs[i].obeyInhibitors && s.idleNotifs[i].idled {
+			s.idleNotifs[i].idled = false
+			resumed = append(resumed, fire{s.idleNotifs[i].client, s.idleNotifs[i].objectID})
+		}
+	}
+	s.idleMu.Unlock()
+	for _, f := range resumed {
+		f.c.sendIdleNotification(f.id, false)
+	}
+}
+
+func (s *Server) removeIdleInhibitor(clientID, objectID uint32) {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	wasInhibited := len(s.idleInhibitors) > 0
+	out := s.idleInhibitors[:0]
+	for _, inh := range s.idleInhibitors {
+		if !(inh.clientID == clientID && inh.objectID == objectID) {
+			out = append(out, inh)
+		}
+	}
+	s.idleInhibitors = out
+	if wasInhibited && len(s.idleInhibitors) == 0 {
+		s.lastInhibitEnd = time.Now()
+	}
+}
+
+func (s *Server) removeSurfaceIdleInhibitors(clientID, surfaceID uint32) {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	wasInhibited := len(s.idleInhibitors) > 0
+	out := s.idleInhibitors[:0]
+	for _, inh := range s.idleInhibitors {
+		if !(inh.clientID == clientID && inh.surfaceID == surfaceID) {
+			out = append(out, inh)
+		}
+	}
+	s.idleInhibitors = out
+	if wasInhibited && len(s.idleInhibitors) == 0 {
+		s.lastInhibitEnd = time.Now()
+	}
+}
+
+// dropClientIdle removes a disconnecting client's notifications and inhibitors
+// so the ticker never sends to or remains inhibited by a dead connection.
 func (s *Server) dropClientIdle(clientID uint32) {
 	s.idleMu.Lock()
 	defer s.idleMu.Unlock()
@@ -254,6 +330,18 @@ func (s *Server) dropClientIdle(clientID uint32) {
 		}
 	}
 	s.idleNotifs = out
+
+	wasInhibited := len(s.idleInhibitors) > 0
+	inhOut := s.idleInhibitors[:0]
+	for _, inh := range s.idleInhibitors {
+		if inh.clientID != clientID {
+			inhOut = append(inhOut, inh)
+		}
+	}
+	s.idleInhibitors = inhOut
+	if wasInhibited && len(s.idleInhibitors) == 0 {
+		s.lastInhibitEnd = time.Now()
+	}
 }
 
 // runIdleTimers fires idled/resumed on registered notifications. Started once
@@ -266,7 +354,15 @@ func (s *Server) runIdleTimers() {
 			return
 		}
 		s.idleMu.Lock()
-		idleFor := time.Since(s.lastActivity)
+		now := time.Now()
+		inputIdleFor := now.Sub(s.lastActivity)
+		regularBase := s.lastActivity
+		if s.lastInhibitEnd.After(regularBase) {
+			regularBase = s.lastInhibitEnd
+		}
+		regularIdleFor := now.Sub(regularBase)
+		inhibited := len(s.idleInhibitors) > 0
+
 		type fire struct {
 			c     *Client
 			id    uint32
@@ -275,7 +371,15 @@ func (s *Server) runIdleTimers() {
 		var fires []fire
 		for i := range s.idleNotifs {
 			n := &s.idleNotifs[i]
-			if !n.idled && idleFor >= n.timeout {
+			if n.idled {
+				continue
+			}
+			if n.obeyInhibitors {
+				if !inhibited && regularIdleFor >= n.timeout {
+					n.idled = true
+					fires = append(fires, fire{n.client, n.objectID, true})
+				}
+			} else if inputIdleFor >= n.timeout {
 				n.idled = true
 				fires = append(fires, fire{n.client, n.objectID, true})
 			}

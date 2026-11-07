@@ -28,6 +28,23 @@ func main() {
 		fmt.Print(buildInput(wins, desktop.Scan()))
 		return
 	}
+	if len(os.Args) > 2 && os.Args[1] == "--dpms" {
+		var on bool
+		switch strings.ToLower(os.Args[2]) {
+		case "on", "1", "true":
+			on = true
+		case "off", "0", "false":
+			on = false
+		default:
+			fmt.Fprintf(os.Stderr, "stratifi-launch: --dpms expects on|off\n")
+			os.Exit(1)
+		}
+		if err := ipc.SetDPMS("", on); err != nil {
+			fmt.Fprintf(os.Stderr, "stratifi-launch: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Spawned by the compositor with no terminal: open one running us.
 	if os.Getenv("STRATIFI_LAUNCH_CHILD") != "1" && !isTTY(os.Stdin) {
 		if err := spawnTerminal(); err != nil {

@@ -88,7 +88,7 @@ bind_gesture swipe left 3 workspace_next
 
 # run at startup (via sh -c, routed through the session supervisor)
 exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY
-exec swayidle -w timeout 300 'swaylock -f'
+exec swayidle -w timeout 300 'swaylock -f' timeout 600 'stratifi-launch --dpms off' resume 'stratifi-launch --dpms on'
 ```
 
 Lines ending in `\` continue on the next line.
@@ -121,6 +121,7 @@ f1–f12  home end delete up down left right
 | `workspace <n>` / `move_to_workspace <n>` | Switch to / move the window to workspace *n*. |
 | `workspace_back_and_forth` | Toggle to the previously visited workspace. |
 | `reload` | Re-read the config file: bindings and layout metrics, live. |
+| `dpms [on\|off\|toggle]` | Power the KMS display on or off (also wakes automatically on input). |
 | `workspace_next` / `workspace_prev` | Cycle workspaces. |
 | `overview` | Recognised; not implemented yet. |
 

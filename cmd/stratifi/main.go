@@ -77,6 +77,7 @@ const (
 	evColumnPrev
 	evWorkspaceNext
 	evWorkspacePrev
+	evDPMS
 )
 
 // shellEvent is one message to the owner goroutine.
@@ -116,7 +117,7 @@ var knownActions = []string{
 	"workspace_next", "workspace_prev", "column_next", "column_prev", "overview",
 	"fullscreen", "focus_window_up", "focus_window_down",
 	"move_window_up", "move_window_down", "move_col_left", "move_col_right",
-	"reload", "workspace_back_and_forth",
+	"reload", "workspace_back_and_forth", "dpms",
 }
 
 func isKnownAction(a string) bool {
@@ -209,6 +210,7 @@ type launcherIPC struct {
 	list  *atomic.Pointer[[]ipc.Window]
 	focus func(winID uint32)
 	spawn func(argv []string)
+	dpms  func(on bool)
 }
 
 func (l launcherIPC) Windows() []ipc.Window {
@@ -228,6 +230,13 @@ func (l launcherIPC) Spawn(argv []string) bool {
 		return false
 	}
 	l.spawn(argv)
+	return true
+}
+
+func (l launcherIPC) DPMS(on bool) bool {
+	if l.dpms != nil {
+		l.dpms(on)
+	}
 	return true
 }
 
@@ -459,6 +468,17 @@ func main() {
 			if n, ok := parseWorkspaceArg(args); ok {
 				emit(shellEvent{kind: evWorkspaceMove, wsIndex: n})
 			}
+		case "dpms":
+			mode := 2 // toggle by default
+			if len(args) > 0 {
+				switch args[0] {
+				case "off", "0", "false":
+					mode = 0
+				case "on", "1", "true":
+					mode = 1
+				}
+			}
+			emit(shellEvent{kind: evDPMS, wsIndex: mode})
 		default:
 			fmt.Printf("[-] Unknown action %q\n", action)
 		}
@@ -596,6 +616,7 @@ func main() {
 	}
 
 	// 4. Start high-throughput Input Consumer Loop
+	var dpmsAsleep atomic.Bool
 	go func() {
 		var batch [32]input.InputEvent
 		for {
@@ -605,6 +626,12 @@ func main() {
 				continue
 			}
 			srv.NotifyInputActivity() // feed idle timers (ext-idle-notify)
+			if dpmsAsleep.Load() {
+				select {
+				case events <- shellEvent{kind: evDPMS, wsIndex: 1}:
+				default:
+				}
+			}
 			for i := 0; i < n; i++ {
 				router.ProcessEvent(batch[i])
 			}
@@ -930,6 +957,16 @@ func main() {
 			default:
 			}
 		},
+		dpms: func(on bool) {
+			mode := 0
+			if on {
+				mode = 1
+			}
+			select {
+			case events <- shellEvent{kind: evDPMS, wsIndex: mode}:
+			default:
+			}
+		},
 	})
 	if err != nil {
 		fmt.Printf("[!] launcher IPC unavailable: %v\n", err)
@@ -988,6 +1025,25 @@ func main() {
 	for {
 		select {
 		case ev := <-events:
+			if ev.kind == evDPMS {
+				on := ev.wsIndex == 1
+				if ev.wsIndex == 2 {
+					on = dpmsAsleep.Load()
+				}
+				dpmsAsleep.Store(!on)
+				if kmsDisp != nil {
+					if err := kmsDisp.SetPower(on); err != nil {
+						fmt.Fprintf(os.Stderr, "[-] KMS DPMS: %v\n", err)
+					}
+				}
+				if on {
+					select {
+					case renderTick <- struct{}{}:
+					default:
+					}
+				}
+				continue
+			}
 			applyEvent(ev)
 			// State changed: coalesce a render.
 			select {

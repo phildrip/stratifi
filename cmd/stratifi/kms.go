@@ -15,11 +15,12 @@ import (
 // GPU mode renders directly into scanout memory (ScanoutExecutor + flip),
 // so there is no bridge and no CPU round trip.
 type kmsDisplay struct {
-	card *kms.Card
-	scan *kms.Scanout
-	conn *kms.Connector
-	crtc *kms.CRTC
-	mode *kms.Mode
+	card    *kms.Card
+	scan    *kms.Scanout
+	conn    *kms.Connector
+	crtc    *kms.CRTC
+	mode    *kms.Mode
+	dpmsOff bool
 }
 
 var _ compositor.Output = (*kmsDisplay)(nil)
@@ -33,8 +34,31 @@ func (d *kmsDisplay) Pixels() []byte { return d.scan.Data }
 func (d *kmsDisplay) Damage(x, y, w, h int32) {}
 
 // Present flips the freshly rendered scanout buffer in the next vblank.
+// When the panel is powered off via DPMS, flips are suppressed until wake.
 func (d *kmsDisplay) Present() error {
+	if d.dpmsOff {
+		return nil
+	}
 	return d.card.PageFlipAtomic(d.conn, d.crtc, d.scan.FBID, 0)
+}
+
+// PowerOn reports whether the display pipeline is currently powered on.
+func (d *kmsDisplay) PowerOn() bool {
+	return !d.dpmsOff
+}
+
+// SetPower turns the KMS connector/CRTC power state on or off (DPMS).
+func (d *kmsDisplay) SetPower(on bool) error {
+	if d.dpmsOff == !on {
+		return nil
+	}
+	if d.card != nil && d.conn != nil && d.crtc != nil {
+		if err := d.card.SetDPMS(d.conn, d.crtc, on); err != nil {
+			return err
+		}
+	}
+	d.dpmsOff = !on
+	return nil
 }
 
 // PrimeFD exports the scanout dumb buffer for Vulkan import (zero-copy

@@ -200,3 +200,13 @@ func TestFourCC(t *testing.T) {
 		t.Errorf("ARGB8888 = 0x%08x, want 0x34324158", FormatARGB8888)
 	}
 }
+
+func TestSetDPMSValidation(t *testing.T) {
+	c := &Card{fd: -1}
+	if err := c.SetDPMS(nil, nil, false); err == nil {
+		t.Error("expected error for nil connector/CRTC")
+	}
+	if err := c.SetObjProp(1, ObjTypeConnector, 0, DPMSOff); err == nil {
+		t.Error("expected error for zero propID")
+	}
+}

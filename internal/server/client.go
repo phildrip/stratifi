@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 	"stratifi/internal/protocol/capture"
 	"stratifi/internal/protocol/foreigntoplevel"
+	"stratifi/internal/protocol/idleinhibit"
 	"stratifi/internal/protocol/idlenotify"
 	"stratifi/internal/protocol/layershell"
 	"stratifi/internal/protocol/wayland"
@@ -31,6 +32,7 @@ const (
 	GlobalIdleNotifier                             uint32 = 12
 	GlobalForeignToplevelList                      uint32 = 13
 	GlobalForeignToplevelImageCaptureSourceManager uint32 = 14
+	GlobalIdleInhibitManager                       uint32 = 15
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
 	GlobalOutputImageCaptureSourceManager uint32 = 8
@@ -211,6 +213,12 @@ var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) erro
 	ObjIdleNotification: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return idlenotify.DispatchExtIdleNotificationV1(r, h, c)
 	},
+	ObjIdleInhibitManager: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return idleinhibit.DispatchZwpIdleInhibitManagerV1(r, h, c)
+	},
+	ObjIdleInhibitor: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return idleinhibit.DispatchZwpIdleInhibitorV1(r, h, c)
+	},
 	ObjForeignToplevelList: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return foreigntoplevel.DispatchExtForeignToplevelListV1(r, h, c)
 	},
@@ -315,6 +323,10 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalIdleNotifier, "ext_idle_notifier_v1", 2); err != nil {
 		return err
 	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalIdleInhibitManager,
+		idleinhibit.ZwpIdleInhibitManagerV1Interface, idleinhibit.ZwpIdleInhibitManagerV1Version); err != nil {
+		return err
+	}
 	// Screen/window capture (browser screen sharing via xdg-desktop-portal).
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutputImageCaptureSourceManager,
 		capture.ExtOutputImageCaptureSourceManagerV1Interface, 1); err != nil {
@@ -377,6 +389,8 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		c.registerObject(id, ObjXdgOutputManager)
 	case GlobalIdleNotifier:
 		c.registerObject(id, ObjIdleNotifier)
+	case GlobalIdleInhibitManager:
+		c.registerObject(id, ObjIdleInhibitManager)
 	case GlobalForeignToplevelList:
 		c.registerObject(id, ObjForeignToplevelList)
 		c.addToplevelList(id)
@@ -550,6 +564,7 @@ func (c *Client) HandleWlSurfaceDestroy(senderID uint32) error {
 	}
 	c.mu.Unlock()
 
+	c.server.removeSurfaceIdleInhibitors(c.id, senderID)
 	if wasCursor {
 		c.emitCursor()
 	}
@@ -1703,14 +1718,16 @@ func (c *Client) HandleExtIdleNotifierV1GetIdleNotification(senderID, id, timeou
 	c.mu.Lock()
 	c.registerObject(id, ObjIdleNotification)
 	c.mu.Unlock()
-	c.server.addIdleNotif(c, id, timeout)
+	c.server.addIdleNotif(c, id, timeout, true)
 	return nil
 }
 
 func (c *Client) HandleExtIdleNotifierV1GetInputIdleNotification(senderID, id, timeout, seat uint32) error {
-	// The input-idle variant ignores idle inhibitors; we have none, so it is
-	// the same as the plain notification.
-	return c.HandleExtIdleNotifierV1GetIdleNotification(senderID, id, timeout, seat)
+	c.mu.Lock()
+	c.registerObject(id, ObjIdleNotification)
+	c.mu.Unlock()
+	c.server.addIdleNotif(c, id, timeout, false)
+	return nil
 }
 
 func (c *Client) HandleExtIdleNotificationV1Destroy(senderID uint32) error {
@@ -1718,6 +1735,31 @@ func (c *Client) HandleExtIdleNotificationV1Destroy(senderID uint32) error {
 	c.unregisterObject(senderID)
 	c.mu.Unlock()
 	c.server.removeIdleNotif(senderID)
+	return nil
+}
+
+// --- ZwpIdleInhibitManagerV1Handler / ZwpIdleInhibitorV1Handler ---
+
+func (c *Client) HandleZwpIdleInhibitManagerV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Client) HandleZwpIdleInhibitManagerV1CreateInhibitor(senderID, id, surface uint32) error {
+	c.mu.Lock()
+	c.registerObject(id, ObjIdleInhibitor)
+	c.mu.Unlock()
+	c.server.addIdleInhibitor(c.id, id, surface)
+	return nil
+}
+
+func (c *Client) HandleZwpIdleInhibitorV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	c.unregisterObject(senderID)
+	c.mu.Unlock()
+	c.server.removeIdleInhibitor(c.id, senderID)
 	return nil
 }
 

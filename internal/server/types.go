@@ -39,6 +39,8 @@ const (
 	ObjXdgOutput
 	ObjIdleNotifier
 	ObjIdleNotification
+	ObjIdleInhibitManager
+	ObjIdleInhibitor
 	ObjForeignToplevelList
 	ObjForeignToplevelHandle
 

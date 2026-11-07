@@ -9,6 +9,7 @@ type fakeHandler struct {
 	wins    []Window
 	focused []uint32
 	spawned [][]string
+	dpms    []bool
 }
 
 func (f *fakeHandler) Windows() []Window { return f.wins }
@@ -24,6 +25,10 @@ func (f *fakeHandler) Focus(winID uint32) bool {
 		return false
 	}
 	f.focused = append(f.focused, winID)
+	return true
+}
+func (f *fakeHandler) DPMS(on bool) bool {
+	f.dpms = append(f.dpms, on)
 	return true
 }
 
@@ -75,5 +80,15 @@ func TestServeListFocus(t *testing.T) {
 	}
 	if err := Spawn(sock, nil); err == nil {
 		t.Error("Spawn(nil) should fail")
+	}
+
+	if err := SetDPMS(sock, false); err != nil {
+		t.Fatalf("SetDPMS(false): %v", err)
+	}
+	if err := SetDPMS(sock, true); err != nil {
+		t.Fatalf("SetDPMS(true): %v", err)
+	}
+	if len(h.dpms) != 2 || h.dpms[0] != false || h.dpms[1] != true {
+		t.Errorf("dpms = %v, want [false true]", h.dpms)
 	}
 }

@@ -47,6 +47,7 @@ const (
 	propFBID   = "FB_ID"
 	propActive = "ACTIVE"
 	propModeID = "MODE_ID"
+	propDPMS   = "DPMS"
 )
 
 // Mode is a display mode with layout helpers.

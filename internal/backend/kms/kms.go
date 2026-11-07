@@ -332,6 +332,14 @@ const (
 	StatusUnknown      uint32 = 3
 )
 
+// DPMS power states (<drm_mode.h> DRM_MODE_DPMS_*).
+const (
+	DPMSOn      uint64 = 0
+	DPMSStandby uint64 = 1
+	DPMSSuspend uint64 = 2
+	DPMSOff     uint64 = 3
+)
+
 // Common connector type constants (<drm_mode.h>).
 const (
 	ConnectorUnknown     uint32 = 0

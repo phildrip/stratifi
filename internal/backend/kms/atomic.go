@@ -375,3 +375,56 @@ func (c *Card) PageFlipAtomic(conn *Connector, crtc *CRTC, fbID uint32, userData
 	req.UserData = userData
 	return c.CommitAtomic(req, false)
 }
+
+// SetObjProp sets a single KMS object property via DRM_IOCTL_MODE_OBJ_SETPROPERTY.
+func (c *Card) SetObjProp(objID, objType, propID uint32, value uint64) error {
+	if propID == 0 {
+		return fmt.Errorf("kms: SetObjProp: zero property id on obj %d", objID)
+	}
+	sp := ObjSetProp{
+		Value:   value,
+		PropID:  propID,
+		ObjID:   objID,
+		ObjType: objType,
+	}
+	return c.ioctl(iocObjSetProp, unsafe.Pointer(&sp))
+}
+
+// SetDPMS powers the display pipeline on or off. On atomic drivers it commits
+// CRTC ACTIVE=1/0 (with ALLOW_MODESET); if atomic ACTIVE commit fails or is
+// unavailable, it falls back to the connector's DPMS property (DRM_MODE_DPMS_ON
+// / DRM_MODE_DPMS_OFF).
+func (c *Card) SetDPMS(conn *Connector, crtc *CRTC, on bool) error {
+	if conn == nil || crtc == nil {
+		return fmt.Errorf("kms: SetDPMS: nil connector or CRTC")
+	}
+	if err := c.preloadProps(); err != nil {
+		return err
+	}
+
+	if crtcActive := crtc.PropID(propActive); crtcActive != 0 {
+		var val uint64
+		if on {
+			val = 1
+		}
+		req := &c.atomicReq
+		req.Reset()
+		req.Flags = AtomicAllowModeSet
+		req.Set(crtc.ID, crtcActive, val)
+		if err := c.CommitAtomic(req, true); err == nil {
+			if err := c.CommitAtomic(req, false); err == nil {
+				return nil
+			}
+		}
+	}
+
+	dpmsProp := conn.PropID(propDPMS)
+	if dpmsProp == 0 {
+		return fmt.Errorf("kms: SetDPMS: neither atomic CRTC ACTIVE nor connector DPMS property succeeded")
+	}
+	mode := DPMSOff
+	if on {
+		mode = DPMSOn
+	}
+	return c.SetObjProp(conn.ID, ObjTypeConnector, dpmsProp, mode)
+}
