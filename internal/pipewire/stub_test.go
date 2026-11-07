@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"stratifi/internal/alignio"
 	"stratifi/internal/pipewire/spa"
 )
 
@@ -117,7 +118,7 @@ func (sd *stubDaemon) serve(ln *net.UnixListener) {
 func (sd *stubDaemon) handle(c *net.UnixConn) {
 	sd.t.Helper()
 	buf := make([]byte, 4096)
-	var pending []byte
+	var acc alignio.Accumulator
 	mapSize := uint32(2) // core(0) + client(1) after hello, matching the daemon
 
 	for {
@@ -125,17 +126,20 @@ func (sd *stubDaemon) handle(c *net.UnixConn) {
 		if err != nil {
 			return
 		}
-		pending = append(pending, buf[:n]...)
-		for len(pending) >= HeaderSize {
-			h, total, err := DecodeHeader(pending)
+		acc.Append(buf[:n])
+		for {
+			raw, ok, err := acc.Next(HeaderSize, MessageTotalSpan)
 			if err != nil {
 				return
 			}
-			if len(pending) < total {
+			if !ok {
 				break
 			}
-			body := pending[HeaderSize:total]
-			pending = pending[total:]
+			h, total, err := DecodeHeader(raw)
+			if err != nil {
+				return
+			}
+			body := raw[HeaderSize:total]
 
 			switch {
 			case h.ID == 0 && h.Opcode == CoreMethodHello:

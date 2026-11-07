@@ -1,7 +1,6 @@
 package wire
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"syscall"
 
 	"golang.org/x/sys/unix"
+	"stratifi/internal/alignio"
 )
 
 // Server handles accepting Wayland client connections over a UNIX domain socket.
@@ -97,8 +97,9 @@ func (s *Server) Accept() (*Conn, error) {
 		unixConn: unixConn,
 		rawConn:  rawConn,
 		fd:       rawFD,
-		pending:  make([]byte, 0, 8192),
 	}
+	conn.acc.Init(conn.pendingBuf[:])
+	conn.inFDs.Init(conn.inFDStorage[:])
 	conn.Writer.Init(conn.sendBuf[:], conn.sendFdBuf[:])
 	return conn, nil
 }
@@ -110,17 +111,17 @@ type Conn struct {
 	fd       int
 
 	// Pre-allocated I/O buffers (avoiding heap allocations)
-	recvBuf [8192]byte
-	oobBuf  [256]byte
+	recvBuf    [8192]byte
+	oobBuf     [256]byte
+	pendingBuf [8192]byte
 
 	// Framing across reads. A stream socket preserves no message
 	// boundaries: one recv may deliver a partial message or several
-	// messages at once. pending carries unparsed bytes between calls, and
+	// messages at once. acc carries unparsed bytes between calls, and
 	// inFDs carries received descriptors that keep FIFO order with them.
-	pending []byte
-	inFDs   [8]int
-	fdStart int // first unconsumed descriptor
-	fdEnd   int // one past the last received descriptor
+	acc         alignio.Accumulator
+	inFDStorage [8]int
+	inFDs       alignio.FDQueue
 
 	sendBuf    [8192]byte
 	sendOobBuf [256]byte
@@ -156,82 +157,43 @@ func (c *Conn) recvMore() error {
 	}
 
 	if oobn > 0 {
-		cmsgs, err := unix.ParseSocketControlMessage(c.oobBuf[:oobn])
-		if err != nil {
-			return fmt.Errorf("failed to parse socket control message: %w", err)
-		}
-		for _, cmsg := range cmsgs {
-			if cmsg.Header.Level == unix.SOL_SOCKET && cmsg.Header.Type == unix.SCM_RIGHTS {
-				fds, err := unix.ParseUnixRights(&cmsg)
-				if err != nil {
-					return fmt.Errorf("failed to parse SCM_RIGHTS: %w", err)
-				}
-				for _, fd := range fds {
-					if c.fdEnd == len(c.inFDs) {
-						// Reclaim consumed slots before dropping any fd.
-						copy(c.inFDs[:], c.inFDs[c.fdStart:c.fdEnd])
-						c.fdEnd -= c.fdStart
-						c.fdStart = 0
-					}
-					if c.fdEnd < len(c.inFDs) {
-						c.inFDs[c.fdEnd] = fd
-						c.fdEnd++
-					} else {
-						_ = unix.Close(fd) // overflow: close rather than leak
-					}
-				}
-			}
+		if err := c.inFDs.RecvOOB(c.oobBuf[:oobn]); err != nil {
+			return err
 		}
 	}
 
-	c.pending = append(c.pending, c.recvBuf[:n]...)
+	c.acc.Append(c.recvBuf[:n])
 	return nil
 }
 
 // ReadMsg returns a Reader positioned over exactly one complete Wayland
 // message, carrying bytes and descriptors across reads as needed. The caller
-// must finish decoding before the next call (the Reader aliases c.pending).
+// must finish decoding before the next call (the Reader aliases c.acc).
 func (c *Conn) ReadMsg() (*Reader, error) {
 	// Account for descriptors taken while the caller decoded the previous
 	// message (Reader.fdIdx is reset per message by Init).
-	c.fdStart += c.Reader.fdIdx
-	if c.fdStart >= c.fdEnd {
-		c.fdStart, c.fdEnd = 0, 0
-	}
+	c.inFDs.Consume(c.Reader.fdIdx)
 
-	for len(c.pending) < HeaderSize {
+	for {
+		msg, ok, err := c.acc.Next(HeaderSize, MessageTotalSpan)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			c.Reader.Init(msg, c.inFDs.Active())
+			return &c.Reader, nil
+		}
 		if err := c.recvMore(); err != nil {
 			return nil, err
 		}
 	}
-	// size covers the whole message including the header, multiple of 4.
-	size := int(binary.LittleEndian.Uint32(c.pending[4:8]) >> 16)
-	if size < HeaderSize || size%4 != 0 {
-		return nil, fmt.Errorf("invalid Wayland message size %d", size)
-	}
-	for len(c.pending) < size {
-		if err := c.recvMore(); err != nil {
-			return nil, err
-		}
-	}
-
-	msg := c.pending[:size]
-	c.Reader.Init(msg, c.inFDs[c.fdStart:c.fdEnd])
-	// Advance past the message without moving bytes: msg stays valid until
-	// the next ReadMsg overwrites the region.
-	c.pending = c.pending[size:]
-	return &c.Reader, nil
 }
 
 // HasPendingMessage reports whether another complete message is already
 // buffered, so a caller can drain a batch of requests before flushing.
 // It never blocks.
 func (c *Conn) HasPendingMessage() bool {
-	if len(c.pending) < HeaderSize {
-		return false
-	}
-	size := int(binary.LittleEndian.Uint32(c.pending[4:8]) >> 16)
-	return size >= HeaderSize && size%4 == 0 && len(c.pending) >= size
+	return c.acc.HasNext(HeaderSize, MessageTotalSpan)
 }
 
 // WriterRef returns the active Writer for appending events to this client.

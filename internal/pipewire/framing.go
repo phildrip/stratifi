@@ -9,6 +9,8 @@ package pipewire
 
 import (
 	"fmt"
+
+	"stratifi/internal/alignio"
 )
 
 // HeaderSize is the pw native protocol message header length.
@@ -28,6 +30,16 @@ var ErrShortHeader = fmt.Errorf("pipewire: message shorter than header")
 
 // ErrBodyOverrun reports a declared body size larger than the buffer.
 var ErrBodyOverrun = fmt.Errorf("pipewire: declared body overruns buffer")
+
+// MessageTotalSpan returns the total packet span (header + body) from the
+// 16-byte pw native header at buf[0].
+func MessageTotalSpan(buf []byte) (int, error) {
+	if len(buf) < HeaderSize {
+		return 0, ErrShortHeader
+	}
+	size := int(leU32(buf[4:8]) & 0xffffff)
+	return HeaderSize + size, nil
+}
 
 // DecodeHeader parses the 16-byte header at buf[0] (protocol v3):
 //
@@ -57,29 +69,33 @@ func DecodeHeader(buf []byte) (Header, int, error) {
 
 // Writer frames pw native messages over a reusable byte buffer.
 type Writer struct {
-	buf   []byte
-	seq   uint32
-	fds   []int
-	fdBuf [4]int
+	buf     []byte
+	seq     uint32
+	fdStage alignio.FDStage
+	fdBuf   [4]int
 }
 
 // Init prepares the writer with a preallocated buffer (zero-alloc path).
 func (w *Writer) Init(buf []byte, fdSlots *[4]int) {
 	w.buf = buf[:0]
-	w.fds = fdSlots[:0]
+	if fdSlots != nil {
+		w.fdStage.Init(fdSlots[:])
+	} else {
+		w.fdStage.Init(w.fdBuf[:])
+	}
 }
 
 // Reset empties the buffer and staged fds (retains capacity).
 func (w *Writer) Reset() {
 	w.buf = w.buf[:0]
-	w.fds = w.fds[:0]
+	w.fdStage.Reset()
 }
 
 // Bytes returns the framed message.
 func (w *Writer) Bytes() []byte { return w.buf }
 
 // FDs returns the staged ancillary descriptors.
-func (w *Writer) FDs() []int { return w.fds }
+func (w *Writer) FDs() []int { return w.fdStage.FDs() }
 
 // Begin frames a message with the given resource id and opcode, leaving the
 // size placeholder for Finish. Body pods follow.
@@ -117,7 +133,12 @@ func (w *Writer) PutU64(v uint64) {
 func (w *Writer) PutBytes(b []byte) { w.buf = append(w.buf, b...) }
 
 // StageFD queues a descriptor for SCM_RIGHTS delivery with the message.
-func (w *Writer) StageFD(fd int) { w.fds = append(w.fds, fd) }
+func (w *Writer) StageFD(fd int) error {
+	if w.fdStage.Cap() == 0 {
+		w.fdStage.Init(w.fdBuf[:])
+	}
+	return w.fdStage.Stage(fd)
+}
 
 func leU32(b []byte) uint32 {
 	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24

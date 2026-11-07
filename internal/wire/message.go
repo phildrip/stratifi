@@ -11,6 +11,19 @@ import (
 // HeaderSize is the fixed 8-byte header for every Wayland wire message.
 const HeaderSize = 8
 
+// MessageTotalSpan extracts and validates the total byte length of the next
+// Wayland message from its 8-byte header.
+func MessageTotalSpan(buf []byte) (int, error) {
+	if len(buf) < HeaderSize {
+		return 0, fmt.Errorf("buffer too short for header: have %d, need %d", len(buf), HeaderSize)
+	}
+	size := int(binary.LittleEndian.Uint32(buf[4:8]) >> 16)
+	if size < HeaderSize || size%4 != 0 {
+		return 0, fmt.Errorf("invalid Wayland message size %d", size)
+	}
+	return size, nil
+}
+
 // Header represents the 8-byte Wayland message header.
 type Header struct {
 	ObjectID uint32
@@ -156,16 +169,14 @@ func (r *Reader) Remaining() int {
 type Writer struct {
 	buf     []byte
 	offset  int
-	fds     []int
-	fdCount int
+	fdStage alignio.FDStage
 }
 
 // Init initializes the Writer with pre-allocated buffer slices.
 func (w *Writer) Init(buf []byte, fds []int) {
 	w.buf = buf
 	w.offset = 0
-	w.fds = fds
-	w.fdCount = 0
+	w.fdStage.Init(fds)
 }
 
 // BeginMessage reserves space for the 8-byte header and returns the starting offset.
@@ -235,7 +246,7 @@ func (w *Writer) WriteString(s string) error {
 
 // WriteArray appends a Wayland array with 32-bit length prefix and 32-bit padding.
 func (w *Writer) WriteArray(data []byte) error {
-	paddedLen := (len(data) + 3) &^ 3
+	paddedLen := alignio.AlignUp(len(data), 4)
 	totalNeed := 4 + paddedLen
 
 	if len(w.buf)-w.offset < totalNeed {
@@ -254,12 +265,7 @@ func (w *Writer) WriteArray(data []byte) error {
 
 // WriteFD stages a file descriptor to be sent out-of-band via SCM_RIGHTS.
 func (w *Writer) WriteFD(fd int) error {
-	if w.fdCount >= len(w.fds) {
-		return fmt.Errorf("fd capacity exceeded")
-	}
-	w.fds[w.fdCount] = fd
-	w.fdCount++
-	return nil
+	return w.fdStage.Stage(fd)
 }
 
 // Bytes returns the written message slice.
@@ -269,11 +275,11 @@ func (w *Writer) Bytes() []byte {
 
 // FDs returns the attached file descriptors.
 func (w *Writer) FDs() []int {
-	return w.fds[:w.fdCount]
+	return w.fdStage.FDs()
 }
 
 // Reset resets the write position to zero.
 func (w *Writer) Reset() {
 	w.offset = 0
-	w.fdCount = 0
+	w.fdStage.Reset()
 }

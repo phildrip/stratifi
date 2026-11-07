@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"stratifi/internal/alignio"
 )
 
 // Conn is an authenticated D-Bus connection to a bus (session or system).
@@ -14,6 +16,7 @@ type Conn struct {
 	nc     net.Conn
 	serial atomic.Uint32
 	unique string
+	acc    alignio.Accumulator
 }
 
 // ConnectSessionBus connects to the session bus via DBUS_SESSION_BUS_ADDRESS,
@@ -119,34 +122,32 @@ func (c *Conn) send(m *Msg) error {
 }
 
 // recvReply reads messages until the method return for the given serial
-// arrives; error returns are surfaced as errors.
-// recvReply reads messages until the method return for the given serial
 // arrives. A rolling accumulator frames exact message boundaries so a reply
 // split across reads (or interleaved with other messages) is parsed
 // correctly; non-matching messages are consumed and discarded.
 func (c *Conn) recvReply(serial uint32) (*Msg, error) {
 	deadline := time.Now().Add(5 * time.Second)
 	var buf [4096]byte
-	var pending []byte
 	for {
-		// Frame one complete message from the accumulator.
-		if len(pending) >= fixedHeaderLen {
-			span, serr := MessageTotalSpan(pending)
-			if serr == nil && len(pending) >= span {
-				m, derr := DecodeHeader(pending[:span])
-				if derr != nil {
-					return nil, fmt.Errorf("dbus: decode: %w", derr)
+		for {
+			raw, ok, err := c.acc.Next(fixedHeaderLen, MessageTotalSpan)
+			if err != nil {
+				return nil, fmt.Errorf("dbus: frame: %w", err)
+			}
+			if !ok {
+				break
+			}
+			m, derr := DecodeHeader(raw)
+			if derr != nil {
+				return nil, fmt.Errorf("dbus: decode: %w", derr)
+			}
+			if m.ReplySerial == serial {
+				if m.Type == TypeError {
+					return nil, fmt.Errorf("dbus: remote error %s", m.ErrorName)
 				}
-				pending = pending[span:]
-				if m.ReplySerial == serial {
-					if m.Type == TypeError {
-						return nil, fmt.Errorf("dbus: remote error %s", m.ErrorName)
-					}
-					if m.Type == TypeMethodReturn {
-						return m, nil
-					}
+				if m.Type == TypeMethodReturn {
+					return m, nil
 				}
-				continue // unrelated signal/return: skip, keep remainder
 			}
 		}
 
@@ -157,7 +158,7 @@ func (c *Conn) recvReply(serial uint32) (*Msg, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dbus: recv: %w", err)
 		}
-		pending = append(pending, buf[:n]...)
+		c.acc.Append(buf[:n])
 	}
 }
 

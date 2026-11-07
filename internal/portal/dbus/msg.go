@@ -265,9 +265,7 @@ func (r *Reader) Skip(n int) ([]byte, error) {
 }
 
 func (r *Reader) readAt(n, a int) ([]byte, error) {
-	for r.off%a != 0 {
-		r.off++
-	}
+	r.off = alignio.AlignUp(r.off, a)
 	if r.off+n > len(r.buf) {
 		return nil, fmt.Errorf("dbus: truncated read (need %d at %d, have %d)", n, r.off, len(r.buf))
 	}
@@ -351,11 +349,7 @@ func MessageTotalSpan(buf []byte) (int, error) {
 	}
 	bodyLen := int(binary.LittleEndian.Uint32(buf[4:8]))
 	fieldsLen := int(binary.LittleEndian.Uint32(buf[12:16]))
-	fieldsEnd := fixedHeaderLen + fieldsLen
-	bodyStart := fieldsEnd
-	for bodyStart%8 != 0 {
-		bodyStart++
-	}
+	bodyStart := alignio.AlignUp(fixedHeaderLen+fieldsLen, 8)
 	return bodyStart + bodyLen, nil
 }
 
@@ -394,9 +388,7 @@ func DecodeHeader(buf []byte) (*Msg, error) {
 		// Encoder layout: byte code, 3 pad bytes, variant signature at the
 		// next 4-boundary (relative to the message start; the sub-buffer
 		// origin is itself 4-aligned).
-		for fr.off%4 != 0 {
-			fr.off++
-		}
+		fr.off = alignio.AlignUp(fr.off, 4)
 		sig, err := fr.ReadSignature() // variant signature
 		if err != nil {
 			return nil, err
@@ -442,10 +434,7 @@ func DecodeHeader(buf []byte) (*Msg, error) {
 		}
 	}
 
-	bodyStart := fieldsEnd
-	for bodyStart%8 != 0 {
-		bodyStart++
-	}
+	bodyStart := alignio.AlignUp(fieldsEnd, 8)
 	if int(bodyLen) > len(buf)-bodyStart {
 		return nil, fmt.Errorf("dbus: body overrun (declared %d, available %d)", bodyLen, len(buf)-bodyStart)
 	}

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"golang.org/x/sys/unix"
+	"stratifi/internal/alignio"
 	"stratifi/internal/pipewire/spa"
 )
 
@@ -18,12 +19,13 @@ type Conn struct {
 	nc *net.UnixConn
 	fd int
 
-	mu        sync.Mutex
-	pending   []byte // accumulated stream bytes awaiting a full packet
-	msgFDs    []int  // fds received but not yet consumed by a message
-	nextSeq   uint32
-	recvFDs   []int
-	nextResID atomic.Uint32
+	mu          sync.Mutex
+	acc         alignio.Accumulator // accumulated stream bytes awaiting a full packet
+	inFDStorage [16]int
+	inFDs       alignio.FDQueue // fds received but not yet consumed by a message
+	nextSeq     uint32
+	recvFDs     []int
+	nextResID   atomic.Uint32
 
 	CoreID     uint32 // core proxy id (0 for the first core)
 	Version    string
@@ -57,7 +59,9 @@ func Connect(path string) (*Conn, error) {
 	if rc, err := nc.SyscallConn(); err == nil {
 		_ = rc.Control(func(fd uintptr) { rawFD = int(fd) })
 	}
-	return &Conn{nc: nc, fd: rawFD}, nil
+	c := &Conn{nc: nc, fd: rawFD}
+	c.inFDs.Init(c.inFDStorage[:])
+	return c, nil
 }
 
 // ConnectDefault dials the user daemon or $PIPEWIRE_RUNTIME_DIR override.
@@ -297,21 +301,23 @@ func parseCoreInfo(body []byte) (*CoreInfo, error) {
 func (c *Conn) recvMsg() (Header, []byte, []int, error) {
 	var oob [64]byte
 	for {
-		if len(c.pending) >= HeaderSize {
-			h, total, err := DecodeHeader(c.pending)
-			switch {
-			case err == ErrBodyOverrun:
-				// need more bytes; fall through to read
-			case err != nil:
+		raw, ok, err := c.acc.Next(HeaderSize, MessageTotalSpan)
+		if err != nil {
+			return Header{}, nil, nil, err
+		}
+		if ok {
+			h, total, err := DecodeHeader(raw)
+			if err != nil {
 				return Header{}, nil, nil, err
-			default:
-				if len(c.pending) >= total {
-					gotFDs := append(c.recvFDs[:0], c.msgFDs...)
-					body := c.pending[HeaderSize:total]
-					c.pending = c.pending[total:]
-					return h, body, gotFDs, nil
-				}
 			}
+			activeFDs := c.inFDs.Active()
+			take := int(h.NFDs)
+			if take == 0 || take > len(activeFDs) {
+				take = len(activeFDs)
+			}
+			gotFDs := append(c.recvFDs[:0], activeFDs[:take]...)
+			c.inFDs.Consume(take)
+			return h, raw[HeaderSize:total], gotFDs, nil
 		}
 
 		var chunk [512]byte
@@ -320,19 +326,11 @@ func (c *Conn) recvMsg() (Header, []byte, []int, error) {
 			return Header{}, nil, nil, rerr
 		}
 		if n > 0 {
-			c.pending = append(c.pending, chunk[:n]...)
+			c.acc.Append(chunk[:n])
 		}
 		if oobn > 0 {
-			cmsgs, cerr := unix.ParseSocketControlMessage(oob[:oobn])
-			if cerr == nil {
-				for _, cmsg := range cmsgs {
-					if cmsg.Header.Level == unix.SOL_SOCKET && cmsg.Header.Type == unix.SCM_RIGHTS {
-						fds, ferr := unix.ParseUnixRights(&cmsg)
-						if ferr == nil {
-							c.msgFDs = append(c.msgFDs, fds...)
-						}
-					}
-				}
+			if err := c.inFDs.RecvOOB(oob[:oobn]); err != nil {
+				return Header{}, nil, nil, err
 			}
 		}
 	}

@@ -90,15 +90,28 @@ func TestSeqIncrements(t *testing.T) {
 	}
 }
 
-// TestStageFD verifies ancillary fd staging.
+// TestStageFD verifies ancillary fd staging and capacity enforcement.
 func TestStageFD(t *testing.T) {
 	var w Writer
 	var fdSlots [4]int
 	w.Init(make([]byte, 0, 64), &fdSlots)
-	w.StageFD(11)
-	w.StageFD(12)
+	if err := w.StageFD(11); err != nil {
+		t.Fatalf("StageFD(11): %v", err)
+	}
+	if err := w.StageFD(12); err != nil {
+		t.Fatalf("StageFD(12): %v", err)
+	}
 	if got := w.FDs(); len(got) != 2 || got[0] != 11 || got[1] != 12 {
 		t.Errorf("fds = %v", got)
+	}
+	if err := w.StageFD(13); err != nil {
+		t.Fatalf("StageFD(13): %v", err)
+	}
+	if err := w.StageFD(14); err != nil {
+		t.Fatalf("StageFD(14): %v", err)
+	}
+	if err := w.StageFD(15); err == nil {
+		t.Error("expected error exceeding fdSlots capacity")
 	}
 	w.Reset()
 	if len(w.FDs()) != 0 {
