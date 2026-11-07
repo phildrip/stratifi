@@ -58,6 +58,7 @@ const (
 	reqCreateBlob   byte = 0xbd
 	reqDestroyBlob  byte = 0xbe
 	reqAtomic       byte = 0xbc
+	reqCursor2      byte = 0xbb
 	reqPrimeToFD    byte = 0x2d
 )
 
@@ -107,6 +108,7 @@ const (
 	PageFlipSize     = unsafe.Sizeof(PageFlip{})
 	AtomicSize       = unsafe.Sizeof(Atomic{})
 	CreateDumbSize   = unsafe.Sizeof(CreateDumb{})
+	Cursor2Size      = unsafe.Sizeof(Cursor2{})
 )
 
 // CardRes is struct drm_mode_card_res for DRM_IOCTL_MODE_GETRESOURCES.
@@ -297,10 +299,31 @@ type SetClientCap struct {
 
 // DRM capability / client capability constants (<drm.h>).
 const (
-	CapDumbBuffer uint64 = 0x1
+	CapDumbBuffer   uint64 = 0x1
+	CapCursorWidth  uint64 = 0x8
+	CapCursorHeight uint64 = 0x9
 
 	ClientCapUniversalPlanes uint64 = 2
 	ClientCapAtomic          uint64 = 3
+)
+
+// Cursor2 is struct drm_mode_cursor2 (<drm_mode.h>) for DRM_IOCTL_MODE_CURSOR2.
+type Cursor2 struct {
+	Flags  uint32
+	CrtcID uint32
+	X      int32
+	Y      int32
+	Width  uint32
+	Height uint32
+	Handle uint32
+	HotX   int32
+	HotY   int32
+}
+
+// Cursor2 flags (<drm_mode.h> DRM_MODE_CURSOR_*).
+const (
+	CursorFlagBO   uint32 = 0x01
+	CursorFlagMove uint32 = 0x02
 )
 
 // EventVBlank is struct drm_event_vblank as read off the DRM fd on flip

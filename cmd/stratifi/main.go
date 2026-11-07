@@ -711,6 +711,11 @@ func main() {
 			}
 			for i := 0; i < n; i++ {
 				router.ProcessEvent(batch[i])
+				if kmsDisp != nil && kmsDisp.HasHWCursor() &&
+					(batch[i].Type == input.EventPointerMotion || batch[i].Type == input.EventPointerMotionAbsolute) {
+					cx, cy := router.CursorPosition()
+					kmsDisp.MoveCursor(int32(cx), int32(cy))
+				}
 			}
 		}
 	}()
@@ -873,6 +878,14 @@ func main() {
 	defaultCursor, cursorErr := cursor.Load("left_ptr", cursor.DefaultSize())
 	if cursorErr != nil {
 		fmt.Printf("[!] default cursor unavailable (%v): pointer invisible over chrome\n", cursorErr)
+	} else if kmsDisp != nil {
+		if kmsDisp.SetCursorImage(defaultCursor.Pixels, defaultCursor.W, defaultCursor.H, defaultCursor.Stride(), defaultCursor.HotX, defaultCursor.HotY) {
+			kmsDisp.lastCursorClient = cursorClientID
+			kmsDisp.lastCursorSurface = defaultCursorSurfaceID
+			cx, cy := router.CursorPosition()
+			kmsDisp.MoveCursor(int32(cx), int32(cy))
+			fmt.Println("[+] KMS hardware cursor plane enabled")
+		}
 	}
 
 	shell := newShellState(
@@ -990,6 +1003,29 @@ func main() {
 				}
 			}
 			if w > 0 && h > 0 {
+				if kmsDisp != nil && kmsDisp.cursorBuf != nil && kmsDisp.PowerOn() {
+					if !kmsDisp.HasHWCursor() || srcClient != kmsDisp.lastCursorClient || srcSurface != kmsDisp.lastCursorSurface {
+						if srcClient == cursorClientID && defaultCursor != nil {
+							if kmsDisp.SetCursorImage(defaultCursor.Pixels, defaultCursor.W, defaultCursor.H, defaultCursor.Stride(), hx, hy) {
+								kmsDisp.lastCursorClient = srcClient
+								kmsDisp.lastCursorSurface = srcSurface
+								kmsDisp.MoveCursor(int32(cx), int32(cy))
+							}
+						} else if c := srv.GetClient(srcClient); c != nil {
+							var cbuf [64 * 64 * 4]byte
+							if n, cw, ch, cstride, ok := c.SnapshotSurfaceBuffer(srcSurface, cbuf[:]); ok && n > 0 {
+								if kmsDisp.SetCursorImage(cbuf[:n], cw, ch, cstride, hx, hy) {
+									kmsDisp.lastCursorClient = srcClient
+									kmsDisp.lastCursorSurface = srcSurface
+									kmsDisp.MoveCursor(int32(cx), int32(cy))
+								}
+							}
+						}
+					}
+					if kmsDisp.HasHWCursor() {
+						return dst
+					}
+				}
 				dst = append(dst, compositor.SceneWindow{
 					ClientID:  srcClient,
 					SurfaceID: srcSurface,

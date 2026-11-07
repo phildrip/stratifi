@@ -39,6 +39,7 @@ var (
 	iocGetProperty  = iowr(reqGetProp, unsafe.Sizeof(GetProperty{}))
 	iocCreateBlob   = iowr(reqCreateBlob, unsafe.Sizeof(CreateBlob{}))
 	iocDestroyBlob  = iowr(reqDestroyBlob, unsafe.Sizeof(DestroyBlob{}))
+	iocCursor2      = iowr(reqCursor2, unsafe.Sizeof(Cursor2{}))
 )
 
 // Property names required for atomic commit, resolved per object at scan time.
@@ -148,7 +149,9 @@ type Card struct {
 	master bool
 
 	Caps struct {
-		DumbBuffer bool
+		DumbBuffer   bool
+		CursorWidth  uint32
+		CursorHeight uint32
 	}
 
 	Connectors []*Connector
@@ -219,6 +222,19 @@ func (c *Card) initCaps() error {
 		return fmt.Errorf("kms: GET_CAP(DUMB_BUFFER) on %s: %w", c.path, err)
 	}
 	c.Caps.DumbBuffer = cap.Value != 0
+
+	cw := GetCap{Capability: CapCursorWidth}
+	if err := ioctl(c.fd, iocGetCap, unsafe.Pointer(&cw)); err == nil && cw.Value > 0 {
+		c.Caps.CursorWidth = uint32(cw.Value)
+	} else {
+		c.Caps.CursorWidth = 64
+	}
+	ch := GetCap{Capability: CapCursorHeight}
+	if err := ioctl(c.fd, iocGetCap, unsafe.Pointer(&ch)); err == nil && ch.Value > 0 {
+		c.Caps.CursorHeight = uint32(ch.Value)
+	} else {
+		c.Caps.CursorHeight = 64
+	}
 	return nil
 }
 
@@ -592,6 +608,87 @@ func (s *Scanout) Fill(r, g, b uint8) {
 		}
 		row = row[int(s.Pitch):]
 	}
+}
+
+// WriteCursorARGB copies an ARGB8888 cursor image of size (srcW x srcH) into
+// the top-left of the cursor dumb buffer and zeroes all remaining pixels to
+// transparent (0x00000000). Zero heap allocations.
+func (s *Scanout) WriteCursorARGB(src []byte, srcW, srcH, srcStride int32) {
+	if s == nil || len(s.Data) == 0 {
+		return
+	}
+	clear(s.Data)
+	if len(src) == 0 || srcW <= 0 || srcH <= 0 || srcStride <= 0 {
+		return
+	}
+	copyW := int(srcW)
+	if copyW > int(s.Width) {
+		copyW = int(s.Width)
+	}
+	copyH := int(srcH)
+	if copyH > int(s.Height) {
+		copyH = int(s.Height)
+	}
+	rowBytes := copyW * 4
+	dstPitch := int(s.Pitch)
+	for y := 0; y < copyH; y++ {
+		srcOff := y * int(srcStride)
+		dstOff := y * dstPitch
+		if srcOff+rowBytes > len(src) || dstOff+rowBytes > len(s.Data) {
+			break
+		}
+		copy(s.Data[dstOff:dstOff+rowBytes], src[srcOff:srcOff+rowBytes])
+	}
+}
+
+// CreateCursorBuffer allocates a hardware-cursor-sized dumb buffer using the
+// card's reported DRM_CAP_CURSOR_WIDTH x DRM_CAP_CURSOR_HEIGHT (default 64x64).
+func (c *Card) CreateCursorBuffer() (*Scanout, error) {
+	w, h := c.Caps.CursorWidth, c.Caps.CursorHeight
+	if w == 0 {
+		w = 64
+	}
+	if h == 0 {
+		h = 64
+	}
+	return c.CreateScanout(w, h)
+}
+
+// SetCursorImage uploads the given GEM handle and hotspot to the CRTC's
+// hardware cursor plane via DRM_IOCTL_MODE_CURSOR2 (DRM_MODE_CURSOR_BO).
+func (c *Card) SetCursorImage(crtcID, handle, width, height uint32, hotX, hotY int32) error {
+	cur := Cursor2{
+		Flags:  CursorFlagBO,
+		CrtcID: crtcID,
+		Width:  width,
+		Height: height,
+		Handle: handle,
+		HotX:   hotX,
+		HotY:   hotY,
+	}
+	return c.ioctl(iocCursor2, unsafe.Pointer(&cur))
+}
+
+// MoveCursor updates the hardware cursor plane position on the given CRTC via
+// DRM_IOCTL_MODE_CURSOR2 (DRM_MODE_CURSOR_MOVE). Zero heap allocations.
+func (c *Card) MoveCursor(crtcID uint32, x, y int32) error {
+	cur := Cursor2{
+		Flags:  CursorFlagMove,
+		CrtcID: crtcID,
+		X:      x,
+		Y:      y,
+	}
+	return c.ioctl(iocCursor2, unsafe.Pointer(&cur))
+}
+
+// HideCursor disables the hardware cursor plane on the given CRTC.
+func (c *Card) HideCursor(crtcID uint32) error {
+	cur := Cursor2{
+		Flags:  CursorFlagBO,
+		CrtcID: crtcID,
+		Handle: 0,
+	}
+	return c.ioctl(iocCursor2, unsafe.Pointer(&cur))
 }
 
 // SetCRTC performs legacy modesetting: binds the CRTC to a connector at a

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"stratifi/internal/backend/kms"
 	"stratifi/internal/compositor"
@@ -15,12 +16,16 @@ import (
 // GPU mode renders directly into scanout memory (ScanoutExecutor + flip),
 // so there is no bridge and no CPU round trip.
 type kmsDisplay struct {
-	card    *kms.Card
-	scan    *kms.Scanout
-	conn    *kms.Connector
-	crtc    *kms.CRTC
-	mode    *kms.Mode
-	dpmsOff bool
+	card              *kms.Card
+	scan              *kms.Scanout
+	cursorBuf         *kms.Scanout
+	conn              *kms.Connector
+	crtc              *kms.CRTC
+	mode              *kms.Mode
+	dpmsOff           atomic.Bool
+	hwCursor          atomic.Bool
+	lastCursorClient  uint32
+	lastCursorSurface uint32
 }
 
 var _ compositor.Output = (*kmsDisplay)(nil)
@@ -36,7 +41,7 @@ func (d *kmsDisplay) Damage(x, y, w, h int32) {}
 // Present flips the freshly rendered scanout buffer in the next vblank.
 // When the panel is powered off via DPMS, flips are suppressed until wake.
 func (d *kmsDisplay) Present() error {
-	if d.dpmsOff {
+	if d.dpmsOff.Load() {
 		return nil
 	}
 	return d.card.PageFlipAtomic(d.conn, d.crtc, d.scan.FBID, 0)
@@ -44,20 +49,28 @@ func (d *kmsDisplay) Present() error {
 
 // PowerOn reports whether the display pipeline is currently powered on.
 func (d *kmsDisplay) PowerOn() bool {
-	return !d.dpmsOff
+	return !d.dpmsOff.Load()
 }
 
 // SetPower turns the KMS connector/CRTC power state on or off (DPMS).
 func (d *kmsDisplay) SetPower(on bool) error {
-	if d.dpmsOff == !on {
+	if d.dpmsOff.Load() == !on {
 		return nil
+	}
+	if !on && d.card != nil && d.crtc != nil && d.hwCursor.Load() {
+		_ = d.card.HideCursor(d.crtc.ID)
 	}
 	if d.card != nil && d.conn != nil && d.crtc != nil {
 		if err := d.card.SetDPMS(d.conn, d.crtc, on); err != nil {
 			return err
 		}
 	}
-	d.dpmsOff = !on
+	d.dpmsOff.Store(!on)
+	if on {
+		// Force cursor re-upload on the next frame after DPMS wake.
+		d.lastCursorClient = ^uint32(0)
+		d.lastCursorSurface = ^uint32(0)
+	}
 	return nil
 }
 
@@ -67,7 +80,54 @@ func (d *kmsDisplay) PrimeFD() (int, error) {
 	return d.card.PrimeExport(d.scan.Handle)
 }
 
+// HasHWCursor reports whether the hardware cursor plane is active on this display.
+func (d *kmsDisplay) HasHWCursor() bool {
+	return d != nil && d.hwCursor.Load() && !d.dpmsOff.Load()
+}
+
+// SetCursorImage uploads an ARGB8888 cursor image and hotspot to the DRM
+// cursor plane. Returns false if the hardware cursor is unavailable or rejected
+// (in which case software cursor compositing remains active).
+func (d *kmsDisplay) SetCursorImage(pixels []byte, w, h, stride, hotX, hotY int32) bool {
+	if d == nil || d.card == nil || d.crtc == nil || d.cursorBuf == nil {
+		return false
+	}
+	if w > int32(d.cursorBuf.Width) || h > int32(d.cursorBuf.Height) {
+		if d.hwCursor.Swap(false) {
+			_ = d.card.HideCursor(d.crtc.ID)
+		}
+		return false
+	}
+	d.cursorBuf.WriteCursorARGB(pixels, w, h, stride)
+	if err := d.card.SetCursorImage(d.crtc.ID, d.cursorBuf.Handle, d.cursorBuf.Width, d.cursorBuf.Height, hotX, hotY); err != nil {
+		d.hwCursor.Store(false)
+		return false
+	}
+	d.hwCursor.Store(true)
+	return true
+}
+
+// MoveCursor repositions the DRM hardware cursor plane without a full-frame
+// repaint. Zero heap allocations.
+func (d *kmsDisplay) MoveCursor(x, y int32) bool {
+	if !d.HasHWCursor() || d.card == nil || d.crtc == nil {
+		return false
+	}
+	if err := d.card.MoveCursor(d.crtc.ID, x, y); err != nil {
+		d.hwCursor.Store(false)
+		return false
+	}
+	return true
+}
+
 func (d *kmsDisplay) Close() error {
+	if d.cursorBuf != nil {
+		if d.card != nil && d.crtc != nil {
+			_ = d.card.HideCursor(d.crtc.ID)
+		}
+		_ = d.cursorBuf.Close()
+		d.cursorBuf = nil
+	}
 	if d.scan != nil {
 		_ = d.scan.Close()
 		d.scan = nil
@@ -133,9 +193,11 @@ func setupKMSDisplay() (*kmsDisplay, error) {
 		return nil, fmt.Errorf("kms: atomic modeset %s: %w", mode.ModeName(), err)
 	}
 
+	cursorBuf, _ := card.CreateCursorBuffer()
+
 	fmt.Printf("[+] KMS: %s %s on CRTC %d (scanout %dx%d, fb %d)\n",
 		conn.DisplayName(), mode.ModeName(), crtc.ID, mode.HDisplay, mode.VDisplay, scan.FBID)
-	return &kmsDisplay{card: card, scan: scan, conn: conn, crtc: crtc, mode: mode}, nil
+	return &kmsDisplay{card: card, scan: scan, cursorBuf: cursorBuf, conn: conn, crtc: crtc, mode: mode}, nil
 }
 
 // startEvdevInput pumps /dev/input devices into the shared ring buffer for

@@ -277,6 +277,17 @@ func (c *Card) PrimaryPlaneFor(crtcID uint32) *Plane {
 	return nil
 }
 
+// CursorPlaneFor returns the cursor plane bound to the given CRTC, or nil if
+// no cursor plane is exposed for that CRTC.
+func (c *Card) CursorPlaneFor(crtcID uint32) *Plane {
+	for _, p := range c.Planes {
+		if p.CrtcID == crtcID && p.Type == PlaneTypeCursor {
+			return p
+		}
+	}
+	return nil
+}
+
 // enableProps preloads atomic property IDs for the objects a mode commit
 // touches. Idempotent: caches on first call.
 func (c *Card) preloadProps() error {

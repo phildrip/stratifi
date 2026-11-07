@@ -210,3 +210,60 @@ func TestSetDPMSValidation(t *testing.T) {
 		t.Error("expected error for zero propID")
 	}
 }
+
+func TestCursor2ABIAndCursorPlaneLookup(t *testing.T) {
+	if Cursor2Size != 36 {
+		t.Fatalf("Cursor2Size = %d, want 36", Cursor2Size)
+	}
+	if CursorFlagBO != 0x01 || CursorFlagMove != 0x02 {
+		t.Fatalf("CursorFlags = (%x, %x), want (1, 2)", CursorFlagBO, CursorFlagMove)
+	}
+	c := &Card{
+		Planes: []*Plane{
+			{ID: 10, CrtcID: 1, Type: PlaneTypePrimary},
+			{ID: 11, CrtcID: 1, Type: PlaneTypeCursor},
+			{ID: 12, CrtcID: 2, Type: PlaneTypePrimary},
+		},
+	}
+	if p := c.CursorPlaneFor(1); p == nil || p.ID != 11 {
+		t.Errorf("CursorPlaneFor(1) = %+v, want plane 11", p)
+	}
+	if p := c.CursorPlaneFor(2); p != nil {
+		t.Errorf("CursorPlaneFor(2) = %+v, want nil", p)
+	}
+}
+
+func TestScanoutWriteCursorARGBZeroAlloc(t *testing.T) {
+	buf := make([]byte, 64*256)
+	for i := range buf {
+		buf[i] = 0xff
+	}
+	s := &Scanout{Width: 64, Height: 64, Pitch: 256, Data: buf}
+
+	src := make([]byte, 24*24*4)
+	for i := 0; i < len(src); i += 4 {
+		src[i+0] = 0x11
+		src[i+1] = 0x22
+		src[i+2] = 0x33
+		src[i+3] = 0xfe
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		s.WriteCursorARGB(src, 24, 24, 24*4)
+	})
+	if allocs != 0 {
+		t.Errorf("WriteCursorARGB allocs = %v, want 0", allocs)
+	}
+
+	// Pixel (0,0) and (23,23) must match src.
+	if buf[0] != 0x11 || buf[1] != 0x22 || buf[2] != 0x33 || buf[3] != 0xfe {
+		t.Errorf("pixel(0,0) = % x, want 11 22 33 fe", buf[:4])
+	}
+	// Pixel (24,0) and row 24 must be cleared to 0 (transparent).
+	if buf[24*4] != 0 || buf[24*4+3] != 0 {
+		t.Errorf("pixel(24,0) = % x, want 00 00 00 00", buf[24*4:24*4+4])
+	}
+	if buf[24*256] != 0 || buf[24*256+3] != 0 {
+		t.Errorf("pixel(0,24) = % x, want 00 00 00 00", buf[24*256:24*256+4])
+	}
+}

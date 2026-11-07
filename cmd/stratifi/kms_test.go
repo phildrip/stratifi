@@ -85,3 +85,43 @@ func TestKmsDisplayDPMSSuppressesPresent(t *testing.T) {
 		t.Fatal("expected PowerOn() == true after SetPower(true)")
 	}
 }
+
+func TestKmsDisplayCursorPlaneFallback(t *testing.T) {
+	d := &kmsDisplay{}
+	if d.HasHWCursor() {
+		t.Fatal("expected HasHWCursor() == false initially")
+	}
+	if d.MoveCursor(100, 200) {
+		t.Fatal("MoveCursor without active HW cursor should return false")
+	}
+
+	card, err := kms.OpenCard()
+	if err != nil {
+		t.Skipf("no DRM card: %v", err)
+	}
+	defer card.Close()
+
+	cbuf, err := card.CreateCursorBuffer()
+	if err != nil {
+		t.Skipf("CreateCursorBuffer unavailable: %v", err)
+	}
+	defer cbuf.Close()
+
+	if cbuf.Width == 0 || cbuf.Height == 0 {
+		t.Fatalf("unexpected zero cursor buffer dimensions: %dx%d", cbuf.Width, cbuf.Height)
+	}
+
+	// Verify concurrent SetPower + HasHWCursor/MoveCursor is race-free.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			_ = d.HasHWCursor()
+			_ = d.MoveCursor(int32(i), int32(i))
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		_ = d.SetPower(i%2 == 0)
+	}
+	<-done
+}
