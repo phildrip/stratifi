@@ -43,6 +43,8 @@ const (
 	ObjIdleInhibitor
 	ObjTextInputManager
 	ObjTextInput
+	ObjXwaylandShell
+	ObjXwaylandSurface
 	ObjForeignToplevelList
 	ObjForeignToplevelHandle
 
@@ -278,4 +280,12 @@ type TextInput struct {
 	Pending TextInputState
 	Current TextInputState
 	Active  bool
+}
+
+// XwaylandSurface tracks one xwayland_surface_v1 association for a wl_surface.
+type XwaylandSurface struct {
+	ID        uint32
+	SurfaceID uint32
+	Serial    uint64
+	HasSerial bool
 }

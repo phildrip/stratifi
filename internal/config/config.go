@@ -24,6 +24,8 @@ type Config struct {
 	OutputScale float32
 	// OutputPolicy is the multi-output layout policy: "join" (default) or "mirror".
 	OutputPolicy string
+	// XWayland controls XWayland support: "on_demand" (default), "enable", or "disable".
+	XWayland string
 	// Outputs holds per-output rules (`output <name> ...`).
 	Outputs  []OutputConfig
 	Bindings []Binding
@@ -70,6 +72,7 @@ func Default() Config {
 		XKBLayout:      "us",
 		OutputScale:    1.0,
 		OutputPolicy:   "join",
+		XWayland:       "on_demand",
 	}
 }
 
@@ -252,6 +255,15 @@ func Parse(data []byte) (Config, error) {
 			}
 			seen["output_policy"] = line
 			cfg.OutputPolicy = fields[1]
+		case "xwayland":
+			if _, dup := seen["xwayland"]; dup {
+				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "xwayland", seen["xwayland"])
+			}
+			if len(fields) != 2 || (fields[1] != "enable" && fields[1] != "disable" && fields[1] != "on_demand") {
+				return Config{}, parseError(line, "xwayland must be 'enable', 'disable', or 'on_demand'")
+			}
+			seen["xwayland"] = line
+			cfg.XWayland = fields[1]
 		case "output_scale":
 			if _, dup := seen["output_scale"]; dup {
 				return Config{}, parseError(line, "duplicate key %q (first at line %d)", "output_scale", seen["output_scale"])

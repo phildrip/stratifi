@@ -747,3 +747,34 @@ func (s *Server) GetSelection() Selection {
 	defer s.selectionMu.Unlock()
 	return s.selection
 }
+
+// ResolveXwaylandSerial finds the (ClientID, SurfaceID) whose
+// xwayland_surface_v1 was assigned the given 64-bit serial via set_serial.
+func (s *Server) ResolveXwaylandSerial(serial uint64) (clientID, surfaceID uint32, ok bool) {
+	if serial == 0 {
+		return 0, 0, false
+	}
+	s.clientMu.RLock()
+	clients := make([]*Client, 0, len(s.clients))
+	for _, c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clientMu.RUnlock()
+
+	for _, c := range clients {
+		c.mu.Lock()
+		var foundSurf uint32
+		for i := range c.xwaylandSurfaces.items {
+			xs := &c.xwaylandSurfaces.items[i].rec
+			if xs.HasSerial && xs.Serial == serial {
+				foundSurf = xs.SurfaceID
+				break
+			}
+		}
+		c.mu.Unlock()
+		if foundSurf != 0 {
+			return c.id, foundSurf, true
+		}
+	}
+	return 0, 0, false
+}

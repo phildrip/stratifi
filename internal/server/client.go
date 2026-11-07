@@ -16,6 +16,7 @@ import (
 	"stratifi/internal/protocol/wayland"
 	"stratifi/internal/protocol/xdgoutput"
 	"stratifi/internal/protocol/xdgshell"
+	"stratifi/internal/protocol/xwaylandshell"
 	"stratifi/internal/wire"
 )
 
@@ -35,6 +36,7 @@ const (
 	GlobalForeignToplevelImageCaptureSourceManager uint32 = 14
 	GlobalIdleInhibitManager                       uint32 = 15
 	GlobalTextInputManager                         uint32 = 16
+	GlobalXwaylandShell                            uint32 = 17
 	GlobalOutputExtraBase                          uint32 = 100
 
 	// Screen capture protocol globals (Firefox/WebRTC portal path).
@@ -48,21 +50,22 @@ type Client struct {
 	conn   *wire.Conn
 	server *Server
 
-	mu             sync.Mutex
-	objects        objectTable
-	pools          poolStore
-	buffers        bufferStore
-	surfaces       surfaceStore
-	xdgSurfaces    xdgStore[XdgSurface]
-	xdgToplevels   xdgStore[XdgToplevel]
-	xdgPositioners xdgStore[XdgPositioner]
-	xdgPopups      xdgStore[XdgPopup]
-	subsurfaces    xdgStore[Subsurface]
-	layerSurfaces  xdgStore[LayerSurface]
-	textInputs     xdgStore[TextInput]
-	focusedSurface uint32
-	outputGlobals  map[uint32]uint32 // wl_output object ID -> wl_registry GlobalID
-	xdgOutputs     map[uint32]uint32 // zxdg_output_v1 object ID -> wl_output object ID
+	mu               sync.Mutex
+	objects          objectTable
+	pools            poolStore
+	buffers          bufferStore
+	surfaces         surfaceStore
+	xdgSurfaces      xdgStore[XdgSurface]
+	xdgToplevels     xdgStore[XdgToplevel]
+	xdgPositioners   xdgStore[XdgPositioner]
+	xdgPopups        xdgStore[XdgPopup]
+	subsurfaces      xdgStore[Subsurface]
+	layerSurfaces    xdgStore[LayerSurface]
+	textInputs       xdgStore[TextInput]
+	xwaylandSurfaces xdgStore[XwaylandSurface]
+	focusedSurface   uint32
+	outputGlobals    map[uint32]uint32 // wl_output object ID -> wl_registry GlobalID
+	xdgOutputs       map[uint32]uint32 // zxdg_output_v1 object ID -> wl_output object ID
 
 	// ext-foreign-toplevel-list-v1: the client's list objects and the handle
 	// object id per toplevel key.
@@ -232,6 +235,12 @@ var dispatchTable = map[ObjectType]func(*Client, *wire.Reader, wire.Header) erro
 	ObjTextInput: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return textinput.DispatchZwpTextInputV3(r, h, c)
 	},
+	ObjXwaylandShell: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return xwaylandshell.DispatchXwaylandShellV1(r, h, c)
+	},
+	ObjXwaylandSurface: func(c *Client, r *wire.Reader, h wire.Header) error {
+		return xwaylandshell.DispatchXwaylandSurfaceV1(r, h, c)
+	},
 	ObjForeignToplevelList: func(c *Client, r *wire.Reader, h wire.Header) error {
 		return foreigntoplevel.DispatchExtForeignToplevelListV1(r, h, c)
 	},
@@ -350,6 +359,10 @@ func (c *Client) HandleWlDisplayGetRegistry(senderID uint32, registryID uint32) 
 		textinput.ZwpTextInputManagerV3Interface, textinput.ZwpTextInputManagerV3Version); err != nil {
 		return err
 	}
+	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalXwaylandShell,
+		xwaylandshell.XwaylandShellV1Interface, xwaylandshell.XwaylandShellV1Version); err != nil {
+		return err
+	}
 	// Screen/window capture (browser screen sharing via xdg-desktop-portal).
 	if err := wayland.SendWlRegistryGlobal(w, registryID, GlobalOutputImageCaptureSourceManager,
 		capture.ExtOutputImageCaptureSourceManagerV1Interface, 1); err != nil {
@@ -407,6 +420,8 @@ func (c *Client) HandleWlRegistryBind(senderID uint32, name uint32, ifaceName st
 		c.registerObject(id, ObjIdleInhibitManager)
 	case GlobalTextInputManager:
 		c.registerObject(id, ObjTextInputManager)
+	case GlobalXwaylandShell:
+		c.registerObject(id, ObjXwaylandShell)
 	case GlobalForeignToplevelList:
 		c.registerObject(id, ObjForeignToplevelList)
 		c.addToplevelList(id)
@@ -644,6 +659,13 @@ func (c *Client) HandleWlSurfaceDestroy(senderID uint32) error {
 			ti.Surface = 0
 			ti.Pending.Enabled = false
 			ti.Current.Enabled = false
+		}
+	}
+	for i := range c.xwaylandSurfaces.items {
+		xs := &c.xwaylandSurfaces.items[i].rec
+		if xs.SurfaceID == senderID {
+			xs.SurfaceID = 0
+			xs.HasSerial = false
 		}
 	}
 	wasCursor := c.hasCursor && c.cursorSurface == senderID
@@ -2485,4 +2507,60 @@ func (c *Client) GiveClipboardOffer() uint32 {
 	_ = wayland.SendWlDataDeviceSelection(w, c.dataDeviceID, offerID)
 	_ = c.conn.Flush()
 	return offerID
+}
+
+// --- XwaylandShellV1Handler & XwaylandSurfaceV1Handler ---
+
+func (c *Client) HandleXwaylandShellV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unregisterObject(senderID)
+	return nil
+}
+
+func (c *Client) HandleXwaylandShellV1GetXwaylandSurface(senderID uint32, id uint32, surface uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sf, ok := c.surfaces.get(surface)
+	if !ok || !sf.Active {
+		return fmt.Errorf("xwayland_shell_v1.get_xwayland_surface: unknown surface %d", surface)
+	}
+	for i := range c.xwaylandSurfaces.items {
+		if c.xwaylandSurfaces.items[i].rec.SurfaceID == surface {
+			return fmt.Errorf("xwayland_shell_v1.get_xwayland_surface: surface %d already has an xwayland_surface_v1 role", surface)
+		}
+	}
+	c.registerObject(id, ObjXwaylandSurface)
+	c.xwaylandSurfaces.add(id, XwaylandSurface{
+		ID:        id,
+		SurfaceID: surface,
+	})
+	return nil
+}
+
+func (c *Client) HandleXwaylandSurfaceV1SetSerial(senderID uint32, serialLo uint32, serialHi uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	serial := uint64(serialHi)<<32 | uint64(serialLo)
+	if serial == 0 {
+		return fmt.Errorf("xwayland_surface_v1.set_serial: invalid zero serial")
+	}
+	xs, ok := c.xwaylandSurfaces.get(senderID)
+	if !ok {
+		return fmt.Errorf("xwayland_surface_v1.set_serial: unknown xwayland_surface %d", senderID)
+	}
+	if xs.HasSerial {
+		return fmt.Errorf("xwayland_surface_v1.set_serial: serial already set on %d", senderID)
+	}
+	xs.Serial = serial
+	xs.HasSerial = true
+	return nil
+}
+
+func (c *Client) HandleXwaylandSurfaceV1Destroy(senderID uint32) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.xwaylandSurfaces.remove(senderID)
+	c.unregisterObject(senderID)
+	return nil
 }

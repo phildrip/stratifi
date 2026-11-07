@@ -324,6 +324,8 @@ output HDMI-A-1 position 1920 0 scale 2.0
 		"output_policy clone\n",
 		"output_policy join\noutput_policy mirror\n",
 		"output DP-1 pos 100\n",
+		"xwayland maybe\n",
+		"xwayland enable\nxwayland disable\n",
 	} {
 		if _, err := Parse([]byte(bad)); err == nil {
 			t.Errorf("Parse(%q) succeeded, want error", bad)
