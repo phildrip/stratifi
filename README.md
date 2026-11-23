@@ -1,183 +1,171 @@
 # stratifi
 
-A block-based Wayland compositor and window manager, written in Go with a
-data-oriented core. It tiles in [niri]-style scrollable columns, understands
-touchpad gestures, runs layer-shell panels, and is being built to run as a
-daily-driver session on bare metal (DRM/KMS) as well as nested inside another
-compositor.
+**stratifi** is a block-based Wayland compositor and window manager written in Go with a strict **Data-Oriented Design (DOD)** core.
 
-> **Status:** nested and bare-metal paths work; the bare-metal *live modeset*
-> path is verified up to the point of needing a VT/DRM master. Expect rough
-> edges — this is a daily-driver-in-progress, not a finished product.
+Built from first principles without `wlroots`, `libinput`, or build-time `libvulkan.so` linkage, stratifi combines [niri]-style scrollable column tiling, floating windows, scratchpads, and multi-output support with a predictable, **zero-allocation (`0 allocs/op`)** hot path across input routing, layout computation, Wayland wire framing, XWayland event handling, and frame rendering.
+
+---
+
+## Highlights
+
+- **Scrollable Column Tiling + Floating Layer:** Arrange windows in an infinite horizontal strip of stackable columns, toggle floating windows with `Super`+drag move/resize, stash windows in a scratchpad, and switch named keybinding modes (`mode resize { ... }`).
+- **Zero-Allocation Hot Paths:** Flat contiguous memory, generational IDs, lock-free ring buffers, and pre-allocated draw lists keep the compositor free of garbage-collection pauses. Every core hot path is gated at `0 allocs/op` in CI.
+- **Bare-Metal DRM/KMS & Nested Backends:** Drives Linux DRM/KMS directly via `ioctl` (including atomic commits, DPMS power management, and a hardware cursor plane via `DRM_IOCTL_MODE_CURSOR2`) or runs nested inside an existing Wayland session for rapid development.
+- **Runtime-Loaded Vulkan Renderer:** Loads `libvulkan.so.1` dynamically at runtime via `dlopen` (`VK_NO_PROTOTYPES`) with zero build-time Vulkan linkage and seamless fallback to the CPU blitter.
+- **Pure-Go Input & Gestures:** Reads `/dev/input/event*` directly in Go (no `libinput`), supports live XKB keymap compilation/reloading (`xkb_layout`), and recognizes multi-touch touchpad swipes and pinches.
+- **Multi-Output & Hotplug:** Supports `join` and `mirror` output policies, dynamic `wl_output` hotplug (`wl_registry.global` / `global_remove`), and per-output `zxdg_output_v1` geometry.
+- **XWayland & IME:** Includes a pure-Go X11 display allocator, zero-allocation X11 window manager (`XWM`), `xwayland_shell_v1` surface association, and `zwp_text_input_manager_v3` for input methods.
+- **Browser Screen Sharing:** Implements `ext-image-copy-capture-v1` and `ext-foreign-toplevel-list-v1` for whole-output and per-window capture via `xdg-desktop-portal-wlr` and PipeWire.
+- **Crash-Resilient Session Supervisor:** `stratifi-session` supervises the compositor and owns spawned clients so a compositor restart does not tear down your applications.
+
+---
 
 ## Build
 
+Requires Go 1.24+ on Linux. No `libinput` or `libvulkan-dev` linkage is required to compile; at runtime, `libvulkan.so.1` is loaded on demand when `STRATIFI_GPU=1` is set.
+
 ```sh
-go build ./...                       # everything
-go build -o stratifi ./cmd/stratifi  # the compositor
-go build -o stratifi-session  ./cmd/stratifi-session
-go build -o stratifi-launch   ./cmd/stratifi-launch
+go build ./...                                   # build everything
+go build -o bin/stratifi         ./cmd/stratifi
+go build -o bin/stratifi-session ./cmd/stratifi-session
+go build -o bin/stratifi-launch  ./cmd/stratifi-launch
 ```
 
-Requires Go and a Vulkan loader at runtime for the GPU path (`libvulkan.so`).
-The compositor does **not** link libinput; input is pure Go (`evdev`) on bare
-metal, and comes from the parent compositor when nested.
+---
 
-## Run
+## Running stratifi
 
-### Nested (development)
+### Nested (Inside Your Current Wayland Session)
 
-Nested runs inside your current Wayland session and is the easiest way to try
-it. The parent draws the pointer, so you don't need the cursor plane.
+The fastest way to try stratifi without leaving your desktop:
 
 ```sh
-STRATIFI_GPU=1 ./stratifi &
+STRATIFI_GPU=1 ./bin/stratifi &
 WAYLAND_DISPLAY=wayland-stratifi-0 foot &
-WAYLAND_DISPLAY=wayland-stratifi-0 waybar &   # optional panel
+WAYLAND_DISPLAY=wayland-stratifi-0 waybar &   # optional layer-shell panel
 ```
 
-`scripts/nested-dev.sh` wraps this: `up`, `down`, `status`, `smoke`, `--kms`.
+`scripts/nested-dev.sh` automates this workflow (`up`, `down`, `status`, `smoke`, `--kms`).
 
-### Bare metal (DRM/KMS)
+### Bare Metal (DRM/KMS on a Linux VT)
 
-Needs DRM master — i.e. a VT with no other compositor. Switch to a spare VT
-(`Ctrl+Alt+F3`), log in, then:
+Switch to an unused virtual terminal (`Ctrl+Alt+F3`), log in, and run:
 
 ```sh
-STRATIFI_KMS=1 STRATIFI_GPU=1 ./stratifi
+STRATIFI_KMS=1 STRATIFI_GPU=1 ./bin/stratifi
 ```
 
-### As a session (display manager)
+Make sure your user belongs to the `input`, `video`, and `render` groups so stratifi can open `/dev/input/event*` and `/dev/dri/card*`.
+
+### Display Manager (GDM / SDDM / greetd)
+
+Install the binaries and session files:
 
 ```sh
-install -Dm644 contrib/stratifi.desktop /usr/share/wayland-sessions/stratifi.desktop
-install -Dm755 contrib/stratifi-session   /usr/local/bin/stratifi-session
+sudo install -Dm755 bin/stratifi              /usr/local/bin/stratifi
+sudo install -Dm755 bin/stratifi-launch       /usr/local/bin/stratifi-launch
+sudo install -Dm755 contrib/stratifi-session  /usr/local/bin/stratifi-session
+sudo install -Dm644 contrib/stratifi.desktop  /usr/share/wayland-sessions/stratifi.desktop
 ```
 
-Then pick **Stratifi** in your display manager's session menu.
+Log out and select **Stratifi** from the session menu (in GDM, click your user, then the gear icon in the bottom-right corner).
 
-### Environment
+### Environment Variables
 
 | Variable | Effect |
 | :--- | :--- |
-| `STRATIFI_KMS=1` | DRM/KMS backend (bare metal). |
-| `STRATIFI_GPU=1` | Vulkan renderer; unset falls back to the CPU blitter. |
-| `STRATIFI_SESSION_SOCKET` | Control socket of `stratifi-session`; when set, spawned clients are its children (they survive a compositor restart). |
-| `STRATIFI_VK_DEVICE` / `STRATIFI_VK_VALIDATION` / `STRATIFI_TRACE` | Vulkan device override, validation layers, tracing. |
+| `STRATIFI_KMS=1` | Enable the bare-metal DRM/KMS backend. |
+| `STRATIFI_GPU=1` | Enable the Vulkan renderer (`dlopen`); unset uses the CPU blitter. |
+| `STRATIFI_SESSION_SOCKET` | Control socket of `stratifi-session`; spawned clients become children of the supervisor. |
+| `STRATIFI_VK_DEVICE` | Override Vulkan physical device selection. |
+| `STRATIFI_VK_VALIDATION` | Enable Vulkan validation layers. |
+| `STRATIFI_TRACE` | Enable verbose compositor event tracing. |
+
+---
 
 ## Configuration
 
-Read from `$XDG_CONFIG_HOME/stratifi/config` (else `~/.config/stratifi/config`).
-Missing file = defaults. Duplicate scalar keys and malformed lines are a loud
-startup error (a typo that silently does nothing is worse).
+stratifi reads `$XDG_CONFIG_HOME/stratifi/config` (falling back to `~/.config/stratifi/config`). A missing file uses built-in defaults; unknown directives, duplicate scalar keys, and malformed lines fail loudly at startup. Lines ending in `\` continue onto the next line.
 
 ```conf
-# geometry
-gap 8                 # pixels between windows
+# Geometry & display
+gap 8
 border_width 3
 titlebar_height 28
-column_width 0.5      # scrollable column width, fraction of the output
-xkb_layout gb         # XKB keyboard layout (default: us; also accepts 'input * xkb_layout "gb"')
-output_scale 1.25     # display scale factor (default: 1.0; also accepts 'output <name> scale 1.25')
+column_width 0.5          # fraction of output width per scrollable column
+xkb_layout gb             # or sway-style: input * xkb_layout "gb"
+output_scale 1.25         # or sway-style: output HDMI-A-1 scale 1.25
+output_policy join        # "join" (default) or "mirror"
+output DP-1 pos 0 0 scale 1.0
+output HDMI-A-1 pos 1920 0 scale 1.25
+xwayland on_demand        # "on_demand" (default), "enable", or "disable"
 
-# keybindings
+# Keybindings
 bind Super+Return spawn foot
-bind Super+q close
-bind Super+f fullscreen
+bind Super+d      spawn stratifi-launch
+bind Super+q      close
+bind Super+f      fullscreen
+bind Super+Shift+space floating_toggle
+bind Super+Shift+minus move_scratchpad
+bind Super+minus       scratchpad_show
+bind Super+r           mode resize
 
-# gestures (touchpad; KMS/evdev only — nested has no touchpad source)
-bind_gesture swipe left 3 workspace_next
+# Named modes (sway-style)
+mode "resize" {
+    bind Left  resize_col_width -10
+    bind Right resize_col_width 10
+    bind Up    resize_window_height -10
+    bind Down  resize_window_height 10
+    bind Escape mode default
+}
 
-# run at startup (via sh -c, routed through the session supervisor)
-exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY
-exec swayidle -w timeout 300 'swaylock -f' timeout 600 'stratifi-launch --dpms off' resume 'stratifi-launch --dpms on'
-```
-
-Lines ending in `\` continue on the next line.
-
-### Keys
-
-`bind COMBO ACTION [ARGS...]`. Modifiers: `Super` (aliases `Mod4`, `Win`),
-`Ctrl`/`Control`, `Alt`/`Mod1`, `Shift` (case-insensitive). The last component
-is the key:
-
-```
-a–z  0–9  minus equal backspace tab space enter return
-escape semicolon grave comma dot slash
-f1–f12  home end delete up down left right
-```
-
-### Actions
-
-| Action | Effect |
-| :--- | :--- |
-| `spawn <cmd> [args...]` | Launch a client (routed through the session supervisor when set). |
-| `close` / `quit` | Close the active window / exit the compositor. |
-| `focus_next` / `focus_prev` | Focus the next/previous window. |
-| `focus_col_next` / `focus_col_prev` | Scroll to the next/previous column. |
-| `column_next` / `column_prev` | Aliases for `focus_col_next` / `focus_col_prev`. |
-| `move_col_left` / `move_col_right` | Reorder the active column in the strip. |
-| `focus_window_up` / `focus_window_down` | Focus within the active column's stack. |
-| `move_window_up` / `move_window_down` | Reorder the active window within its column. |
-| `fullscreen` | Toggle fullscreen for the active window. |
-| `floating_toggle` | Toggle the active window between floating and scrollable-column tiling (`Super` + left/right mouse drag moves/resizes floating windows). |
-| `focus_mode_toggle` | Switch keyboard focus between the floating layer and the tiled layer. |
-| `move_scratchpad` / `scratchpad_show` | Hide the active window into the scratchpad / toggle showing the scratchpad window on the current workspace. |
-| `workspace <n>` / `move_to_workspace <n>` | Switch to / move the window to workspace *n*. |
-| `workspace_back_and_forth` | Toggle to the previously visited workspace. |
-| `reload` | Re-read the config file: bindings, XKB layout, and layout metrics, live. |
-| `dpms [on\|off\|toggle]` | Power the KMS display on or off (also wakes automatically on input). |
-| `mode <name>` | Switch keybinding mode (`default` returns to the base mode). |
-| `resize_col_width <delta>` | Adjust the active column's width fraction (e.g. `-10` / `+10` ppt or `-0.05` / `+0.05`). |
-| `resize_window_height <delta>` | Adjust the active window's height weight within its column stack. |
-| `workspace_next` / `workspace_prev` | Cycle workspaces. |
-| `overview` | Recognised; not implemented yet. |
-
-### Gestures
-
-`bind_gesture <type> [direction] [fingers] <action>`. Direction and finger
-count are optional filters.
-
-```conf
+# Touchpad gestures (KMS/evdev)
 bind_gesture swipe left 3  workspace_next
 bind_gesture swipe right 3 workspace_prev
-bind_gesture swipe up 4    overview
-bind_gesture pinch 0 0     overview
+
+# Startup commands (executed via sh -c)
+exec dbus-update-activation-environment --systemd WAYLAND_DISPLAY
+exec swayidle -w \
+     timeout 300 'swaylock -f' \
+     timeout 600 'stratifi-launch --dpms off' \
+     resume 'stratifi-launch --dpms on'
 ```
 
-### The launcher
+### Supported Actions
 
-`stratifi-launch` is an fzf-driven combi launcher (windows + installed apps +
-"run a command"). Bind it and it opens its own terminal:
+| Action | Description |
+| :--- | :--- |
+| `spawn <cmd> [args...]` | Launch a client (via `stratifi-session` when active). |
+| `close` / `quit` | Gracefully close the focused window / exit stratifi. |
+| `focus_next` / `focus_prev` | Cycle focus across windows. |
+| `focus_col_next` / `focus_col_prev` | Scroll focus to the next/previous column (`column_next` / `column_prev`). |
+| `move_col_left` / `move_col_right` | Reorder the active column in the horizontal strip. |
+| `focus_window_up` / `focus_window_down` | Move focus within the active column stack. |
+| `move_window_up` / `move_window_down` | Reorder the active window within its column. |
+| `fullscreen` | Toggle fullscreen on the active window. |
+| `floating_toggle` / `focus_mode_toggle` | Toggle floating mode / switch focus between tiled and floating layers. |
+| `move_scratchpad` / `scratchpad_show` | Send window to scratchpad / toggle scratchpad visibility. |
+| `mode <name>` | Switch keybinding mode (`default` returns to base bindings). |
+| `resize_col_width <delta>` | Resize the active column width (e.g. `-10`, `+10`, or fractional). |
+| `resize_window_height <delta>` | Adjust the active window's height weight in its column. |
+| `workspace <n>` / `move_to_workspace <n>` | Switch to or move the active window to workspace *n*. |
+| `workspace_next` / `workspace_prev` / `workspace_back_and_forth` | Navigate workspaces. |
+| `reload` | Live-reload config (bindings, XKB layout, geometry). |
+| `dpms [on\|off\|toggle]` | Control KMS display power (wakes automatically on input). |
 
-```conf
-bind Super+d spawn stratifi-launch
-# no compositor needed to inspect what it would show:
-stratifi-launch --list
-```
+### Launcher (`stratifi-launch`)
 
-It talks to the compositor over `$XDG_RUNTIME_DIR/stratifi-ipc.sock`
-(`LIST`, `FOCUS <id>`, `SPAWN <argv>`).
-
-## Testing
+`stratifi-launch` is an `fzf`-driven combi launcher combining open windows, installed `.desktop` applications, and arbitrary commands over `$XDG_RUNTIME_DIR/stratifi-ipc.sock`.
 
 ```sh
-scripts/check.sh           # the gate: format, vet, build, test, race, 0-alloc
-scripts/check-allocs.sh    # just the hot-path 0-alloc assertion
-scripts/lint.sh            # golangci-lint (optional; CI installs a current one)
-go test ./...              # the suite
-go test -race ./...
+stratifi-launch --list   # inspect entries without a running compositor
 ```
 
-Hot paths must be **0 allocs/op** and `scripts/check-allocs.sh` fails the gate
-if any regresses (see `skills/data-oriented-design.md`); CI runs the same
-suite. Live bring-up smoke test: `scripts/nested-dev.sh smoke`.
+---
 
-## Screen sharing (browser video calls)
+## Screen Sharing (Browser Video Calls)
 
-The compositor implements `ext-image-copy-capture-v1`; `xdg-desktop-portal-wlr`
-drives it and streams over PipeWire. Enable it once with a portal config
-(`~/.config/xdg-desktop-portal/stratifi-portals.conf`):
+stratifi implements `ext-image-copy-capture-v1`, driven by `xdg-desktop-portal-wlr` over PipeWire. Configure your portal once in `~/.config/xdg-desktop-portal/stratifi-portals.conf`:
 
 ```ini
 [preferred]
@@ -186,47 +174,51 @@ org.freedesktop.impl.portal.Screenshot=wlr;
 default=gtk;
 ```
 
-Requirements: `pipewire`, `xdg-desktop-portal`, `xdg-desktop-portal-wlr`, and a
-`pipewire` session. Whole-output **and per-window** sharing are implemented.
-
-The easiest way to try it **without replacing your session**:
+To test screen sharing in a nested session without replacing your desktop:
 
 ```sh
-scripts/try-screen-share.sh nested [browser]   # nested; no switch
-scripts/try-screen-share.sh kms    [browser]   # bare metal — run from a spare VT
+scripts/try-screen-share.sh nested [browser]
 ```
 
-It starts stratifi if needed, then launches xdg-desktop-portal + the browser on
-a **private D-Bus session** with `WAYLAND_DISPLAY`/`XDG_CURRENT_DESKTOP`
-pointed at stratifi — so the portal captures stratifi, not your outer session.
-(Nested alone isn't enough: a portal in your normal session attaches to your
-outer compositor. Pipewire is shared; only the D-Bus session is private.)
-
-Open a client inside stratifi first (`WAYLAND_DISPLAY=wayland-stratifi-0 foot &`),
-then in the browser start a call, click Share, and pick "Entire screen" or a
-window.
+---
 
 ## Architecture
 
-- `cmd/stratifi` — the compositor: actor goroutine owning all scene state,
-  driven by plain-data events (server callbacks and the input pump send, one
-  goroutine renders).
-- `internal/server` — the Wayland server (protocol handlers, per-client state).
-- `internal/layout` — the window model: tagged columns, niri scrollable
-  layout, workspaces.
-- `internal/compositor` — the frame loop and the backend-agnostic `DrawList`.
-- `internal/render/vulkan` — the Vulkan renderer; `internal/backend/kms` and
-  `internal/backend/nested` — the two backends.
-- `internal/protocol/*` — generated protocol bindings (from `protocol/specs`).
-- `internal/ipc`, `internal/session` — the launcher control channel and the
-  session supervisor.
+```
+cmd/
+  stratifi/          Compositor actor loop, KMS/nested wiring, IPC & actions
+  stratifi-session/  Crash-resilient session supervisor
+  stratifi-launch/   fzf combi launcher (windows + desktop apps + run)
+  wayland-gen/       XML-to-Go Wayland protocol code generator
+internal/
+  wire/              Zero-alloc Wayland wire reader/writer & SCM_RIGHTS FD passing
+  server/            Wayland protocol server (core, xdg-shell, layer-shell, IME, capture, xwayland-shell)
+  layout/            Scrollable column strip, floating layer, scratchpad, workspaces
+  compositor/        FrameLoop, backend-agnostic DrawList, zero-alloc MultiOutput
+  render/vulkan/     Runtime-loaded (dlopen) Vulkan compositor renderer
+  backend/kms/       Direct Linux DRM/KMS ioctls, atomic commits, hardware cursor plane
+  backend/nested/    Parent Wayland backend for nested development
+  input/             Pure-Go evdev reader, lock-free ring buffer, gestures, XKB keymaps
+  xwayland/          X11 display allocator, Xwayland spawner, zero-alloc XWM
+  config/            Strict line-oriented config parser with sway compatibility
+```
 
-Design principles live in `AGENTS.md` and `skills/`.
+---
 
-## Roadmap (highlights)
+## Verification & Quality Gates
 
-XWayland, multi-output, IME; live KMS modeset on a VT; screen-sharing
-(PipeWire/portal); a pure-Go renderer FFI path so the binary runs without
-libvulkan.
+Every change is verified against formatting, `go vet`, full unit/integration tests, the Go race detector, and `0 allocs/op` hot-path benchmarks:
+
+```sh
+./scripts/check.sh          # full gate: gofmt, go vet, build, test, -race, 0-alloc
+./scripts/check-allocs.sh   # hot-path 0-alloc benchmark assertion only
+./scripts/lint.sh           # golangci-lint
+```
+
+---
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
 
 [niri]: https://github.com/YaLTeR/niri
